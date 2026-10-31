@@ -30,7 +30,8 @@ using SIMD: Vec
 
   @testset "codelets and chains against the direct DFT, $T" for T in (Float64, Float32)
     for n in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 24, 32, 48, 49, 60, 64, 80, 100,
-              105, 120, 128, 143, 169, 210, 243, 256, 360, 384, 500, 512, 1000, 1024]
+              105, 120, 128, 143, 169, 210, 243, 256, 360, 384, 500, 512, 1000, 1024,
+              17, 19, 23, 29, 31, 68, 289, 928, 31 * 27]
       x = randn(Complex{T}, n)
       ref = dft(ComplexF64.(x))
       @test relerr(FFTL.fft(x), ref) < tol(T)
@@ -39,7 +40,7 @@ using SIMD: Vec
   end
 
   @testset "Bluestein, $T" for T in (Float64, Float32)
-    for n in [17, 19, 34, 101, 289, 1009]
+    for n in [37, 41, 74, 101, 37^2, 1009]
       x = randn(Complex{T}, n)
       @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
       @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < 10tol(T)
