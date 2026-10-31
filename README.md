@@ -6,7 +6,7 @@ of dimensions, any length, multithreaded. Work in progress; the interface may st
 ## Usage
 
 ```julia
-using FFTL
+using FFTL, LinearAlgebra
 
 x = randn(ComplexF64, 1000, 1000)
 y = FFTL.fft(x)                 # all dimensions
