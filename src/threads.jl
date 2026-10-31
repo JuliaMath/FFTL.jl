@@ -1,14 +1,30 @@
-# Threaded execution of one dimension. A dimension pass with S lanes, length n and `outer` slices
-# is split either over the slices (each thread runs whole slices with its own work buffers) or,
-# when there are fewer slices than threads, over blocks of lanes (`run_lanes!`, compact per-thread
-# buffers of B·n values).
+# Execution of one dimension pass with S lanes, length n and `outer` slices, on one or several
+# threads.
+#
+# With enough lanes the pass runs in lane blocks (`run_lanes!`): a block of B lanes is read from
+# the array into a compact buffer, all stages run there, and the last stage writes back. B is
+# chosen so that the block and its buffers stay in the L2 cache, so a pass over a large array
+# costs one read and one write of memory instead of one per stage; the blocks are distributed
+# over the threads. Passes with few lanes (S small, e.g. the first dimension) run whole slices,
+# on several threads when there are enough slices.
 
 # Below this many complex values per pass, starting tasks costs more than it gains.
 const THREAD_MIN_WORK = 1 << 15
 # Lane blocks are multiples of 8 complex values (a 128-byte cache line of ComplexF64).
 const LANE_ALIGN = 8
+# Complex values per lane-block buffer (2^15 ComplexF64 = 512 KB; two buffers plus the block in L2).
+const BLOCK_BUDGET = 1 << 15
 
-lane_block(S, nt) = LANE_ALIGN * cld(cld(S, nt), LANE_ALIGN)
+# Lane block width: a multiple of LANE_ALIGN, within the cache budget, and small enough that
+# every thread gets a block.
+function lane_block(S, n, nt)
+  Bc = max(LANE_ALIGN, LANE_ALIGN * fld(BLOCK_BUDGET ÷ n, LANE_ALIGN))
+  Bt = LANE_ALIGN * cld(cld(S, nt), LANE_ALIGN)
+  min(Bc, Bt)
+end
+
+use_lanes(S, n, outer, nt) = S >= 2LANE_ALIGN && (S * n > BLOCK_BUDGET || (nt > 1 && outer < nt))
+threaded(S, n, outer, nt) = nt > 1 && S * n * outer >= THREAD_MIN_WORK
 
 function dim_extent(sz, d)
   S = 1; outer = 1
@@ -24,7 +40,9 @@ end
 # work buffer size per thread for dimension d
 function thread_work(sz, d, nt)
   S, outer = dim_extent(sz, d)
-  outer >= nt ? S * sz[d] : lane_block(S, nt) * sz[d]
+  n = sz[d]
+  use_lanes(S, n, outer, nt) ? lane_block(S, n, nt) * n :
+  threaded(S, n, outer, nt) && outer >= nt ? S * n : 0
 end
 
 function parallel_chunks(f, nchunks)
@@ -45,24 +63,12 @@ function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer
   step = 2 * S * n * sizeof(T)
   if k isa FourStep
     run_fourstep!(py, px, k, nt)
-  elseif nt == 1 || S * n * outer < THREAD_MIN_WORK || !(k isa Chain) || (outer < nt && S < 2LANE_ALIGN)
-    pw1 = cptr(p.work1); pw2 = cptr(p.work2)
-    for o in 0:outer-1
-      run!(py + o * step, px + o * step, pw1, pw2, k, S)
-    end
-  elseif outer >= nt
-    parallel_chunks(nt) do c
-      # `local`: an assignment to a name of the enclosing function would share it among tasks
-      local pw1 = cptr(p.tbuf[2c-1]); local pw2 = cptr(p.tbuf[2c])
-      for o in chunk_range(c, nt, outer)
-        run!(py + o * step, px + o * step, pw1, pw2, k, S)
-      end
-    end
-  else
-    B = lane_block(S, nt)
+  elseif k isa Chain && use_lanes(S, n, outer, nt)
+    B = lane_block(S, n, nt)
     nb = cld(S, B)
-    nchunks = min(nt, nb * outer)
+    nchunks = threaded(S, n, outer, nt) ? min(nt, nb * outer) : 1
     parallel_chunks(nchunks) do c
+      # `local`: an assignment to a name of the enclosing function would share it among tasks
       local pw1 = cptr(p.tbuf[2c-1]); local pw2 = cptr(p.tbuf[2c])
       for it in chunk_range(c, nchunks, nb * outer)
         local o, b; o, b = divrem(it, nb)
@@ -70,6 +76,18 @@ function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer
         local off = o * step + i0 * 2 * sizeof(T)
         run_lanes!(py + off, px + off, pw1, pw2, k, S, S, min(B, S - i0))
       end
+    end
+  elseif k isa Chain && threaded(S, n, outer, nt) && outer >= nt
+    parallel_chunks(nt) do c
+      local pw1 = cptr(p.tbuf[2c-1]); local pw2 = cptr(p.tbuf[2c])
+      for o in chunk_range(c, nt, outer)
+        run!(py + o * step, px + o * step, pw1, pw2, k, S)
+      end
+    end
+  else
+    pw1 = cptr(p.work1); pw2 = cptr(p.work2)
+    for o in 0:outer-1
+      run!(py + o * step, px + o * step, pw1, pw2, k, S)
     end
   end
   nothing
@@ -117,7 +135,7 @@ function FourStep{T}(n::Int, σ::Int, nt::Int) where {T}
   k1 = Chain{T}(n1, σ, radices(n1))
   k2 = Chain{T}(n2, σ, radices(n2, n1))
   tw = vec([Complex{T}(cispi(2σ * mod(j1 * k2, n) / n)) for j1 in 0:n1-1, k2 in 0:n2-1])
-  nw = max(lane_block(n1, nt) * n2, n1)
+  nw = max(lane_block(n1, n2, nt) * n2, n1)
   FourStep{T,typeof(k1),typeof(k2)}(n, n1, n2, k1, k2, tw, Vector{Complex{T}}(undef, n),
                                     [Vector{Complex{T}}(undef, nw) for _ in 1:2nt])
 end
@@ -132,7 +150,7 @@ function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T
   GC.@preserve P begin
     pa = cptr(P.buf)
     # 1. length-n2 DFTs over lane blocks of x → buf
-    B = lane_block(n1, nt)
+    B = lane_block(n1, n2, nt)
     nb = cld(n1, B)
     parallel_chunks(min(nt, nb)) do c
       local pw1 = cptr(P.tbuf[2c-1]); local pw2 = cptr(P.tbuf[2c])

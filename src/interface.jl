@@ -40,7 +40,7 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Thre
   end
   kernels = Tuple(dim_kernel(d) for d in reg)
   nwork = maximum((prod(sz[1:d]) for d in reg); init = 0)
-  ntwork = nt == 1 ? 0 : maximum((thread_work(sz, d, nt) for d in reg); init = 0)
+  ntwork = maximum((thread_work(sz, d, nt) for d in reg); init = 0)
   tbuf = [Vector{Complex{T}}(undef, ntwork) for _ in 1:2nt]
   FFTLPlan{T,N,length(reg),typeof(kernels)}(sz, reg, σ, kernels, Vector{Complex{T}}(undef, nwork),
                                             Vector{Complex{T}}(undef, nwork), nt, tbuf)
