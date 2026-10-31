@@ -151,27 +151,31 @@ function Bluestein{T}(n::Int, σ::Int) where {T}
   Bluestein{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, zeros(Complex{T}, M), w1, w2)
 end
 
-# Lane by lane: gather, convolve, scatter.
-function run!(py::Ptr{T}, px::Ptr{T}, ::Ptr{T}, ::Ptr{T}, P::Bluestein{T}, S::Int) where {T}
+# Lane by lane: gather, convolve, scatter. Element j of lane i at px + i + Sx·j, py + i + Sy·j.
+# Uses the plan's own buffers, so one Bluestein kernel runs on one thread at a time.
+function run_lanes!(py::Ptr{T}, px::Ptr{T}, ::Ptr{T}, ::Ptr{T}, P::Bluestein{T}, Sx::Int, Sy::Int, B::Int) where {T}
   n = P.n; buf = P.buf; M = length(buf)
   cx = Ptr{Complex{T}}(px); cy = Ptr{Complex{T}}(py)
   GC.@preserve P begin
     pb = cptr(buf); pw1 = cptr(P.work1); pw2 = cptr(P.work2)
-    for i in 1:S
+    for i in 1:B
       @inbounds for j in 1:n
-        buf[j] = unsafe_load(cx, i + S * (j - 1)) * P.chirp[j]
+        buf[j] = unsafe_load(cx, i + Sx * (j - 1)) * P.chirp[j]
       end
       fill!(view(buf, n+1:M), zero(Complex{T}))
       run!(pb, pb, pw1, pw2, P.fwd, 1)
       buf .*= P.kernel
       run!(pb, pb, pw1, pw2, P.bwd, 1)
       @inbounds for k in 1:n
-        unsafe_store!(cy, buf[k] * P.chirp[k], i + S * (k - 1))
+        unsafe_store!(cy, buf[k] * P.chirp[k], i + Sy * (k - 1))
       end
     end
   end
   nothing
 end
+
+run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Bluestein{T}, S::Int) where {T} =
+  run_lanes!(py, px, pw1, pw2, P, S, S, S)
 
 kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T} =
   smooth(n) ? Chain{T}(n, σ, radices(n, S)) : Bluestein{T}(n, σ)

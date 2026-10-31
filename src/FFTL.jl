@@ -20,5 +20,6 @@ include("factor.jl")
 include("plan.jl")
 include("threads.jl")
 include("interface.jl")
+include("pass.jl")
 
 end

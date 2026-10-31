@@ -99,6 +99,32 @@ using SIMD: Vec
     end
   end
 
+  @testset "passes on strided views, $T" for T in (Float64, Float32)
+    # views of a padded array as an NFFT uses them: interior boxes and pruned boxes
+    G0 = randn(Complex{T}, 40, 36, 30)
+    boxes = [(3:34, 2:33, 2:25), (3:6, 2:33, 2:25), (3:34, 5:9, 2:25), (1:40, 1:36, 1:30),
+             (2:38, 2:36, 3:3), (5:40, 1:36, 4:28)]
+    for b in boxes, d in 1:3, sign in (-1, 1), nt in (1, 3)
+      G = copy(G0)
+      v = view(G, b...)
+      ref = mapslices(u -> dft(ComplexF64.(u), sign), Array(v); dims = d)
+      p = FFTL.plan_pass(v, d; sign, threads = nt)
+      FFTL.apply!(p, v)
+      @test relerr(v, ref) < 10tol(T)
+      mask = trues(size(G)); mask[b...] .= false
+      @test G[mask] == G0[mask]
+    end
+    # out of place, Bluestein length along d, 2D
+    H0 = randn(Complex{T}, 45, 41); H1 = similar(H0)
+    for d in 1:2
+      v = view(H0, 2:44, 3:39); w = view(H1, 2:44, 3:39)
+      p = FFTL.plan_pass(v, d)
+      mul!(w, p, v)
+      @test relerr(w, mapslices(u -> dft(ComplexF64.(u)), Array(v); dims = d)) < 10tol(T)
+    end
+    @test_throws DimensionMismatch FFTL.apply!(FFTL.plan_pass(view(G0, 1:8, 1:8, 1:2), 2), view(G0, 1:8, 1:9, 1:2))
+  end
+
   @testset "plans: in place, out of place, inv" begin
     for n in [1, 7, 64, 1000, 1009]
       x = randn(ComplexF64, n)
