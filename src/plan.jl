@@ -16,7 +16,7 @@ struct Chain{T,Rs,σ,K} <: Kernel{T}
   tw1::Vector{Complex{T}}             # first stage: w^(kp) at (k-1)m + p
 end
 
-function Chain{T}(n::Int, σ::Int, rs = radices(n)) where {T}
+function Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T}
   prod(rs; init = 1) == n || throw(ArgumentError("radices $rs do not multiply to $n"))
   tw = Vector{Complex{T}}[]
   L = n
@@ -173,4 +173,5 @@ function run!(py::Ptr{T}, px::Ptr{T}, ::Ptr{T}, ::Ptr{T}, P::Bluestein{T}, S::In
   nothing
 end
 
-kernel(::Type{T}, n::Int, σ::Int) where {T} = smooth(n) ? Chain{T}(n, σ) : Bluestein{T}(n, σ)
+kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T} =
+  smooth(n) ? Chain{T}(n, σ, radices(n, S)) : Bluestein{T}(n, σ)

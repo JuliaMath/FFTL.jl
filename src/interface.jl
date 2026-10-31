@@ -26,9 +26,11 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int) where {T<:FFTLFloat,N}
   reg = Tuple(sort(unique(collect(Int, region))))
   all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
   all(>=(1), sz) || throw(ArgumentError("array size must be positive, got $sz"))
-  # dimensions of the same length share the kernel
-  cache = Dict{Int,Kernel{T}}()
-  kernels = Tuple(get!(() -> kernel(T, sz[d], σ), cache, sz[d]) for d in reg)
+  # dimensions with the same length and stride class share the kernel
+  cache = Dict{Tuple{Int,Bool},Kernel{T}}()
+  stride(d) = prod(sz[1:d-1]; init = 1)
+  kernels = Tuple(get!(() -> kernel(T, sz[d], σ, stride(d)), cache, (sz[d], stride(d) > LARGE_STRIDE))
+                  for d in reg)
   nwork = maximum((prod(sz[1:d]) for d in reg); init = 0)
   FFTLPlan{T,N,length(reg),typeof(kernels)}(sz, reg, σ, kernels,
                                             Vector{Complex{T}}(undef, nwork), Vector{Complex{T}}(undef, nwork))
@@ -56,9 +58,15 @@ check_size(p, x) = size(x) == p.sz ||
 function apply_dims!(y::Array{Complex{T}}, x::Array{Complex{T}}, p::FFTLPlan{T}, ks::Tuple, ds::Tuple) where {T}
   isempty(ks) && return y
   k, d = first(ks), first(ds)
-  S = prod(p.sz[1:d-1]; init = 1)
+  # loops, not prod(p.sz[1:d-1]): a tuple sliced by a run-time range has an unknown length
+  S = 1; outer = 1
+  for i in 1:d-1
+    S *= p.sz[i]
+  end
+  for i in d+1:length(p.sz)
+    outer *= p.sz[i]
+  end
   n = p.sz[d]
-  outer = prod(p.sz[d+1:end]; init = 1)
   GC.@preserve x y p begin
     px = cptr(x); py = cptr(y); pw1 = cptr(p.work1); pw2 = cptr(p.work2)
     step = 2 * S * n * sizeof(T)
