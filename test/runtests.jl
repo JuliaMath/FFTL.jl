@@ -6,6 +6,15 @@ function dft(x, σ = -1)
   [sum(x[j+1] * cispi(2σ * mod(j * k, n) / n) for j in 0:n-1) for k in 0:n-1]
 end
 
+# Direct DFT along the dimensions in `region`, one after the other.
+function dftn(x, region, σ = -1)
+  y = ComplexF64.(x)
+  for d in region
+    y = mapslices(v -> dft(v, σ), y; dims = d)
+  end
+  y
+end
+
 relerr(a, b) = norm(a - b, Inf) / norm(b, Inf)
 tol(::Type{Float64}) = 1e-13
 tol(::Type{Float32}) = 2e-6
@@ -54,6 +63,25 @@ using SIMD: Vec
       @test relerr(FFTL.ifft(y), x) < 10tol(T)
       @test sum(abs2, y) / n ≈ sum(abs2, x) rtol = 10tol(T)
     end
+  end
+
+  @testset "multidimensional, $T" for T in (Float64, Float32)
+    cases = [((8, 12), (1, 2)), ((16, 16), (1, 2)), ((17, 6), (1, 2)), ((5, 37), (1, 2)),
+             ((3, 8), (2,)), ((3, 8), (1, 2)), ((12, 7), (1,)), ((1, 9), (1, 2)),
+             ((4, 6, 10), (1, 2, 3)), ((3, 5, 7), (1, 2, 3)), ((6, 4, 5), (1, 3)), ((6, 4, 5), (2,)),
+             ((16, 9, 2, 3), (1, 2, 3, 4))]
+    for (sz, region) in cases
+      x = randn(Complex{T}, sz)
+      ref = dftn(x, region)
+      @test relerr(FFTL.fft(x, region), ref) < 10tol(T)
+      @test relerr(FFTL.bfft(x, region), dftn(x, region, 1)) < 10tol(T)
+      p = FFTL.plan_fft(x, region)
+      z = copy(x); mul!(z, p, z)
+      @test relerr(z, ref) < 10tol(T)
+      @test relerr(inv(p) * (p * x), x) < 10tol(T)
+    end
+    x = randn(Complex{T}, 64, 48, 20)
+    @test relerr(FFTL.ifft(FFTL.fft(x)), x) < 10tol(T)
   end
 
   @testset "plans: in place, out of place, inv" begin
