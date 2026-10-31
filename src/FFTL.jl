@@ -18,6 +18,7 @@ include("codegen.jl")
 include("kernels.jl")
 include("factor.jl")
 include("plan.jl")
+include("threads.jl")
 include("interface.jl")
 
 end

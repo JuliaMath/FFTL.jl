@@ -18,22 +18,32 @@ mutable struct FFTLPlan{T<:FFTLFloat,N,D,Ks<:Tuple} <: AbstractFFTs.Plan{Complex
   kernels::Ks
   work1::Vector{Complex{T}}
   work2::Vector{Complex{T}}
+  nthreads::Int
+  tbuf::Vector{Vector{Complex{T}}}     # two work buffers per thread
   pinv::AbstractFFTs.Plan{Complex{T}}
-  FFTLPlan{T,N,D,Ks}(sz, region, σ, kernels, w1, w2) where {T,N,D,Ks} = new{T,N,D,Ks}(sz, region, σ, kernels, w1, w2)
+  FFTLPlan{T,N,D,Ks}(sz, region, σ, kernels, w1, w2, nt, tbuf) where {T,N,D,Ks} =
+    new{T,N,D,Ks}(sz, region, σ, kernels, w1, w2, nt, tbuf)
 end
 
-function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int) where {T<:FFTLFloat,N}
+function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = Tuple(sort(unique(collect(Int, region))))
   all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
   all(>=(1), sz) || throw(ArgumentError("array size must be positive, got $sz"))
-  # dimensions with the same length and stride class share the kernel
+  nt = max(1, Int(threads))
+  # dimensions with the same length and stride class share the kernel; a single long contiguous
+  # transform on several threads uses the four-step algorithm
   cache = Dict{Tuple{Int,Bool},Kernel{T}}()
-  stride(d) = prod(sz[1:d-1]; init = 1)
-  kernels = Tuple(get!(() -> kernel(T, sz[d], σ, stride(d)), cache, (sz[d], stride(d) > LARGE_STRIDE))
-                  for d in reg)
+  function dim_kernel(d)
+    S, outer = dim_extent(sz, d)
+    S == 1 && outer == 1 && use_fourstep(sz[d], nt) && return FourStep{T}(sz[d], σ, nt)
+    get!(() -> kernel(T, sz[d], σ, S), cache, (sz[d], S > LARGE_STRIDE))
+  end
+  kernels = Tuple(dim_kernel(d) for d in reg)
   nwork = maximum((prod(sz[1:d]) for d in reg); init = 0)
-  FFTLPlan{T,N,length(reg),typeof(kernels)}(sz, reg, σ, kernels,
-                                            Vector{Complex{T}}(undef, nwork), Vector{Complex{T}}(undef, nwork))
+  ntwork = nt == 1 ? 0 : maximum((thread_work(sz, d, nt) for d in reg); init = 0)
+  tbuf = [Vector{Complex{T}}(undef, ntwork) for _ in 1:2nt]
+  FFTLPlan{T,N,length(reg),typeof(kernels)}(sz, reg, σ, kernels, Vector{Complex{T}}(undef, nwork),
+                                            Vector{Complex{T}}(undef, nwork), nt, tbuf)
 end
 
 Base.size(p::FFTLPlan) = p.sz
@@ -47,6 +57,7 @@ function Base.show(io::IO, p::FFTLPlan{T}) where {T}
     print(io, "\n  dim $d: ")
     k isa Chain && print(io, "radices ", radix_tuple(k))
     k isa Bluestein && print(io, "Bluestein, convolution length ", k.fwd.n)
+    k isa FourStep && print(io, "four-step $(k.n1) × $(k.n2), radices ", radix_tuple(k.k1), " and ", radix_tuple(k.k2))
   end
 end
 radix_tuple(::Chain{T,Rs}) where {T,Rs} = Rs
@@ -67,13 +78,7 @@ function apply_dims!(y::Array{Complex{T}}, x::Array{Complex{T}}, p::FFTLPlan{T},
     outer *= p.sz[i]
   end
   n = p.sz[d]
-  GC.@preserve x y p begin
-    px = cptr(x); py = cptr(y); pw1 = cptr(p.work1); pw2 = cptr(p.work2)
-    step = 2 * S * n * sizeof(T)
-    for o in 0:outer-1
-      run!(py + o * step, px + o * step, pw1, pw2, k, S)
-    end
-  end
+  GC.@preserve x y p run_dim!(cptr(y), cptr(x), p, k, S, n, outer)
   apply_dims!(y, y, p, Base.tail(ks), Base.tail(ds))
 end
 
@@ -92,19 +97,20 @@ Base.:*(p::FFTLPlan{T,N}, x::AbstractArray{<:Number,N}) where {T,N} =
   mul!(Array{Complex{T},N}(undef, p.sz), p, convert(Array{Complex{T},N}, x))
 
 AbstractFFTs.plan_inv(p::FFTLPlan{T}) where {T} =
-  AbstractFFTs.ScaledPlan(FFTLPlan{T}(p.sz, p.region, -p.σ), AbstractFFTs.normalization(T, p.sz, p.region))
+  AbstractFFTs.ScaledPlan(FFTLPlan{T}(p.sz, p.region, -p.σ; threads = p.nthreads),
+                          AbstractFFTs.normalization(T, p.sz, p.region))
 
 """
-    plan_fft(x::AbstractArray, region = 1:ndims(x)) / plan_bfft / plan_ifft
+    plan_fft(x::AbstractArray, region = 1:ndims(x); threads = Threads.nthreads()) / plan_bfft / plan_ifft
 
 Plans for the forward, unnormalised backward and normalised inverse DFT along the dimensions
 `region` of arrays like `x` (Float32 or Float64 complex; other element types are converted to
-ComplexF64).
+ComplexF64). Transforms large enough to profit run on up to `threads` threads.
 """
-plan_fft(x::AbstractArray, region = 1:ndims(x)) = FFTLPlan{plan_type(x)}(size(x), region, -1)
-plan_bfft(x::AbstractArray, region = 1:ndims(x)) = FFTLPlan{plan_type(x)}(size(x), region, 1)
-plan_ifft(x::AbstractArray, region = 1:ndims(x)) =
-  AbstractFFTs.ScaledPlan(plan_bfft(x, region), AbstractFFTs.normalization(plan_type(x), size(x), region))
+plan_fft(x::AbstractArray, region = 1:ndims(x); kw...) = FFTLPlan{plan_type(x)}(size(x), region, -1; kw...)
+plan_bfft(x::AbstractArray, region = 1:ndims(x); kw...) = FFTLPlan{plan_type(x)}(size(x), region, 1; kw...)
+plan_ifft(x::AbstractArray, region = 1:ndims(x); kw...) =
+  AbstractFFTs.ScaledPlan(plan_bfft(x, region; kw...), AbstractFFTs.normalization(plan_type(x), size(x), region))
 
 plan_type(::AbstractArray{Complex{T}}) where {T<:FFTLFloat} = T
 plan_type(::AbstractArray{T}) where {T<:FFTLFloat} = T

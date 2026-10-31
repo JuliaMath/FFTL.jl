@@ -84,6 +84,21 @@ using SIMD: Vec
     @test relerr(FFTL.ifft(FFTL.fft(x)), x) < 10tol(T)
   end
 
+  @testset "threads, $T" for T in (Float64, Float32)
+    # sizes above the threading threshold: slices (dimension 1 of a 2D array), lane blocks
+    # (last dimension), odd strides (last block with fewer lanes than the vector width)
+    for sz in [(256, 256), (64, 64, 64), (33, 1024), (100, 100, 10), (8, 4096), (1024, 37)]
+      x = randn(Complex{T}, sz)
+      ref = FFTL.plan_fft(x; threads = 1) * x
+      for nt in (2, 3, 4)
+        p = FFTL.plan_fft(x; threads = nt)
+        @test relerr(p * x, ref) < tol(T)
+        z = copy(x); mul!(z, p, z)
+        @test relerr(z, ref) < tol(T)
+      end
+    end
+  end
+
   @testset "plans: in place, out of place, inv" begin
     for n in [1, 7, 64, 1000, 1009]
       x = randn(ComplexF64, n)

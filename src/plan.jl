@@ -175,3 +175,63 @@ end
 
 kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T} =
   smooth(n) ? Chain{T}(n, σ, radices(n, S)) : Bluestein{T}(n, σ)
+
+"""
+    run_lanes!(py, px, pw1, pw2, P::Chain, Sx, Sy, B)
+
+Transform a block of B lanes; element j of lane i at `px + i + Sx·j` and `py + i + Sy·j`
+(py may equal px). The work buffers hold B·n complex values each.
+"""
+@generated function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K},
+                               Sx::Int, Sy::Int, B::Int) where {T,Rs,σ,K}
+  function body(V)
+    ex = Any[:(L = P.n), :(s0 = 1)]
+    src, srcS = :px, :Sx
+    for i in 1:K
+      r = Rs[i]
+      last = i == K
+      dst, dstS = last ? (:py, :Sy) : (isodd(i) ? :pw1 : :pw2, :B)
+      if last
+        push!(ex, :(stage_last_lanes!($dst, $src, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
+      else
+        push!(ex, :(m = L ÷ $r),
+              :(stage_lanes!($dst, $src, cptr(P.tw[$i]), m, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)),
+              :(L = m), :(s0 *= $r))
+      end
+      src, srcS = dst, dstS
+    end
+    ex
+  end
+  K == 0 && return :(lane_copy!(py, px, Sy, Sx, B, 1); nothing)
+  VF, VH = full_vec(T), half_vec(T)
+  if K == 1
+    # a single stage cannot run in place: go through pw1
+    r = Rs[1]
+    single(V) = quote
+      stage_last_lanes!(pw1, px, 1, Sx, B, B, Val($r), Val($σ), $V)
+      lane_copy!(py, pw1, Sy, B, B, P.n)
+    end
+    return quote
+      GC.@preserve P (B % $(ncomplex(VF)) == 0 ? $(single(VF)) : $(single(VH)))
+      nothing
+    end
+  end
+  quote
+    GC.@preserve P begin
+      if B % $(ncomplex(VF)) == 0
+        $(body(VF)...)
+      else
+        $(body(VH)...)
+      end
+    end
+    nothing
+  end
+end
+
+# y[i + Sy·j] = x[i + Sx·j] for B lanes and n elements
+function lane_copy!(py::Ptr{T}, px::Ptr{T}, Sy::Int, Sx::Int, B::Int, n::Int) where {T}
+  cy = Ptr{Complex{T}}(py); cx = Ptr{Complex{T}}(px)
+  for j in 0:n-1
+    unsafe_copyto!(cy + Sy * j * sizeof(Complex{T}), cx + Sx * j * sizeof(Complex{T}), B)
+  end
+end
