@@ -1,0 +1,94 @@
+# Stockham stages. A stage of radix R with stride s and m = L/R (L the current length, s·L = n):
+#   a_j = x[q + s(p + jm)],   y[q + s(Rp + k)] = (DFT_R a)_k · w^(kp),   w = exp(σ·2πi/L),
+# for p = 0…m-1, q = 0…s-1. Twiddle tables are stored per stage, either indexed (R-1)p + k
+# (broadcast over q) or, for the first stage of a Float32 plan, (k-1)m + p (contiguous in p).
+# Indices below are zero-based offsets in units of complex values.
+
+@inline cptr(x::Vector{Complex{T}}) where {T} = Ptr{T}(pointer(x))
+
+# General stage, vectorised over q: s must be a multiple of the complex lanes of VT.
+@generated function stage!(y::Vector{Complex{T}}, x::Vector{Complex{T}}, tw::Vector{Complex{T}},
+                           m::Int, s::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
+  stmts, a, X = codelet(R, σ)
+  C = ncomplex(VT); B = 2sizeof(T)
+  loads = [:($(a[j]) = vload(VT, px + (q + s * (p + $(j - 1) * m)) * $B)) for j in 1:R]
+  twl = [:($(Symbol("w", k)) = cconst(VT, unsafe_load(pt, $(2(R - 1)) * p + $(2k - 1)),
+                                       unsafe_load(pt, $(2(R - 1)) * p + $(2k)))) for k in 1:R-1]
+  stores = Any[:(vstore($(X[1]), py + o * $B))]
+  for k in 1:R-1
+    push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (o + $k * s) * $B)))
+  end
+  quote
+    px = cptr(x); py = cptr(y); pt = cptr(tw)
+    GC.@preserve x y tw for p in 0:m-1
+      $(twl...)
+      for q in 0:$C:s-1
+        $(loads...)
+        $(stmts...)
+        o = q + s * $R * p
+        $(stores...)
+      end
+    end
+    nothing
+  end
+end
+
+# Last stage (m = 1): all twiddles are 1.
+@generated function stage_last!(y::Vector{Complex{T}}, x::Vector{Complex{T}}, s::Int,
+                                ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
+  stmts, a, X = codelet(R, σ)
+  C = ncomplex(VT); B = 2sizeof(T)
+  loads = [:($(a[j]) = vload(VT, px + (q + s * $(j - 1)) * $B)) for j in 1:R]
+  stores = [:(vstore($(X[k+1]), py + (q + $k * s) * $B)) for k in 0:R-1]
+  quote
+    px = cptr(x); py = cptr(y)
+    GC.@preserve x y for q in 0:$C:s-1
+      $(loads...)
+      $(stmts...)
+      $(stores...)
+    end
+    nothing
+  end
+end
+
+# First stage of a Float32 plan (s = 1, m even): butterflies p and p+1 share a register. The two
+# outputs X_k, X_{k+1} of both butterflies are regrouped with 64-bit shuffles so that each store
+# writes two consecutive outputs of one butterfly.
+@generated function stage_first32!(y::Vector{ComplexF32}, x::Vector{ComplexF32}, tw::Vector{ComplexF32},
+                                   m::Int, ::Val{R}, ::Val{σ}) where {R,σ}
+  stmts, a, X = codelet(R, σ)
+  loads = [:($(a[j]) = vload(VT, px + (p + $(j - 1) * m) * 8)) for j in 1:R]
+  outs = Any[X[1]]
+  twm = Any[]
+  for k in 1:R-1
+    b = Symbol("b", k)
+    push!(twm, :($b = ccmul($(X[k+1]), vload(VT, pt + ($(k - 1) * m + p) * 8))))
+    push!(outs, b)
+  end
+  st = Any[]
+  k = 0
+  while k < R
+    if k + 1 < R
+      lo, hi = outs[k+1], outs[k+2]
+      push!(st, :(vstore(shufflevector($lo, $hi, Val((0, 1, 4, 5))), py + ($R * p + $k) * 8)))
+      push!(st, :(vstore(shufflevector($lo, $hi, Val((2, 3, 6, 7))), py + ($R * (p + 1) + $k) * 8)))
+      k += 2
+    else
+      o = outs[k+1]
+      push!(st, :(vstore(shufflevector($o, Val((0, 1))), py + ($R * p + $k) * 8)))
+      push!(st, :(vstore(shufflevector($o, Val((2, 3))), py + ($R * (p + 1) + $k) * 8)))
+      k += 1
+    end
+  end
+  quote
+    VT = Vec{4,Float32}
+    px = cptr(x); py = cptr(y); pt = cptr(tw)
+    GC.@preserve x y tw for p in 0:2:m-1
+      $(loads...)
+      $(stmts...)
+      $(twm...)
+      $(st...)
+    end
+    nothing
+  end
+end
