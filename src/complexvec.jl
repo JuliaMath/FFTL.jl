@@ -105,5 +105,10 @@ end
 @generated cconst(::Type{Vec{N,T}}, re, im) where {N,T} =
   :(Vec{$N,$T}(($([isodd(i) ? :($T(re)) : :($T(im)) for i in 1:N]...),)))
 
+# the complex value at p, repeated over all complex lanes (one load and a broadcast)
+@generated function cbroadcast(::Type{Vec{N,T}}, p::Ptr{T}) where {N,T}
+  :(shufflevector(vload(Vec{2,T}, p), Val($(Tuple(isodd(i) ? 0 : 1 for i in 1:N)))))
+end
+
 # number of complex values per vector
 ncomplex(::Type{Vec{N,T}}) where {N,T} = N ÷ 2

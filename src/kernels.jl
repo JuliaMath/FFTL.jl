@@ -16,8 +16,7 @@
   stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); B = 2sizeof(T)
   loads = [:($(a[j]) = vload(VT, px + (q + s * (p + $(j - 1) * m)) * $B)) for j in 1:R]
-  twl = [:($(Symbol("w", k)) = cconst(VT, unsafe_load(pt, $(2(R - 1)) * p + $(2k - 1)),
-                                       unsafe_load(pt, $(2(R - 1)) * p + $(2k)))) for k in 1:R-1]
+  twl = [:($(Symbol("w", k)) = cbroadcast(VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
   stores = Any[:(vstore($(X[1]), py + o * $B))]
   for k in 1:R-1
     push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (o + $k * s) * $B)))
@@ -109,8 +108,7 @@ end
   stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); Bt = 2sizeof(T)
   loads = [:($(a[j]) = vload(VT, px + (i + Sx * (q0 + s0 * (p + $(j - 1) * m))) * $Bt)) for j in 1:R]
-  twl = [:($(Symbol("w", k)) = cconst(VT, unsafe_load(pt, $(2(R - 1)) * p + $(2k - 1)),
-                                       unsafe_load(pt, $(2(R - 1)) * p + $(2k)))) for k in 1:R-1]
+  twl = [:($(Symbol("w", k)) = cbroadcast(VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
   stores = Any[:(vstore($(X[1]), py + (i + Sy * o) * $Bt))]
   for k in 1:R-1
     push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (i + Sy * (o + $k * s0)) * $Bt)))
