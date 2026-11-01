@@ -33,13 +33,13 @@ end
 # Stage calls of a chain from `src` through `dsts` (one destination per stage). `base` is a
 # number of complex values known to divide S (1 if nothing is known); stage i has stride
 # S·(R_1⋯R_(i-1)) and takes the widest vector type whose complex count divides base·R_1⋯R_(i-1).
-# With `single` (S = 1) a first stage with m even pairs butterflies in vectors of two complex
-# values.
+# With `single` (S = 1) the first stage groups 2 or 4 butterflies in one vector when m allows.
 function chain_body(T, Rs, σ, src, dsts, base, single)
   K = length(Rs)
   n = prod(Rs; init = 1)
   ladder = vec_ladder(T)
-  pair = findfirst(V -> ncomplex(V) == 2, ladder)
+  # vector type of a grouped first stage: the widest with 2 or 4 complex values dividing m
+  group = findfirst(V -> ncomplex(V) in (2, 4) && (n ÷ Rs[1]) % ncomplex(V) == 0, ladder)
   body = Any[:(L = P.n), :(s = S)]
   sst = 1
   for i in 1:K
@@ -48,8 +48,8 @@ function chain_body(T, Rs, σ, src, dsts, base, single)
     V = ladder[findfirst(V -> (base * sst) % ncomplex(V) == 0, ladder)]
     if i == K
       push!(body, :(stage_last!($dst, $src, s, Val($r), Val($σ), $V)))
-    elseif single && i == 1 && pair !== nothing && ncomplex(V) == 1 && (n ÷ r) % 2 == 0
-      push!(body, :(m = L ÷ $r), :(stage_first_pair!($dst, $src, cptr(P.tw1), m, Val($r), Val($σ), $(ladder[pair]))),
+    elseif single && i == 1 && group !== nothing && ncomplex(V) == 1
+      push!(body, :(m = L ÷ $r), :(stage_first_group!($dst, $src, cptr(P.tw1), m, Val($r), Val($σ), $(ladder[group]))),
             :(L = m), :(s *= $r))
     else
       push!(body, :(m = L ÷ $r), :(stage!($dst, $src, cptr(P.tw[$i]), m, s, Val($r), Val($σ), $V)),

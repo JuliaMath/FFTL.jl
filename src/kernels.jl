@@ -53,14 +53,15 @@ end
   end
 end
 
-# First stage with s = 1 and m even, for vectors of two complex values (VT = Vec{4,T}):
-# butterflies p and p+1 share a register. The outputs X_k, X_{k+1} of both butterflies are
-# regrouped by shuffles of the complex halves so that each store writes two consecutive outputs
-# of one butterfly.
-@generated function stage_first_pair!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T},
-                                      m::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
+# First stage with s = 1 for vectors of C = 2 or 4 complex values (m a multiple of C):
+# butterflies p, …, p+C-1 share a register. Groups of C outputs X_k…X_(k+C-1) are transposed
+# (complex value l of each output into one vector) so that each store writes C consecutive
+# outputs of one butterfly; remaining outputs (R not a multiple of C) are stored one complex
+# value at a time.
+@generated function stage_first_group!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T},
+                                       m::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
   stmts, a, X = codelet(R, σ)
-  CB = 2sizeof(T)
+  C = ncomplex(VT); N = 2C; CB = 2sizeof(T)
   loads = [:($(a[j]) = vload(VT, px + (p + $(j - 1) * m) * $CB)) for j in 1:R]
   outs = Any[X[1]]
   twm = Any[]
@@ -69,23 +70,27 @@ end
     push!(twm, :($b = ccmul($(X[k+1]), vload(VT, pt + ($(k - 1) * m + p) * $CB))))
     push!(outs, b)
   end
+  # complex value l of vectors u and v as one vector of two complex values
+  pick(u, v, l) = :(shufflevector($u, $v, Val(($(2l), $(2l + 1), $(N + 2l), $(N + 2l + 1)))))
   st = Any[]
   k = 0
-  while k < R
-    if k + 1 < R
-      lo, hi = outs[k+1], outs[k+2]
-      push!(st, :(vstore(shufflevector($lo, $hi, Val((0, 1, 4, 5))), py + ($R * p + $k) * $CB)))
-      push!(st, :(vstore(shufflevector($lo, $hi, Val((2, 3, 6, 7))), py + ($R * (p + 1) + $k) * $CB)))
-      k += 2
-    else
-      o = outs[k+1]
-      push!(st, :(vstore(shufflevector($o, Val((0, 1))), py + ($R * p + $k) * $CB)))
-      push!(st, :(vstore(shufflevector($o, Val((2, 3))), py + ($R * (p + 1) + $k) * $CB)))
-      k += 1
+  while k + C <= R
+    for l in 0:C-1
+      z = C == 2 ? pick(outs[k+1], outs[k+2], l) :
+          :(shufflevector($(pick(outs[k+1], outs[k+2], l)), $(pick(outs[k+3], outs[k+4], l)),
+                          Val((0, 1, 2, 3, 4, 5, 6, 7))))
+      push!(st, :(vstore($z, py + ($R * (p + $l) + $k) * $CB)))
     end
+    k += C
+  end
+  while k < R
+    for l in 0:C-1
+      push!(st, :(vstore(shufflevector($(outs[k+1]), Val(($(2l), $(2l + 1)))), py + ($R * (p + $l) + $k) * $CB)))
+    end
+    k += 1
   end
   quote
-    for p in 0:2:m-1
+    for p in 0:$C:m-1
       $(loads...)
       $(stmts...)
       $(twm...)
