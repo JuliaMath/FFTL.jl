@@ -75,8 +75,10 @@ stage_first_group!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, ::Val{R}, ::Val{�
 
 @generated function stage_first_group!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, plo::Int, phi::Int,
                                        ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+  C = ncomplex(VT)
+  C in (2, 4) || error("the grouped first stage needs 2 or 4 complex values per vector")
   stmts, a, X = codelet(R, σ, zin)
-  C = ncomplex(VT); N = 2C; CB = 2sizeof(T)
+  N = 2C; CB = 2sizeof(T)
   loads = [:($(a[j]) = vload(VT, px + (p + $(j - 1) * m) * $CB)) for j in 1:R if !zero_input(zin, j)]
   outs = Any[X[1]]
   twm = Any[]
