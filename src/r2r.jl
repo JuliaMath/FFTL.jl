@@ -45,41 +45,51 @@ struct R2RLine{T,K}
   tw2::Vector{Complex{T}}
 end
 
-function R2RLine{T}(kind::R2RKind, n::Int) where {T}
+# exp(iπ(a j + b)/d) for j = 0…m-1
+function cis_table(::Type{T}, m::Int, a::Int, b::Int, d::Int) where {T}
+  t = Vector{Complex{T}}(undef, m)
+  for j in 0:m-1
+    t[j+1] = Complex{T}(cispi((a * j + b) / d))
+  end
+  t
+end
+
+# Inner kernel of the line for run-time plans (C = RChain): one of these types
+const RInner{T} = Union{RealLine{T,RKern{T}},RChain{T},RBluestein{T}}
+
+function R2RLine{T}(kind::R2RKind, n::Int, ::Type{C} = Chain) where {T,C}
   n >= 1 || throw(ArgumentError("length must be positive"))
   kind == REDFT00 && n < 2 && throw(ArgumentError("REDFT00 needs length ≥ 2"))
   base = kind in (RODFT10,) ? REDFT10 : kind == RODFT01 ? REDFT01 : kind == RODFT11 ? REDFT11 : kind
   tw = Complex{T}[]; tw2 = Complex{T}[]
   if base == REDFT10
-    inner = RealLine{T}(n, -1)
-    tw = [Complex{T}(cispi(-k / (2n))) for k in 0:n÷2]
+    inner = RealLine{T}(n, -1, C)
+    tw = cis_table(T, n ÷ 2 + 1, -1, 0, 2n)
   elseif base == REDFT01
-    inner = RealLine{T}(n, 1)
-    tw = [Complex{T}(cispi(k / (2n))) for k in 0:n÷2]
+    inner = RealLine{T}(n, 1, C)
+    tw = cis_table(T, n ÷ 2 + 1, 1, 0, 2n)
   elseif base == REDFT11
     if iseven(n)
-      inner = kernel(T, n ÷ 2, 1)
-      tw = [Complex{T}(cispi(j / n)) for j in 0:n÷2-1]
-      tw2 = [Complex{T}(cispi((4m + 1) / (4n))) for m in 0:n÷2-1]
+      inner = ckernel(T, n ÷ 2, 1, C)
+      tw = cis_table(T, n ÷ 2, 1, 0, n)
+      tw2 = cis_table(T, n ÷ 2, 4, 1, 4n)
     else
-      inner = kernel(T, 2n, -1)
-      tw = [Complex{T}(cispi(-j / (2n))) for j in 0:n-1]
-      tw2 = [Complex{T}(cispi(-(2k + 1) / (4n))) for k in 0:n-1]
+      inner = ckernel(T, 2n, -1, C)
+      tw = cis_table(T, n, -1, 0, 2n)
+      tw2 = cis_table(T, n, -2, -1, 4n)
     end
   elseif base == REDFT00
-    N = n - 1
-    inner = RealLine{T}(N, -1)
-    tw = [Complex{T}(cospi(j / N), sinpi(j / N)) for j in 0:N-1]
+    inner = RealLine{T}(n - 1, -1, C)
+    tw = cis_table(T, n - 1, 1, 0, n - 1)
   elseif base == RODFT00
-    N = n + 1
-    inner = RealLine{T}(N, -1)
-    tw = [Complex{T}(cospi(j / N), sinpi(j / N)) for j in 0:N-1]
+    inner = RealLine{T}(n + 1, -1, C)
+    tw = cis_table(T, n + 1, 1, 0, n + 1)
   elseif base == HC2R
-    inner = RealLine{T}(n, 1)
+    inner = RealLine{T}(n, 1, C)
   else # DHT, R2HC
-    inner = RealLine{T}(n, -1)
+    inner = RealLine{T}(n, -1, C)
   end
-  R2RLine{T,typeof(inner)}(kind, n, inner, tw, tw2)
+  R2RLine{T,C === RChain ? RInner{T} : typeof(inner)}(kind, n, inner, tw, tw2)
 end
 
 """
@@ -136,7 +146,7 @@ function dct2!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
   @inbounds for j in 0:n÷2-1
     v = x[2j+2]; r[n-j] = dst ? -v : v
   end
-  r2c!(c, r, K.inner, B)
+  r2c!(c, r, K.inner::RealLine, B)
   @inbounds for k in 0:n÷2
     u = K.tw[k+1] * c[k+1]
     y[(dst ? n - 1 - k : k) + 1] = 2real(u)
@@ -155,7 +165,7 @@ function dct3!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
     xm = k == 0 ? zero(T) : (dst ? x[k] : x[n-k+1])
     c[k+1] = K.tw[k+1] * Complex(xk, -xm)
   end
-  c2r!(r, c, K.inner, B)
+  c2r!(r, c, K.inner::RealLine, B)
   @inbounds for j in 0:(n-1)÷2
     y[2j+1] = r[j+1]
   end
@@ -174,7 +184,7 @@ function dct4!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
       xe = x[2j+1]; xo = x[n-2j]                          # x_(2j) and x_(n-1-2j) (odd index)
       b[j+1] = Complex(xe, dst ? xo : -xo) * K.tw[j+1]
     end
-    GC.@preserve b B run!(cptr(b), cptr(b), cptr(B.b2), cptr(B.b3), K.inner, 1)
+    GC.@preserve b B run!(cptr(b), cptr(b), cptr(B.b2), cptr(B.b3), K.inner::Kernel, 1)
     @inbounds for m in 0:M-1
       w = K.tw2[m+1] * b[m+1]
       k1 = 2m; k2 = n - 1 - 2m
@@ -189,7 +199,7 @@ function dct4!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
     @inbounds for j in n:2n-1
       b[j+1] = zero(Complex{T})
     end
-    GC.@preserve b B run!(cptr(b), cptr(b), cptr(B.b2), cptr(B.b3), K.inner, 1)
+    GC.@preserve b B run!(cptr(b), cptr(b), cptr(B.b2), cptr(B.b3), K.inner::Kernel, 1)
     @inbounds for k in 0:n-1
       y[(dst ? n - 1 - k : k) + 1] = 2real(K.tw2[k+1] * b[k+1])
     end
@@ -215,7 +225,7 @@ function dct1!(y, x, K::R2RLine{T}, B) where {T}
     end
     iseven(N) && (r[N÷2+1] = x[N÷2+1])     # j = N/2: b = 0
   end
-  r2c!(c, r, K.inner, B)
+  r2c!(c, r, K.inner::RealLine, B)
   @inbounds begin
     for k in 0:N÷2
       y[2k+1] = 2real(c[k+1])
@@ -242,7 +252,7 @@ function dst1!(y, x, K::R2RLine{T}, B) where {T}
     end
     iseven(N) && (r[N÷2+1] = 2 * x[N÷2])                 # j = N/2: sin = 1, b = 0
   end
-  r2c!(c, r, K.inner, B)
+  r2c!(c, r, K.inner::RealLine, B)
   @inbounds begin
     acc = real(c[1])
     y[1] = acc
@@ -262,7 +272,7 @@ function r2hc!(y, x, K::R2RLine{T}, B) where {T}
   @inbounds for j in 1:n
     r[j] = x[j]
   end
-  r2c!(c, r, K.inner, B)
+  r2c!(c, r, K.inner::RealLine, B)
   @inbounds for k in 0:n÷2
     f = c[k+1]
     y[k+1] = real(f)
@@ -276,7 +286,7 @@ function hc2r!(y, x, K::R2RLine{T}, B) where {T}
   @inbounds for k in 0:n÷2
     c[k+1] = Complex{T}(x[k+1], 0 < k < n - k ? x[n-k+1] : zero(T))
   end
-  c2r!(r, c, K.inner, B)
+  c2r!(r, c, K.inner::RealLine, B)
   @inbounds for j in 1:n
     y[j] = r[j]
   end
@@ -288,7 +298,7 @@ function dht!(y, x, K::R2RLine{T}, B) where {T}
   @inbounds for j in 1:n
     r[j] = x[j]
   end
-  r2c!(c, r, K.inner, B)
+  r2c!(c, r, K.inner::RealLine, B)
   @inbounds for k in 0:n÷2
     f = c[k+1]
     y[k+1] = real(f) - imag(f)
@@ -350,19 +360,20 @@ Base.@propagate_inbounds Base.setindex!(l::StridedLine{T}, v, i::Int) where {T} 
 Base.IndexStyle(::Type{<:StridedLine}) = IndexLinear()
 
 # one dimension of an Array, each line read and written in place through a StridedLine
-function r2r_dim!(y::Array{T}, x::Array{T}, d::Int, K::R2RLine{T}, p::R2RPlan{T}) where {T}
+r2r_dim!(y::Array{T}, x::Array{T}, d::Int, K::R2RLine{T}, p::R2RPlan{T}) where {T} =
+  (GC.@preserve x y r2r_dim!(pointer(y), pointer(x), d, K, p); y)
+
+# p: a plan with sz, nthreads and bufs (R2RPlan, RR2RPlan)
+function r2r_dim!(py::Ptr{T}, px::Ptr{T}, d::Int, K::R2RLine{T}, p) where {T}
   S, outer = dim_extent(p.sz, d)
   n = p.sz[d]
-  GC.@preserve x y begin
-    px = pointer(x); py = pointer(y)
-    each_line(S * outer, n, p.nthreads) do c, l
-      local o, i
-      o, i = divrem(l, S)
-      local off = (i + S * n * o) * sizeof(T)
-      r2r_line!(StridedLine{T}(py + off, S, n), StridedLine{T}(px + off, S, n), K, p.bufs[c])
-    end
+  each_line(S * outer, n, p.nthreads) do c, l
+    local o, i
+    o, i = divrem(l, S)
+    local off = (i + S * n * o) * sizeof(T)
+    r2r_line!(StridedLine{T}(py + off, S, n), StridedLine{T}(px + off, S, n), K, p.bufs[c])
   end
-  y
+  nothing
 end
 
 function apply_r2r!(y::Array{T}, x::Array{T}, p::R2RPlan{T}, ls::Tuple, ds::Tuple) where {T}

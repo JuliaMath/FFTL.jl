@@ -1,5 +1,5 @@
-/* libfftl C tests (phase 3): the fftl_plan_dft / fftl_plan_execute / fftl_plan_destroy API
- * against a naive direct DFT in double precision.
+/* libfftl C tests: complex DFT, r2c/c2r and real-to-real plans against naive direct sums in
+ * double precision.
  *
  * Covered: 1D smooth and prime lengths (Bluestein, also inside higher ranks), 2D and 3D full
  * and partial regions, in place and out of place, both precisions, threads 1 and 4,
@@ -428,6 +428,189 @@ static void test_plan_reuse(void) {
   free(a); free(b); free(f); free(g);
 }
 
+/* ------------------------------------------------------------------ real transforms */
+
+/* r2c (double and single) against the half of the naive complex DFT, c2r round trip, input of
+ * c2r unchanged, in place rejected. */
+static void check_real(const char *name, const int64_t *dims, int rank, const int32_t *region,
+                       int trank, int32_t precision, int32_t threads) {
+  int64_t n = prod(dims, rank), d = region[0];
+  int64_t hdims[8];
+  for (int i = 0; i < rank; i++) hdims[i] = dims[i];
+  hdims[d] = dims[d] / 2 + 1;
+  int64_t nh = prod(hdims, rank);
+  int single = precision == FFTL_PRECISION_SINGLE;
+  double tol = single ? 1e-5 : 1e-12;
+  double *xr = malloc(n * sizeof(double)), *z = malloc(n * sizeof(double));
+  cpx *full = malloc(n * sizeof(cpx));
+  double *ref = malloc(2 * nh * sizeof(double)), *y = malloc(2 * nh * sizeof(double));
+  double *tmp = malloc(2 * n * sizeof(double));
+  fill(tmp, n);
+  for (int64_t i = 0; i < n; i++) { xr[i] = tmp[2 * i]; full[i].re = xr[i]; full[i].im = 0; }
+  dft_region(full, dims, rank, region, trank, -1);
+  /* half spectrum along d */
+  int64_t S = 1, outer = 1;
+  for (int i = 0; i < d; i++) S *= dims[i];
+  for (int i = d + 1; i < rank; i++) outer *= dims[i];
+  for (int64_t o = 0; o < outer; o++)
+    for (int64_t k = 0; k < hdims[d]; k++)
+      for (int64_t l = 0; l < S; l++) {
+        cpx v = full[o * S * dims[d] + k * S + l];
+        int64_t i = o * S * hdims[d] + k * S + l;
+        ref[2 * i] = v.re; ref[2 * i + 1] = v.im;
+      }
+  fftl_plan pf = fftl_plan_dft_r2c(rank, dims, trank, region, precision, threads);
+  fftl_plan pb = fftl_plan_dft_c2r(rank, dims, trank, region, precision, threads);
+  CHECK(pf >= 0 && pb >= 0, name);
+  /* single precision: run on float copies */
+  float *xf = malloc(n * sizeof(float)), *zf = malloc(n * sizeof(float)), *yf = malloc(2 * nh * sizeof(float));
+  for (int64_t i = 0; i < n; i++) xf[i] = (float) xr[i];
+  if (single) {
+    CHECK(fftl_plan_execute(pf, yf, xf) == 0, name);
+    for (int64_t i = 0; i < 2 * nh; i++) y[i] = yf[i];
+  } else {
+    CHECK(fftl_plan_execute(pf, y, xr) == 0, name);
+  }
+  CHECK(relerr(y, ref, nh) < tol, name);
+  /* c2r round trip */
+  double scale = 1;
+  for (int i = 0; i < trank; i++) scale *= (double) dims[region[i]];
+  double maxd = 0;
+  if (single) {
+    float *yf0 = malloc(2 * nh * sizeof(float));
+    memcpy(yf0, yf, 2 * nh * sizeof(float));
+    CHECK(fftl_plan_execute(pb, zf, yf) == 0, name);
+    CHECK(memcmp(yf0, yf, 2 * nh * sizeof(float)) == 0, "c2r keeps its input (single)");
+    for (int64_t i = 0; i < n; i++) maxd = fmax(maxd, fabs(zf[i] / scale - xr[i]));
+    free(yf0);
+  } else {
+    double *y0 = malloc(2 * nh * sizeof(double));
+    memcpy(y0, y, 2 * nh * sizeof(double));
+    CHECK(fftl_plan_execute(pb, z, y) == 0, name);
+    CHECK(memcmp(y0, y, 2 * nh * sizeof(double)) == 0, "c2r keeps its input");
+    for (int64_t i = 0; i < n; i++) maxd = fmax(maxd, fabs(z[i] / scale - xr[i]));
+    free(y0);
+  }
+  CHECK(maxd < tol, name);
+  CHECK(fftl_plan_execute(pf, y, y) == -1, "r2c in place rejected");
+  CHECK(fftl_plan_destroy(pf) == 0 && fftl_plan_destroy(pb) == 0, name);
+  free(xr); free(z); free(full); free(ref); free(y); free(tmp); free(xf); free(zf); free(yf);
+}
+
+static void test_real(void) {
+  int64_t d1[] = {16}, d2[] = {15}, d3[] = {101}, d4[] = {12, 10}, d5[] = {9, 8, 7}, d6[] = {7, 101};
+  int32_t r0[] = {0}, r1[] = {1}, r01[] = {0, 1}, r02[] = {0, 2}, r12[] = {1, 2};
+  for (int32_t prec = 1; prec <= 2; prec++)
+    for (int32_t t = 1; t <= 4; t += 3) {
+      check_real("r2c 16", d1, 1, r0, 1, prec, t);
+      check_real("r2c 15", d2, 1, r0, 1, prec, t);
+      check_real("r2c 101 (Bluestein)", d3, 1, r0, 1, prec, t);
+      check_real("r2c 12x10 full", d4, 2, r01, 2, prec, t);
+      check_real("r2c 12x10 dim 1", d4, 2, r1, 1, prec, t);
+      check_real("r2c 9x8x7 dims 0,2", d5, 3, r02, 2, prec, t);
+      check_real("r2c 9x8x7 dims 1,2", d5, 3, r12, 2, prec, t);
+      check_real("r2c 7x101 full", d6, 2, r01, 2, prec, t);
+    }
+  expect_error("r2c with transform rank 0", fftl_plan_dft_r2c(1, d1, 0, r0, 1, 1));
+}
+
+/* direct real-to-real sums of one line, double precision */
+static void r2r_direct(const double *x, double *y, int64_t n, int kind) {
+  for (int64_t k = 0; k < n; k++) {
+    double s = 0;
+    switch (kind) {
+    case FFTL_REDFT00:
+      s = x[0] + ((k & 1) ? -x[n - 1] : x[n - 1]);
+      for (int64_t j = 1; j < n - 1; j++) s += 2 * x[j] * cos(M_PI * j * k / (n - 1));
+      break;
+    case FFTL_REDFT10: for (int64_t j = 0; j < n; j++) s += 2 * x[j] * cos(M_PI * (j + 0.5) * k / n); break;
+    case FFTL_REDFT01:
+      s = x[0];
+      for (int64_t j = 1; j < n; j++) s += 2 * x[j] * cos(M_PI * j * (k + 0.5) / n);
+      break;
+    case FFTL_REDFT11: for (int64_t j = 0; j < n; j++) s += 2 * x[j] * cos(M_PI * (j + 0.5) * (k + 0.5) / n); break;
+    case FFTL_RODFT00: for (int64_t j = 0; j < n; j++) s += 2 * x[j] * sin(M_PI * (j + 1) * (k + 1) / (n + 1)); break;
+    case FFTL_RODFT10: for (int64_t j = 0; j < n; j++) s += 2 * x[j] * sin(M_PI * (j + 0.5) * (k + 1) / n); break;
+    case FFTL_RODFT01:
+      s = (k & 1) ? -x[n - 1] : x[n - 1];
+      for (int64_t j = 0; j < n - 1; j++) s += 2 * x[j] * sin(M_PI * (j + 1) * (k + 0.5) / n);
+      break;
+    case FFTL_RODFT11: for (int64_t j = 0; j < n; j++) s += 2 * x[j] * sin(M_PI * (j + 0.5) * (k + 0.5) / n); break;
+    case FFTL_DHT: for (int64_t j = 0; j < n; j++) s += x[j] * (cos(2 * M_PI * j * k / n) + sin(2 * M_PI * j * k / n)); break;
+    case FFTL_R2HC:
+      if (2 * k <= n) for (int64_t j = 0; j < n; j++) s += x[j] * cos(2 * M_PI * j * k / n);
+      else for (int64_t j = 0; j < n; j++) s -= x[j] * sin(2 * M_PI * j * (n - k) / n);
+      break;
+    case FFTL_HC2R:
+      s = x[0];
+      for (int64_t m = 1; 2 * m < n; m++)
+        s += 2 * (x[m] * cos(2 * M_PI * m * k / n) - x[n - m] * sin(2 * M_PI * m * k / n));
+      if (n % 2 == 0) s += (k & 1) ? -x[n / 2] : x[n / 2];
+      break;
+    }
+    y[k] = s;
+  }
+}
+
+static void test_r2r(void) {
+  const int64_t lens[] = {2, 5, 8, 33, 101};
+  int32_t r0[] = {0};
+  char name[64];
+  for (int32_t prec = 1; prec <= 2; prec++)
+    for (int kind = FFTL_REDFT00; kind <= FFTL_HC2R; kind++)
+      for (int li = 0; li < 5; li++) {
+        int64_t n = lens[li];
+        int32_t k = kind;
+        snprintf(name, sizeof name, "r2r kind %d n %lld prec %d", kind, (long long) n, prec);
+        fftl_plan p = fftl_plan_r2r(1, &n, 1, r0, &k, prec, 1);
+        CHECK(p >= 0, name);
+        double *x = malloc(n * sizeof(double)), *y = malloc(n * sizeof(double)), *ref = malloc(n * sizeof(double));
+        double *tmp = malloc(2 * n * sizeof(double));
+        fill(tmp, n);
+        for (int64_t i = 0; i < n; i++) x[i] = tmp[2 * i];
+        r2r_direct(x, ref, n, kind);
+        double maxd = 0, maxr = 0;
+        if (prec == FFTL_PRECISION_SINGLE) {
+          float *xf = malloc(n * sizeof(float));
+          for (int64_t i = 0; i < n; i++) xf[i] = (float) x[i];
+          CHECK(fftl_plan_execute(p, xf, xf) == 0, name);      /* in place */
+          for (int64_t i = 0; i < n; i++) { maxd = fmax(maxd, fabs(xf[i] - ref[i])); maxr = fmax(maxr, fabs(ref[i])); }
+          free(xf);
+        } else {
+          CHECK(fftl_plan_execute(p, y, x) == 0, name);
+          for (int64_t i = 0; i < n; i++) { maxd = fmax(maxd, fabs(y[i] - ref[i])); maxr = fmax(maxr, fabs(ref[i])); }
+        }
+        CHECK(maxd <= (prec == FFTL_PRECISION_SINGLE ? 2e-5 : 1e-11) * maxr, name);
+        CHECK(fftl_plan_destroy(p) == 0, name);
+        free(x); free(y); free(ref); free(tmp);
+      }
+  /* 2D: DCT-II along 0, halfcomplex along 1, threads */
+  int64_t dims[] = {9, 12};
+  int32_t reg[] = {0, 1}, kinds[] = {FFTL_REDFT10, FFTL_R2HC};
+  fftl_plan p = fftl_plan_r2r(2, dims, 2, reg, kinds, FFTL_PRECISION_DOUBLE, 4);
+  CHECK(p >= 0, "r2r 2D plan");
+  double x[108], y[108], ref[108], t1[12], t2[12], tmp[216];
+  fill(tmp, 108);
+  for (int i = 0; i < 108; i++) x[i] = tmp[2 * i];
+  for (int j = 0; j < 12; j++) r2r_direct(x + 9 * j, ref + 9 * j, 9, FFTL_REDFT10);
+  for (int i = 0; i < 9; i++) {
+    for (int j = 0; j < 12; j++) t1[j] = ref[i + 9 * j];
+    r2r_direct(t1, t2, 12, FFTL_R2HC);
+    for (int j = 0; j < 12; j++) ref[i + 9 * j] = t2[j];
+  }
+  CHECK(fftl_plan_execute(p, y, x) == 0, "r2r 2D executes");
+  double maxd = 0, maxr = 0;
+  for (int i = 0; i < 108; i++) { maxd = fmax(maxd, fabs(y[i] - ref[i])); maxr = fmax(maxr, fabs(ref[i])); }
+  CHECK(maxd <= 1e-11 * maxr, "r2r 2D against the direct sums");
+  CHECK(fftl_plan_destroy(p) == 0, "r2r 2D destroy");
+  int32_t bad = 11;
+  int64_t n8 = 8;
+  expect_error("unknown r2r kind", fftl_plan_r2r(1, &n8, 1, reg, &bad, 1, 1));
+  int64_t n1 = 1;
+  int32_t dct1 = FFTL_REDFT00;
+  expect_error("DCT-I of length 1", fftl_plan_r2r(1, &n1, 1, reg, &dct1, 1, 1));
+}
+
 int main(void) {
   test_version_and_error();
   test_1d_double();
@@ -438,6 +621,8 @@ int main(void) {
   test_threads();
   test_errors();
   test_plan_reuse();
+  test_real();
+  test_r2r();
 
   printf("libfftl tests: %d checks, %d failed\n", ntests, nfailed);
   return nfailed == 0 ? 0 : 1;

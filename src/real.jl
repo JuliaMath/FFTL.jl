@@ -24,11 +24,25 @@ struct RealLine{T,K<:Kernel{T}}
   w::Vector{Complex{T}}        # u_k, k = 0…n÷2 (even n), see above
 end
 
-function RealLine{T}(n::Int, σ::Int) where {T}
-  inner = kernel(T, iseven(n) ? n ÷ 2 : n, σ)
+# Run-time kernels (RChain, or Bluestein over RChain) for the run-time plans (rreal.jl).
+const RKern{T} = Union{RChain{T},RBluestein{T}}
+rkernel(::Type{T}, n::Int, σ::Int) where {T} =
+  (smooth(n) ? RChain{T}(n, σ, radices(n, 1; esize = sizeof(Complex{T}))) : Bluestein{T}(n, σ, RChain))::RKern{T}
+ckernel(::Type{T}, n::Int, σ::Int, ::Type{Chain}) where {T} = kernel(T, n, σ)
+ckernel(::Type{T}, n::Int, σ::Int, ::Type{RChain}) where {T} = rkernel(T, n, σ)
+
+# C: Chain (kernel type in the line's type) or RChain (RKern{T}, for run-time plans)
+function RealLine{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
+  inner = ckernel(T, iseven(n) ? n ÷ 2 : n, σ, C)
   u = σ == -1 ? Complex{T}(0, -T(0.5)) : Complex{T}(0, 1)
-  w = iseven(n) ? [u * Complex{T}(cispi(2σ * k / n)) for k in 0:n÷2] : Complex{T}[]
-  RealLine{T,typeof(inner)}(n, σ, inner, w)
+  w = Complex{T}[]
+  if iseven(n)
+    w = Vector{Complex{T}}(undef, n ÷ 2 + 1)
+    for k in 0:n÷2
+      w[k+1] = u * Complex{T}(cispi(2σ * k / n))
+    end
+  end
+  RealLine{T,C === RChain ? RKern{T} : typeof(inner)}(n, σ, inner, w)
 end
 
 nhalf(n) = n ÷ 2 + 1
@@ -233,7 +247,7 @@ end
 
 # Separate functions for contiguous and strided lines: a shared closure body is 30–70 ns slower
 # on short lines.
-function r2c_contiguous!(py::Ptr{Complex{T}}, px::Ptr{T}, p::RFFTLPlan{T}) where {T}
+function r2c_contiguous!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T}
   b = p.bufs
   if length(p.offs_r) == 1
     return r2c_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
@@ -246,7 +260,7 @@ function r2c_contiguous!(py::Ptr{Complex{T}}, px::Ptr{T}, p::RFFTLPlan{T}) where
 end
 
 # strided line: gather into a contiguous buffer, transform, scatter
-function r2c_strided!(py::Ptr{Complex{T}}, px::Ptr{T}, p::RFFTLPlan{T}) where {T}
+function r2c_strided!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T}
   n = p.line.n; h = nhalf(n); S = p.S
   each_line(length(p.offs_r), n, p.nthreads) do c, i
     local b = p.bufs
@@ -275,20 +289,20 @@ function LinearAlgebra.mul!(y::Array{T,N}, p::BRFFTLPlan{T,N}, x::Array{Complex{
   y
 end
 
-function c2r_contiguous!(py::Ptr{T}, px::Ptr{Complex{T}}, p::BRFFTLPlan{T}) where {T}
+function c2r_contiguous!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T}
   b = p.bufs
   if length(p.offs_r) == 1
     return c2r_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
   end
-  each_line(length(p.offs_r), p.d, p.nthreads) do c, i
+  each_line(length(p.offs_r), p.line.n, p.nthreads) do c, i
     local b = p.bufs
     c2r_line!(py + p.offs_r[i+1] * sizeof(T), px + p.offs_c[i+1] * sizeof(Complex{T}),
               cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
   end
 end
 
-function c2r_strided!(py::Ptr{T}, px::Ptr{Complex{T}}, p::BRFFTLPlan{T}) where {T}
-  n = p.d; h = nhalf(n); S = p.S
+function c2r_strided!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T}
+  n = p.line.n; h = nhalf(n); S = p.S
   each_line(length(p.offs_r), n, p.nthreads) do c, i
     local b = p.bufs
     local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))

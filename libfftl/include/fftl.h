@@ -1,7 +1,8 @@
 /* libfftl: FFTL.jl as a C library.
  *
- * Complex DFT plans by opaque handle: any rank, any lengths, both precisions, both signs,
- * in place or out of place, single- or multi-threaded execution. The plan is built, applied
+ * Plans by opaque handle for the complex DFT, the real-input DFT (r2c) and its inverse (c2r),
+ * and real-to-real transforms (DCT, DST, Hartley, halfcomplex): any rank, any lengths, both
+ * precisions, single- or multi-threaded execution. The plan is built, applied
  * and freed through the four calls below; everything else about it is run-time data inside the
  * library (FFT sorts radices, chooses algorithms, owns its work buffers).
  *
@@ -31,6 +32,28 @@ extern "C" {
 enum {
   FFTL_PRECISION_DOUBLE = 1,   /* Complex{Float64}, 16 bytes per value */
   FFTL_PRECISION_SINGLE = 2   /* Complex{Float32},  8 bytes per value */
+};
+
+/* Real-to-real kinds (fftl_plan_r2r), unnormalised, of a line x_0 … x_(n-1):
+ *   FFTL_REDFT00  DCT-I    y_k = x_0 + (-1)^k x_(n-1) + 2 Σ_(j=1)^(n-2) x_j cos(πjk/(n-1)), n ≥ 2
+ *   FFTL_REDFT10  DCT-II   y_k = 2 Σ x_j cos(π(j+½)k/n)
+ *   FFTL_REDFT01  DCT-III  y_k = x_0 + 2 Σ_(j≥1) x_j cos(πj(k+½)/n)
+ *   FFTL_REDFT11  DCT-IV   y_k = 2 Σ x_j cos(π(j+½)(k+½)/n)
+ *   FFTL_RODFT00  DST-I    y_k = 2 Σ x_j sin(π(j+1)(k+1)/(n+1))
+ *   FFTL_RODFT10  DST-II   y_k = 2 Σ x_j sin(π(j+½)(k+1)/n)
+ *   FFTL_RODFT01  DST-III  y_k = (-1)^k x_(n-1) + 2 Σ_(j≤n-2) x_j sin(π(j+1)(k+½)/n)
+ *   FFTL_RODFT11  DST-IV   y_k = 2 Σ x_j sin(π(j+½)(k+½)/n)
+ *   FFTL_DHT      Hartley  y_k = Σ x_j (cos(2πjk/n) + sin(2πjk/n))
+ *   FFTL_R2HC     DFT F_k = Σ x_j e^(-2πijk/n) in halfcomplex order: y_k = Re F_k for
+ *                 0 ≤ k ≤ n/2, y_(n-k) = Im F_k for 0 < k < n/2
+ *   FFTL_HC2R     inverse of FFTL_R2HC: y_j = Σ_k F_k e^(2πijk/n), F in halfcomplex order
+ * Inverse pairs (up to the factor 2n, 2(n-1) for DCT-I, 2(n+1) for DST-I, n for DHT and the
+ * halfcomplex pair): DCT-II/III, DST-II/III; DCT-I, DCT-IV, DST-I, DST-IV, DHT are their own
+ * inverses. */
+enum {
+  FFTL_REDFT00 = 0, FFTL_REDFT10 = 1, FFTL_REDFT01 = 2, FFTL_REDFT11 = 3,
+  FFTL_RODFT00 = 4, FFTL_RODFT10 = 5, FFTL_RODFT01 = 6, FFTL_RODFT11 = 7,
+  FFTL_DHT = 8, FFTL_R2HC = 9, FFTL_HC2R = 10
 };
 
 /* Plans are opaque handles. A negative handle is an error and fftl_last_error explains;
@@ -83,15 +106,47 @@ fftl_plan fftl_plan_dft(int32_t rank, const int64_t *dims, int32_t transform_ran
                         const int32_t *region, int32_t precision, int32_t sign,
                         int32_t threads);
 
+/* fftl_plan fftl_plan_dft_r2c(int32_t rank, const int64_t *dims, int32_t transform_rank,
+ *                             const int32_t *region, int32_t precision, int32_t threads)
+ * fftl_plan fftl_plan_dft_c2r(int32_t rank, const int64_t *dims, int32_t transform_rank,
+ *                             const int32_t *region, int32_t precision, int32_t threads)
+ *
+ * Real-input forward DFT (r2c, sign -1) and its unnormalised inverse (c2r, sign +1) of a real
+ * array of dims[0] x ... x dims[rank-1] values along region (as in fftl_plan_dft;
+ * transform_rank >= 1). dims are the sizes of the REAL array in both cases. The complex array
+ * holds the half spectrum: along the first transformed dimension d = region[0] it has
+ * dims[d] / 2 + 1 values, the other dimensions as in dims. r2c reads the real array and
+ * writes the complex one; c2r reads the complex array (and leaves it unchanged) and writes
+ * the real one; c2r after r2c multiplies by the number of transformed elements. Both run out
+ * of place only (out != in).
+ */
+fftl_plan fftl_plan_dft_r2c(int32_t rank, const int64_t *dims, int32_t transform_rank,
+                            const int32_t *region, int32_t precision, int32_t threads);
+fftl_plan fftl_plan_dft_c2r(int32_t rank, const int64_t *dims, int32_t transform_rank,
+                            const int32_t *region, int32_t precision, int32_t threads);
+
+/* fftl_plan fftl_plan_r2r(int32_t rank, const int64_t *dims, int32_t transform_rank,
+ *                         const int32_t *region, const int32_t *kinds, int32_t precision,
+ *                         int32_t threads)
+ *
+ * Real-to-real transforms of a real array along region (as in fftl_plan_dft), kinds[i]
+ * (FFTL_REDFT00 … FFTL_HC2R) along dimension region[i]. Input and output are real arrays of
+ * size dims; in place (out == in) or out of place.
+ */
+fftl_plan fftl_plan_r2r(int32_t rank, const int64_t *dims, int32_t transform_rank,
+                        const int32_t *region, const int32_t *kinds, int32_t precision,
+                        int32_t threads);
+
 /* int32_t fftl_plan_execute(fftl_plan p, void *out, const void *in)
  *
- * Executes the plan: transforms the elements of in according to the plan's region and stores
- * the result in out. out and in point to separate arrays (out of place) or are the same
- * pointer (in place): fftl_plan_execute(p, buf, buf); out and in may not partially overlap.
- * The buffers hold the product of dims complex values in the plan's precision.
+ * Executes the plan of any of the four kinds: transforms the elements of in according to the
+ * plan's region and stores the result in out. out and in point to separate arrays (out of
+ * place) or, for complex DFT and real-to-real plans, are the same pointer (in place):
+ * fftl_plan_execute(p, buf, buf); out and in may not partially overlap. The buffers hold the
+ * arrays described at the plan's creation (complex or real values in the plan's precision).
  *
- * Returns 0, or -1 if the handle is invalid (then fftl_last_error has the reason; the buffers
- * are untouched).
+ * Returns 0, or -1 if the handle is invalid or an r2c/c2r plan is called in place (then
+ * fftl_last_error has the reason; the buffers are untouched).
  */
 int32_t fftl_plan_execute(fftl_plan p, void *out, const void *in);
 
@@ -159,13 +214,6 @@ size_t fftl_last_error(char *buf, size_t buf_len);
  *                                int32_t threads,
  *                                int32_t n_nonzero, const int64_t *nonzero,
  *                                int32_t n_needed, const int64_t *needed);
- *
- * Real transforms: r2c for a full complex spectrum of half storage and c2r
- * for its (unnormalised) inverse, along a subset of dimensions (maps
- * FFTL.plan_rfft / plan_brfft):
- *
- *   fftl_plan fftl_plan_r2c(...);
- *   fftl_plan fftl_plan_c2r(...);
  * ------------------------------------------------------------------------- */
 
 #ifdef __cplusplus

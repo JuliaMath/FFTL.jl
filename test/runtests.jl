@@ -332,6 +332,27 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "run-time real plans, $T" for T in pick((Float64, Float32), (Float64,))
+    for (sz, reg, nt) in [((16,), [1], 1), ((101,), [1], 1), ((12, 10), [1, 2], 3), ((12, 10), [2], 1), ((9, 8, 7), [1, 3], 3)]
+      x = randn(T, sz)
+      p = FFTL.RRFFTPlan{T}(collect(sz), reg, -1; threads = nt)
+      ref = FFTL.plan_rfft(x, Tuple(reg)) * x
+      y = similar(ref)
+      GC.@preserve x y FFTL.execute_r2c!(p, pointer(y), pointer(x))
+      @test relerr(y, ref) < 10tol(T)
+      q = FFTL.RRFFTPlan{T}(collect(sz), reg, 1; threads = nt)
+      z = similar(x)
+      GC.@preserve y z FFTL.execute_c2r!(q, pointer(z), pointer(y))
+      @test relerr(z ./ prod(sz[d] for d in reg), x) < 10tol(T)
+    end
+    x = randn(T, 9, 12, 5)
+    ks = [FFTL.HC2R, FFTL.REDFT00, FFTL.RODFT11]
+    p = FFTL.RR2RPlan{T}([9, 12, 5], ks, [1, 2, 3]; threads = 3)
+    y = copy(x)
+    GC.@preserve y FFTL.execute_r2r!(p, pointer(y), pointer(y))
+    @test relerr(y, FFTL.r2r(x, Tuple(ks), 1:3)) < 10tol(T)
+  end
+
   @testset "plans: in place, out of place, inv" begin
     for n in [1, 7, 64, 1000, 1009]
       x = randn(ComplexF64, n)

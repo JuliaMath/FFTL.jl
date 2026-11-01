@@ -14,7 +14,7 @@ cd "$(dirname "$0")"
 julia --project=jc -e 'using Pkg; Pkg.instantiate()'
 julia --project=jc -e 'using Pkg; print("juliac ", Pkg.dependencies()[Base.UUID("acedd4c2-ced6-4a15-accc-2607eb759ba2")].version)'
 julia -e 'println(", Julia ", VERSION)'
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
+julia --project=. -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'
 # One CPU target: a library built for several targets (Julia's default) hangs at the first garbage
 # collection triggered by a second host thread, https://github.com/JuliaLang/JuliaC.jl/issues/190.
 if [ -z "$JULIA_CPU_TARGET" ]; then

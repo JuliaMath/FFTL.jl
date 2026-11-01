@@ -29,6 +29,7 @@ include("rplan.jl")
 include("pass.jl")
 include("real.jl")
 include("r2r.jl")
+include("rreal.jl")
 include("ka.jl")
 include("precompile.jl")
 

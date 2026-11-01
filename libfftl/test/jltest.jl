@@ -109,6 +109,9 @@ end
 
 const FFTL_PRECISION_DOUBLE = Int32(1)
 const FFTL_PRECISION_SINGLE = Int32(2)
+const FFTL_REDFT00, FFTL_REDFT10, FFTL_REDFT01, FFTL_REDFT11 = 0, 1, 2, 3
+const FFTL_RODFT00, FFTL_RODFT10, FFTL_RODFT01, FFTL_RODFT11 = 4, 5, 6, 7
+const FFTL_DHT, FFTL_R2HC, FFTL_HC2R = 8, 9, 10
 
 begin
   buf = zeros(UInt8, 64)
@@ -225,6 +228,101 @@ check_roundtrip("1d f64 65536 threads=1", [65536], [0], 1, 1e-13)
 # threads=4 against the naive reference in single precision (lane-block threading)
 check_region("3d f32 (64,64,8) region {0,1} threads=4", [64, 64, 8], [0, 1], -1,
              FFTL_PRECISION_SINGLE, 4, 1e-5)
+
+# --- real transforms: r2c against the direct DFT, c2r round trips ---------------------
+
+exe(p, out, in_) = fftl_plan_execute(p, Ptr{Cvoid}(pointer(out)), Ptr{Cvoid}(pointer(in_)))
+
+# half spectrum along the 0-based dimension d of the full complex array a of size dims
+function halfof(a::Vector{ComplexF64}, dims::Vector{Int}, d::Int)
+  S = prod(dims[1:d]; init = 1); n = dims[d + 1]; h = n ÷ 2 + 1
+  outer = prod(dims[d + 2:end]; init = 1)
+  out = Vector{ComplexF64}(undef, S * h * outer)
+  for o in 0:outer - 1, k in 0:h - 1, l in 0:S - 1
+    out[o * S * h + k * S + l + 1] = a[o * S * n + k * S + l + 1]
+  end
+  out
+end
+
+for prec in (FFTL_PRECISION_DOUBLE, FFTL_PRECISION_SINGLE), (dims, region0) in
+    (([16], [0]), ([15], [0]), ([101], [0]), ([12, 10], [0, 1]), ([12, 10], [1]), ([9, 8, 7], [0, 2]),
+     ([8, 6, 5], [1, 2]), ([7, 101], [0, 1]))
+  T = prec == FFTL_PRECISION_DOUBLE ? Float64 : Float32
+  tol = prec == FFTL_PRECISION_DOUBLE ? 1e-12 : 1e-5
+  local x = randn(T, dims...)
+  hd = copy(dims); hd[region0[1] + 1] = dims[region0[1] + 1] ÷ 2 + 1
+  ref = halfof(naive(ComplexF64.(vec(x)), dims, region0, -1), dims, region0[1])
+  d64 = Int64.(dims); r32 = Int32.(region0)
+  for threads in (1, 4)
+    pf = GC.@preserve d64 r32 fftl_plan_dft_r2c(Cint(length(dims)), pointer(d64), Cint(length(r32)), pointer(r32), Cint(prec), Cint(threads))
+    pb = GC.@preserve d64 r32 fftl_plan_dft_c2r(Cint(length(dims)), pointer(d64), Cint(length(r32)), pointer(r32), Cint(prec), Cint(threads))
+    @CHECK pf >= 0 && pb >= 0, "r2c/c2r plans $dims $region0"
+    local y = Vector{Complex{T}}(undef, prod(hd))
+    GC.@preserve x y exe(pf, y, x)
+    @CHECK maximum(abs.(y .- ref)) <= tol * maximum(abs.(ref)), "r2c $T $dims $region0 threads $threads"
+    y0 = copy(y); z = similar(x)
+    GC.@preserve y z exe(pb, z, y)
+    N = prod(dims[r + 1] for r in region0)
+    @CHECK maximum(abs.(z ./ N .- x)) <= tol * maximum(abs.(x)), "c2r round trip $T $dims $region0 threads $threads"
+    @CHECK y == y0, "c2r leaves its input unchanged $T $dims"
+    @CHECK GC.@preserve(x, exe(pf, x, x)) == -1, "r2c in place rejected"
+    @CHECK fftl_plan_destroy(pf) == 0 && fftl_plan_destroy(pb) == 0, "destroy real plans"
+  end
+end
+
+# --- real-to-real: every kind against the direct sum ----------------------------------
+
+function r2r_direct(x::Vector{Float64}, kind::Int)
+  n = length(x)
+  F(m) = sum(x[j + 1] * cispi(-2j * m / n) for j in 0:n - 1)
+  [kind == FFTL_REDFT00 ? x[1] + (-1)^k * x[n] + 2sum((x[j + 1] * cospi(j * k / (n - 1)) for j in 1:n - 2); init = 0.0) :
+   kind == FFTL_REDFT10 ? 2sum(x[j + 1] * cospi((j + 0.5) * k / n) for j in 0:n - 1) :
+   kind == FFTL_REDFT01 ? x[1] + 2sum((x[j + 1] * cospi(j * (k + 0.5) / n) for j in 1:n - 1); init = 0.0) :
+   kind == FFTL_REDFT11 ? 2sum(x[j + 1] * cospi((j + 0.5) * (k + 0.5) / n) for j in 0:n - 1) :
+   kind == FFTL_RODFT00 ? 2sum(x[j + 1] * sinpi((j + 1) * (k + 1) / (n + 1)) for j in 0:n - 1) :
+   kind == FFTL_RODFT10 ? 2sum(x[j + 1] * sinpi((j + 0.5) * (k + 1) / n) for j in 0:n - 1) :
+   kind == FFTL_RODFT01 ? (-1)^k * x[n] + 2sum((x[j + 1] * sinpi((j + 1) * (k + 0.5) / n) for j in 0:n - 2); init = 0.0) :
+   kind == FFTL_RODFT11 ? 2sum(x[j + 1] * sinpi((j + 0.5) * (k + 0.5) / n) for j in 0:n - 1) :
+   kind == FFTL_DHT ? sum(x[j + 1] * (cospi(2j * k / n) + sinpi(2j * k / n)) for j in 0:n - 1) :
+   kind == FFTL_R2HC ? (2k <= n ? real(F(k)) : imag(F(n - k))) :
+   real(x[1] + sum((2 * (x[m + 1] * cospi(2m * k / n) - x[n - m + 1] * sinpi(2m * k / n)) for m in 1:(n - 1) ÷ 2); init = 0.0) +
+        (iseven(n) ? x[n ÷ 2 + 1] * (-1)^k : 0.0))
+   for k in 0:n - 1]
+end
+
+for prec in (FFTL_PRECISION_DOUBLE, FFTL_PRECISION_SINGLE), kind in 0:10, n in (2, 5, 8, 33, 101)
+  T = prec == FFTL_PRECISION_DOUBLE ? Float64 : Float32
+  tol = prec == FFTL_PRECISION_DOUBLE ? 1e-11 : 2e-5
+  local x = randn(T, n)
+  d64 = Int64[n]; r32 = Int32[0]; k32 = Int32[kind]
+  local p = GC.@preserve d64 r32 k32 fftl_plan_r2r(Cint(1), pointer(d64), Cint(1), pointer(r32), pointer(k32), Cint(prec), Cint(1))
+  @CHECK p >= 0, "r2r plan kind $kind n $n"
+  local y = similar(x)
+  GC.@preserve x y exe(p, y, x)
+  ref = r2r_direct(Float64.(x), kind)
+  @CHECK maximum(abs.(y .- ref)) <= tol * maximum(abs.(ref)), "r2r $T kind $kind n $n"
+  GC.@preserve x exe(p, x, x)
+  @CHECK x == y, "r2r in place = out of place, kind $kind n $n"
+  @CHECK fftl_plan_destroy(p) == 0, "destroy r2r plan"
+end
+
+# several dimensions, one kind each, threads
+let dims = [9, 12, 5], kinds = Int32[FFTL_HC2R, FFTL_REDFT00, FFTL_RODFT11]
+  x = randn(dims...)
+  ref = copy(x)
+  for (d, k) in zip(1:3, kinds)
+    ref = mapslices(u -> r2r_direct(u, Int(k)), ref; dims = d)
+  end
+  d64 = Int64.(dims); r32 = Int32[0, 1, 2]
+  p = GC.@preserve d64 r32 kinds fftl_plan_r2r(Cint(3), pointer(d64), Cint(3), pointer(r32), pointer(kinds), Cint(FFTL_PRECISION_DOUBLE), Cint(4))
+  y = similar(x)
+  GC.@preserve x y exe(p, y, x)
+  @CHECK maximum(abs.(y .- ref)) <= 1e-11 * maximum(abs.(ref)), "r2r 3D mixed kinds"
+  k_bad = Int32[11]; r1 = Int32[0]
+  @CHECK GC.@preserve(d64, r1, k_bad, fftl_plan_r2r(Cint(3), pointer(d64), Cint(1), pointer(r1), pointer(k_bad), Cint(1), Cint(1))) == -1,
+    "unknown r2r kind rejected"
+  @CHECK fftl_plan_destroy(p) == 0 && fftl_plan_destroy(p) == -1, "destroy r2r once"
+end
 
 # --- error paths ----------------------------------------------------------------------
 
