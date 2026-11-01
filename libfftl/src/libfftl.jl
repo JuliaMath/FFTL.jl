@@ -46,7 +46,8 @@ end
 
 # Writes the bytes of m as a zero-terminated string into buf (at most len bytes including the
 # terminator) and returns the full byte length, like snprintf. buf == NULL returns the length.
-function copy_cstr(m::Vector{UInt8}, buf::Ptr{UInt8}, len::Int)::Csize_t
+# codeunits of a String is a CodeUnits{UInt8}, not a Vector, from both callers below.
+function copy_cstr(m::AbstractVector{UInt8}, buf::Ptr{UInt8}, len::Int)::Csize_t
   if buf != C_NULL && len > 0
     nerr = min(length(m), len - 1)
     for i in 1:nerr
@@ -147,13 +148,29 @@ function exec_f32(idx::Int, out::Ptr{Cvoid}, in_::Ptr{Cvoid})::Cint
 end
 
 function destroy_f64(idx::Int)::Cint
-  @lock REGISTRY_LOCK (0 <= idx <= length(REGS_F64) - 1 && (REGS_F64[idx + 1] = nothing))
-  Cint(0)
+  ok = @lock REGISTRY_LOCK begin
+    if 0 <= idx <= length(REGS_F64) - 1 && REGS_F64[idx + 1] !== nothing
+      REGS_F64[idx + 1] = nothing
+      true
+    else
+      false
+    end
+  end
+  ok || (LAST_ERROR[] = "invalid plan handle")
+  Cint(ok ? 0 : -1)
 end
 
 function destroy_f32(idx::Int)::Cint
-  @lock REGISTRY_LOCK (0 <= idx <= length(REGS_F32) - 1 && (REGS_F32[idx + 1] = nothing))
-  Cint(0)
+  ok = @lock REGISTRY_LOCK begin
+    if 0 <= idx <= length(REGS_F32) - 1 && REGS_F32[idx + 1] !== nothing
+      REGS_F32[idx + 1] = nothing
+      true
+    else
+      false
+    end
+  end
+  ok || (LAST_ERROR[] = "invalid plan handle")
+  Cint(ok ? 0 : -1)
 end
 
 function split_handle(h::Int64)
