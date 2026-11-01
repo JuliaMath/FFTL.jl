@@ -194,7 +194,7 @@ end
 # A[k2 + (n2 + ROW_PAD)·(i0 + i)] = w[i + Bc·k2] · tw[k2 + n2·(i0 + i)] for i < Bc, k2 < n2:
 # contiguous writes along k2, strided reads from the cache buffer, one complex value per vector.
 function twiddle_transpose!(pa::Ptr{Complex{T}}, pw::Ptr{Complex{T}}, ptw::Ptr{Complex{T}}, i0, Bc, n2) where {T}
-  V = half_vec(T)
+  V = single_vec(T)
   CT = sizeof(Complex{T})
   for i in 0:Bc-1
     rowa = (n2 + ROW_PAD) * (i0 + i)

@@ -53,18 +53,20 @@ end
   end
 end
 
-# First stage of a Float32 plan (s = 1, m even): butterflies p and p+1 share a register. The two
-# outputs X_k, X_{k+1} of both butterflies are regrouped with 64-bit shuffles so that each store
-# writes two consecutive outputs of one butterfly.
-@generated function stage_first32!(py::Ptr{Float32}, px::Ptr{Float32}, pt::Ptr{Float32},
-                                   m::Int, ::Val{R}, ::Val{σ}) where {R,σ}
+# First stage with s = 1 and m even, for vectors of two complex values (VT = Vec{4,T}):
+# butterflies p and p+1 share a register. The outputs X_k, X_{k+1} of both butterflies are
+# regrouped by shuffles of the complex halves so that each store writes two consecutive outputs
+# of one butterfly.
+@generated function stage_first_pair!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T},
+                                      m::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
   stmts, a, X = codelet(R, σ)
-  loads = [:($(a[j]) = vload(VT, px + (p + $(j - 1) * m) * 8)) for j in 1:R]
+  CB = 2sizeof(T)
+  loads = [:($(a[j]) = vload(VT, px + (p + $(j - 1) * m) * $CB)) for j in 1:R]
   outs = Any[X[1]]
   twm = Any[]
   for k in 1:R-1
     b = Symbol("b", k)
-    push!(twm, :($b = ccmul($(X[k+1]), vload(VT, pt + ($(k - 1) * m + p) * 8))))
+    push!(twm, :($b = ccmul($(X[k+1]), vload(VT, pt + ($(k - 1) * m + p) * $CB))))
     push!(outs, b)
   end
   st = Any[]
@@ -72,18 +74,17 @@ end
   while k < R
     if k + 1 < R
       lo, hi = outs[k+1], outs[k+2]
-      push!(st, :(vstore(shufflevector($lo, $hi, Val((0, 1, 4, 5))), py + ($R * p + $k) * 8)))
-      push!(st, :(vstore(shufflevector($lo, $hi, Val((2, 3, 6, 7))), py + ($R * (p + 1) + $k) * 8)))
+      push!(st, :(vstore(shufflevector($lo, $hi, Val((0, 1, 4, 5))), py + ($R * p + $k) * $CB)))
+      push!(st, :(vstore(shufflevector($lo, $hi, Val((2, 3, 6, 7))), py + ($R * (p + 1) + $k) * $CB)))
       k += 2
     else
       o = outs[k+1]
-      push!(st, :(vstore(shufflevector($o, Val((0, 1))), py + ($R * p + $k) * 8)))
-      push!(st, :(vstore(shufflevector($o, Val((2, 3))), py + ($R * (p + 1) + $k) * 8)))
+      push!(st, :(vstore(shufflevector($o, Val((0, 1))), py + ($R * p + $k) * $CB)))
+      push!(st, :(vstore(shufflevector($o, Val((2, 3))), py + ($R * (p + 1) + $k) * $CB)))
       k += 1
     end
   end
   quote
-    VT = Vec{4,Float32}
     for p in 0:2:m-1
       $(loads...)
       $(stmts...)
