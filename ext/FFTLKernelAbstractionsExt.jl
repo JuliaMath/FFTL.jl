@@ -18,6 +18,8 @@
 # Kernels are generated per parameter set when a plan is made (Core.eval into `Kernels`) and
 # called through `invokelatest`. The pass, workgroup and padding rules are measured on an Apple
 # M1 Max (Metal, Float32) against Metal.jl's FFT; other GPUs work but are not tuned for.
+# On CUDA a pass whose workgroup buffer exceeds the static 48 KB becomes a raw CUDA kernel with
+# dynamic shared memory (see DYN_BYTES): rule generation then sees the larger capacity nmax.
 module FFTLKernelAbstractionsExt
 
 using FFTL, KernelAbstractions, LinearAlgebra
@@ -38,6 +40,40 @@ module Kernels
 end
 
 const NMAX = 4096           # complex Float32 values in 32 KB of threadgroup memory
+
+# On CUDA workgroup buffers may exceed the 32 KB of NMAX: @localmem lowers to static shared
+# memory (ptxas caps it at 48 KB), but CUDA also offers dynamic shared memory with an opt-in
+# limit beyond 48 KB (99 KB per block on the RTX A6000, sm_86). Such passes skip Kernel-
+# Abstractions entirely: the generated kernel is a plain function using CUDA.CuDynamicShared
+# Memory / sync_threads that KAPlan compiles with @cuda launch=false for the argument types it
+# will see, and launches raw with a shmem kwarg (KA's backend_launch passes no launch kwargs).
+# Everything below is gated on the backend being JuliaGPU CUDA (by name), so Metal, CPU and
+# other backends keep NMAX, their flavors and launch path byte-identical.
+const DYN_BYTES = 96 << 10 # bytes of dynamic shared memory per CUDA workgroup (sm_86 opt-in)
+dyn_nmax(T) = DYN_BYTES ÷ sizeof(Complex{T})  # complex values fitting in DYN_BYTES
+cuda_backend(backend) = nameof(typeof(backend)) === :CUDABackend
+
+const CUDA_MODULE = Ref{Module}()
+cuda_mod() = (isassigned(CUDA_MODULE) || (CUDA_MODULE[] = Base.require(Base.identify_package("CUDA"))); CUDA_MODULE[])
+
+# CUDA needs to be in scope in Kernels for the dyn flavor; the compile helper is installed once
+function cuda_support!()
+  isdefined(Kernels, :CUDA) || Core.eval(Kernels, :(const CUDA = $(cuda_mod())))
+  isdefined(Kernels, :cuda_dyn_compile) || Core.eval(Kernels, quote
+    # compile a pass kernel with dynamic shared memory for these argument types, and raise
+    # the function's > 48 KB dynamic shared memory opt-in ceiling before it is ever launched
+    function cuda_dyn_compile(f, y, x, tw, cin, cout, bytes)
+      k = CUDA.@cuda launch=false f(y, x, tw, cin, cout)
+      CUDA.attributes(k.fun)[CUDA.FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES] = bytes
+      return k
+    end
+  end)
+end
+
+# @synchronize (workgroup barrier) becomes sync_threads in the CUDA flavor
+unsync(x) = x
+unsync(ex::Expr) = ex.head === :macrocall && ex.args[1] === Symbol("@synchronize") ?
+  :(CUDA.sync_threads()) : Expr(ex.head, (unsync(a) for a in ex.args)...)
 
 rename(ex::Expr, suf) = Expr(ex.head, (rename(a, suf) for a in ex.args)...)
 rename(s::Symbol, suf) = (str = string(s); (startswith(str, "c") || startswith(str, "a")) && length(str) > 1 && all(isdigit, str[2:end]) ? Symbol(str, "_", suf) : s)
@@ -85,9 +121,10 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     Rmax = maximum(rs)
     nel = G * R
     W = cld(nel, Rmax)                   # threads per workgroup
+    dyn = nel > NMAX                     # workgroup buffer beyond static shared memory: raw CUDA
     transposed = (sp == 1 && m > 1) || batchlanes   # output runs y[R b + k]
     twiddle = m > 1
-    @assert 1 <= W <= 1024 && nel <= NMAX
+    @assert 1 <= W <= 1024 && nel <= (dyn ? dyn_nmax(T) : NMAX)
     @assert (Nx == 0 || s == 1) && (Ny == 0 || (m == 1 && (batchlanes || !transposed)))
     ies = Lp
     ebits = cld(8 * sizeof(Int) - leading_zeros(N - 1), TWLEV)
@@ -199,28 +236,47 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     end
     gpb = batchlanes ? 1 : Lp ÷ G        # workgroups per batch item
     name = Symbol(crossing ? "ka_passx_" : "ka_pass_", R, "_", join(rs, "x"), "_G", G, "_s", s, "_N", N, "_E", E, "_B", B, "_",
-                  σ < 0 ? "f" : "b", "_", T, "_x", Nx, "_y", Ny, padx[2] > 0 ? "_px$(padx[2])" : "", pady[2] > 0 ? "_py$(pady[2])" : "")
-    ex = quote
-      @kernel function $name(y, @Const(x), @Const(tw), @Const(cin), @Const(cout))
-        tid = (@index(Local, Linear) - 1) % Int32
-        grp = (@index(Group, Linear) - 1) % Int32
-        ob = $(batchlanes ? :(zero(Int32)) : :(grp ÷ $(I(gpb))))
-        b0 = (grp - ob * $(I(gpb))) * $(I(G))
-        obase = ob * $(I(E * N))
-        xbase = $(batchlanes ? :(b0 * $(I(N))) : :(obase + b0))
-        p0 = b0 ÷ $(I(sp))
-        ybase = obase + b0 - p0 * $(I(sp)) + $(I(sp * R)) * p0
-        pss = p0 * $(I(s))
-        xob = ob * $(I(E * Nx))
-        yob = ob * $(I(E * Ny))
-        VT = Complex{$T}
-        buf = @localmem Complex{$T} ($nel,)
-        $(body...)
+                  σ < 0 ? "f" : "b", "_", T, "_x", Nx, "_y", Ny, padx[2] > 0 ? "_px$(padx[2])" : "", pady[2] > 0 ? "_py$(pady[2])" : "",
+                  dyn ? "_dyn" : "")
+    idxpre = quote
+      ob = $(batchlanes ? :(zero(Int32)) : :(grp ÷ $(I(gpb))))
+      b0 = (grp - ob * $(I(gpb))) * $(I(G))
+      obase = ob * $(I(E * N))
+      xbase = $(batchlanes ? :(b0 * $(I(N))) : :(obase + b0))
+      p0 = b0 ÷ $(I(sp))
+      ybase = obase + b0 - p0 * $(I(sp)) + $(I(sp * R)) * p0
+      pss = p0 * $(I(s))
+      xob = ob * $(I(E * Nx))
+      yob = ob * $(I(E * Ny))
+      VT = Complex{$T}
+    end
+    if dyn
+      cuda_support!()
+      ex = quote
+        function $name(y, x, tw, cin, cout)
+          tid = CUDA.threadIdx().x % Int32 - Int32(1)
+          grp = CUDA.blockIdx().x % Int32 - Int32(1)
+          $(idxpre.args...)
+          buf = CUDA.CuDynamicSharedArray(Complex{$T}, ($nel,))
+          $((unsync(e) for e in body)...)
+          return nothing
+        end
+      end
+    else
+      ex = quote
+        @kernel function $name(y, @Const(x), @Const(tw), @Const(cin), @Const(cout))
+          tid = (@index(Local, Linear) - 1) % Int32
+          grp = (@index(Group, Linear) - 1) % Int32
+          $(idxpre.args...)
+          buf = @localmem Complex{$T} ($nel,)
+          $(body...)
+        end
       end
     end
     Core.eval(Kernels, ex)
     # the kernel exists from the next world age on
-    (Base.invokelatest(getfield, Kernels, name), W, batchlanes ? B ÷ G : B * gpb)
+    (Base.invokelatest(getfield, Kernels, name), W, batchlanes ? B ÷ G : B * gpb,
+     dyn ? nel * sizeof(Complex{T}) : 0)
   end
 end
 
@@ -236,13 +292,15 @@ function pass_twiddles(T, R, σ, N)
   [t; [Complex{T}(cispi(2σ * mod(j << (i * ebits), N) / N)) for j in 0:(1 << ebits)-1, i in 0:TWLEV-1][:]]
 end
 
-# largest G ≤ lim dividing d
-divisor_le(d, lim) = maximum(g for g in 1:min(d, lim) if d % g == 0)
+# largest G ≤ lim dividing d (1: G is always divisible; also covers lim < 1 from the W cap)
+divisor_le(d, lim) = maximum(g for g in 1:min(d, lim) if d % g == 0; init = 1)
 
-# G for a pass: G R ≤ NMAX, G ≤ gmax, G | sp (or G | m when sp = 1, G | B for batch lanes)
-function pass_G(R, s, m, E, B, gmax)
-  N = R * m * s
-  lim = min(NMAX ÷ R, gmax, E > 1 && R == N ? 16 : gmax)   # one-pass strided dimension: G ≤ 16 measured best
+# G for a pass: G R ≤ cap (workgroup memory), G ≤ gmax, G | sp (or G | m when sp = 1, G | B for
+# batch lanes).
+function pass_G_cap(R, s, m, E, B, gmax, N, cap)
+  lim = min(cap ÷ R, gmax, E > 1 && R == N ? 16 : gmax)   # one-pass strided dimension: G ≤ 16 measured best
+  # also keep W = cld(G·R, largest radix) ≤ 1024 threads per workgroup
+  lim = min(lim, (1024 * maximum(local_radices(R); init = 1)) ÷ R)
   sp = E * s
   # one-pass transforms of contiguous data: about 512 elements per workgroup measured best
   E * m * s == 1 && return divisor_le(B, min(lim, max(1, 512 ÷ R)))
@@ -250,6 +308,21 @@ function pass_G(R, s, m, E, B, gmax)
   # G dividing sp keeps p fixed per workgroup; otherwise lanes may span several p (any G | sp m)
   g1 = divisor_le(sp, lim); g2 = divisor_le(sp * m, lim)
   2g1 >= g2 ? g1 : g2
+end
+
+# G for a pass of the plan. cap > NMAX (the CUDA dynamic shared memory flavor) only adopts the
+# larger G for power-of-two pass lengths, and only when the workgroup runs with (nearly) 1024
+# threads: a >48 KB shared block is one workgroup per SM, so G growth that leaves W = 512 halves
+# the occupancy of the static plan (2^22 [256] G32 dyn 1.39× cuFFT vs G16 static 1.24×), and
+# the longer register chains of odd-radix stages do not pay either (10^6 [1000] G8 dyn 0.89×
+# vs G4 static 0.80×); the measured wins are 2^20 [1024] G8, 2^21 [2048] G4 + [1024] G8,
+# 2^22 [2048] G4 -- all W = 1000..1024 threads.
+function pass_G(R, s, m, E, B, gmax, nmax = NMAX)
+  N = R * m * s
+  nmax <= NMAX && return pass_G_cap(R, s, m, E, B, gmax, N, nmax)
+  G = pass_G_cap(R, s, m, E, B, gmax, N, NMAX)
+  Gd = pass_G_cap(R, s, m, E, B, gmax, N, nmax)
+  Gd > G && ispow2(R) && 8 * cld(Gd * R, maximum(local_radices(R); init = 1)) >= 7 * 1024 ? Gd : G
 end
 
 # Pass lengths (powers of two). A last pass of radix ≤ 16 needs no exchange in threadgroup
@@ -263,16 +336,19 @@ device_profile(backend) = nameof(typeof(backend)) === :MetalBackend ? :apple : :
 # Generic 1D rule (A6000): two balanced passes up to 2^21 (2^20 [1024, 1024] 1.11× cuFFT, three
 # passes 1.22×); from 2^22 on at least three passes ≤ 512 (2^22 [256, 128, 128] 1.23× vs
 # [1024, 256, 16] 1.41×; 2^24 [256, 256, 256] 0.97× vs [64, 64, 64, 64] 1.30×).
-function generic_passes(N)
-  ispow2(N) || return mixed_passes(N)
+# With dynamic shared memory (nmax > NMAX) two passes reach one pass further: 2^21 G 4/8 and
+# 2^22 [2048, 2048] 1.09× (a 3rd pass is worth its cost only when W = 1024 workgroups saturate:
+# 2^22 3-pass dyn 1.38×, at 2^24 nothing beats the static plan 0.97×).
+function generic_passes(N, nmax = NMAX)
+  ispow2(N) || return mixed_passes(N, nmax)
   e = trailing_zeros(N)
   e <= 12 && return [N]
-  e <= 21 && return [1 << cld(e, 2), 1 << (e ÷ 2)]
+  e <= (nmax > NMAX ? 22 : 21) && return [1 << cld(e, 2), 1 << (e ÷ 2)]
   balance_passes(N, max(3, cld(e, 9)))
 end
 
-function default_passes(N, prof = :apple)
-  prof === :generic && return generic_passes(N)
+function default_passes(N, prof = :apple, nmax = NMAX)
+  prof === :generic && return generic_passes(N, nmax)
   ispow2(N) || return mixed_passes(N)
   e = trailing_zeros(N)
   e <= 12 && return [N]
@@ -286,10 +362,13 @@ end
 # on the M1 a pass whose workgroups touch more than ~32 rows far apart (load and store) runs
 # at a fraction of the bandwidth, radix ≤ 16 passes run at copy speed.
 const SLC_BYTES = 40 << 20  # M1 Max system level cache: 48 MB
-function dim_passes(N, E, bytes; padded = false, first = true, last = true, prof = :apple)
-  E == 1 && return default_passes(N, prof)
+function dim_passes(N, E, bytes; padded = false, first = true, last = true, prof = :apple, gmax = 64, nmax = NMAX)
+  E == 1 && return default_passes(N, prof, nmax)
   if prof === :generic   # A6000: 256³ [256] per dimension 0.99× cuFFT; 4096² dim 2 [64, 64]
     N <= 1024 && return [N]
+    # one pass of a strided dimension when its workgroups read/write at least 4 lanes per row
+    # (2048² dim 2: [2048] G 4;  4096² and 3000² stay multi-pass: W > 1024 or G < 4)
+    pass_G(N, 1, 1, E, 1, gmax, nmax) >= 4 && return [N]
     return balance_passes(N, max(2, cld(ceil(Int, log2(N)), 8)))
   end
   if bytes > SLC_BYTES && padded
@@ -319,7 +398,7 @@ end
 # - Two passes (launch-bound sizes): the split with the most lanes per workgroup in the worse
 #   pass, then the most balanced one.
 # - Otherwise balanced passes; one more pass if a pass gets G < 4 (3^13: [243, 81, 81]).
-function mixed_passes(N)
+function mixed_passes(N, nmax = NMAX)
   N <= NMAX && return [N]
   o = N >> trailing_zeros(N)
   if o <= 256 && N >= 1 << 19
@@ -329,17 +408,17 @@ function mixed_passes(N)
   end
   P = N <= 1 << 21 ? 2 : N <= 1 << 24 ? 3 : cld(ceil(Int, log2(N)), 6)
   if P == 2
-    cands = [[d, N ÷ d] for d in 1:NMAX if N % d == 0 && N ÷ d <= NMAX]
-    rs = argmax(c -> (minimum(passes_G(N, c)), -abs(log(c[1] / c[2]))), cands)
+    cands = [[d, N ÷ d] for d in 1:nmax if N % d == 0 && N ÷ d <= nmax]
+    rs = argmax(c -> (minimum(passes_G(N, c, nmax)), -abs(log(c[1] / c[2]))), cands)
   else
     rs = balance_passes(N, P)
   end
-  minimum(passes_G(N, rs)) >= 4 && return rs
+  minimum(passes_G(N, rs, nmax)) >= 4 && return rs
   rs2 = balance_passes(N, P + 1)
-  minimum(passes_G(N, rs2)) > minimum(passes_G(N, rs)) ? rs2 : rs
+  minimum(passes_G(N, rs2, nmax)) > minimum(passes_G(N, rs, nmax)) ? rs2 : rs
 end
 
-passes_G(N, rs) = (s = 1; [(G = pass_G(R, s, N ÷ (R * s), 1, 1, 64); s *= R; G) for R in rs])
+passes_G(N, rs, nmax = NMAX) = (s = 1; [(G = pass_G(R, s, N ÷ (R * s), 1, 1, 64, nmax); s *= R; G) for R in rs])
 
 # N as few pass lengths ≤ cap as first-fit decreasing packing of the prime factors finds
 function pack_passes(N, cap)
@@ -392,7 +471,7 @@ mutable struct KAPlan{T,N,B} <: AbstractFFTs.Plan{Complex{T}}
   region::Vector{Int}
   σ::Int
   radices::Vector{Vector{Int}}  # pass lengths per transformed dimension (of M for Bluestein)
-  steps::Vector{Any}            # (kernel instance, ndrange, tw, cin, cout, src, dst)
+  steps::Vector{Any}            # (kernel instance | (raw CUDA kernel, W, groups, shmem bytes), ndrange, tw, cin, cout, src, dst)
   bufs::Dict{Symbol,Any}        # :a, :b array-shaped; :c, :d Bluestein scratch
   backend::B
   gmax::Int
@@ -404,6 +483,7 @@ end
 # DFT along the dimensions `region` of an array of size `dims` (column major). The buffers :a
 # and :b may use a padded layout (`pad` elements after each run of dims[1]).
 function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64,
+                nmax = cuda_backend(backend) ? dyn_nmax(T) : NMAX,   # override: workgroup memory (rule tuning)
                 pad = default_pad(dims, region, T, device_profile(backend))) where {T,D}
   prof = device_profile(backend)
   specs = Any[]; rsall = Vector{Int}[]
@@ -415,7 +495,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     N = dims[d]; E = prod(dims[1:d-1]; init = 1); B = prod(dims[d+1:end]; init = 1)
     blue = FFTL.factorize(N)[2] > 1
     M, cin, bhat = blue ? bluestein_tables(backend, T, N, σ) : (N, dummy, dummy)
-    rs = radices === nothing ? dim_passes(M, E, E * M * B * sizeof(Complex{T}); padded = pad > 0, first = i == 1, last = i == length(region), prof) : radices[i]
+    rs = radices === nothing ? dim_passes(M, E, E * M * B * sizeof(Complex{T}); padded = pad > 0, first = i == 1, last = i == length(region), prof, gmax = gmax, nmax = nmax) : radices[i]
     @assert prod(rs) == M
     push!(rsall, collect(rs))
     chains = blue ? [(-1, rs), (1, rs)] : [(σ, rs)]
@@ -447,13 +527,24 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   lay(p) = p ? (dims[1], pad) : (1, 0)
   steps = Any[]
   for (i, sp) in enumerate(specs)
-    G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax)
-    k, W, groups = pass_kernel(sp.R, G, sp.σ, T, sp.s, sp.M, sp.E, sp.B; Nx = sp.Nx, Ny = sp.Ny,
-                               padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]))
-    kk = Base.invokelatest(k, backend, W)
+    G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, nmax)
+    k, W, groups, bytes = pass_kernel(sp.R, G, sp.σ, T, sp.s, sp.M, sp.E, sp.B; Nx = sp.Nx, Ny = sp.Ny,
+                                      padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]))
     t = pass_twiddles(T, sp.R, sp.σ, sp.M)
     tw = KA.allocate(backend, Complex{T}, length(t)); copyto!(tw, t)
-    push!(steps, (kk, groups * W, tw, sp.cin, sp.cout, sp.src, sp.dst))
+    if bytes > 0
+      # dynamic shared memory pass: compile the raw CUDA kernel for exactly the argument
+      # types this step launches with (user arrays: the plan's ndims, buffers: vectors)
+      cu = cuda_mod()
+      d1 = cu.CuArray{Complex{T},1}(undef, (0,))
+      dD = cu.CuArray{Complex{T},D}(undef, ntuple(zero, D))
+      dcc = Base.invokelatest(getfield, Kernels, :cuda_dyn_compile)
+      kk = Base.invokelatest(dcc, k, sp.dst === :y ? dD : d1, sp.src === :x ? dD : d1, tw, tw, tw, bytes)
+      push!(steps, ((kk, W, groups, bytes), groups * W, tw, sp.cin, sp.cout, sp.src, sp.dst))
+    else
+      kk = Base.invokelatest(k, backend, W)
+      push!(steps, (kk, groups * W, tw, sp.cin, sp.cout, sp.src, sp.dst))
+    end
   end
   n = prod(dims)
   used = Set(x for st in steps for x in st[6:7])
@@ -472,8 +563,13 @@ default_pad(dims, region, T, prof = :apple) = prof === :apple && length(dims) > 
 # y = DFT(x) without synchronization: kernels are queued in order on the backend's stream
 function launch!(y, x, P::KAPlan)
   get(b) = b === :x ? x : b === :y ? y : P.bufs[b]
-  for (kk, nd, tw, cin, cout, src, dst) in P.steps
-    Base.invokelatest(kk, get(dst), get(src), tw, cin, cout; ndrange = nd)
+  for (kern, nd, tw, cin, cout, src, dst) in P.steps
+    if kern isa Tuple    # CUDA dynamic shared memory pass: raw launch with shmem
+      (kobj, W, groups, bytes) = kern
+      kobj(get(dst), get(src), tw, cin, cout; threads = W, blocks = groups, shmem = bytes)
+    else
+      Base.invokelatest(kern, get(dst), get(src), tw, cin, cout; ndrange = nd)
+    end
   end
   y
 end
