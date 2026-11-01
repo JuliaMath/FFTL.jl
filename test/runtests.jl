@@ -21,7 +21,14 @@ tol(::Type{Float32}) = 2e-6
 
 using SIMD: Vec
 
-@testset "FFTL" begin
+# Default: a quick run that covers every feature with fewer sizes (CI on every push).
+# FFTL_TEST_FULL=true: the full lists.
+const FULL = get(ENV, "FFTL_TEST_FULL", "false") == "true"
+pick(full, quick) = FULL ? full : quick
+# quick run: Float32 takes every other case (its kernels compile separately from Float64's)
+thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
+
+@testset "FFTL" verbose = get(ENV, "FFTL_TEST_VERBOSE", "false") == "true" begin
   @testset "complex vector operations" begin
     # Checks the active implementation (FCADD/FCMLA on aarch64) and the shuffle formulas used
     # where these instructions are missing.
@@ -38,18 +45,19 @@ using SIMD: Vec
   end
 
   @testset "codelets and chains against the direct DFT, $T" for T in (Float64, Float32)
-    for n in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 24, 32, 48, 49, 60, 64, 80, 100,
-              105, 120, 128, 143, 169, 210, 243, 256, 360, 384, 500, 512, 1000, 1024,
-              17, 19, 23, 29, 31, 68, 289, 928, 31 * 27]
+    for n in pick([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 24, 32, 48, 49, 60, 64, 80, 100,
+                   105, 120, 128, 143, 169, 210, 243, 256, 360, 384, 500, 512, 1000, 1024,
+                   17, 19, 23, 29, 31, 68, 289, 928, 31 * 27],
+                  thin(T, [1, 2, 3, 4, 5, 7, 8, 11, 13, 16, 31, 60, 128, 243, 1000, 31 * 27]))
       x = randn(Complex{T}, n)
       ref = dft(ComplexF64.(x))
       @test relerr(FFTL.fft(x), ref) < tol(T)
-      @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < tol(T)
+      (FULL || n <= 16) && @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < tol(T)
     end
   end
 
   @testset "Bluestein, $T" for T in (Float64, Float32)
-    for n in [37, 41, 74, 101, 37^2, 1009]
+    for n in pick([37, 41, 74, 101, 37^2, 1009], [37, 74, 1009])
       x = randn(Complex{T}, n)
       @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
       @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < 10tol(T)
@@ -57,7 +65,7 @@ using SIMD: Vec
   end
 
   @testset "large lengths: inverse and Parseval, $T" for T in (Float64, Float32)
-    for n in [4096, 3^8, 10^5, 2^18, 2 * 10007]
+    for n in pick([4096, 3^8, 10^5, 2^18, 2 * 10007], [3^8, 2^18, 2 * 10007])
       x = randn(Complex{T}, n)
       y = FFTL.fft(x)
       @test relerr(FFTL.ifft(y), x) < 10tol(T)
@@ -66,10 +74,12 @@ using SIMD: Vec
   end
 
   @testset "multidimensional, $T" for T in (Float64, Float32)
-    cases = [((8, 12), (1, 2)), ((16, 16), (1, 2)), ((17, 6), (1, 2)), ((5, 37), (1, 2)),
-             ((3, 8), (2,)), ((3, 8), (1, 2)), ((12, 7), (1,)), ((1, 9), (1, 2)),
-             ((4, 6, 10), (1, 2, 3)), ((3, 5, 7), (1, 2, 3)), ((6, 4, 5), (1, 3)), ((6, 4, 5), (2,)),
-             ((16, 9, 2, 3), (1, 2, 3, 4))]
+    cases = pick([((8, 12), (1, 2)), ((16, 16), (1, 2)), ((17, 6), (1, 2)), ((5, 37), (1, 2)),
+                  ((3, 8), (2,)), ((3, 8), (1, 2)), ((12, 7), (1,)), ((1, 9), (1, 2)),
+                  ((4, 6, 10), (1, 2, 3)), ((3, 5, 7), (1, 2, 3)), ((6, 4, 5), (1, 3)), ((6, 4, 5), (2,)),
+                  ((16, 9, 2, 3), (1, 2, 3, 4))],
+                 thin(T, [((8, 12), (1, 2)), ((5, 37), (1, 2)), ((3, 8), (2,)), ((1, 9), (1, 2)),
+                          ((4, 6, 10), (1, 2, 3)), ((6, 4, 5), (1, 3)), ((16, 9, 2, 3), (1, 2, 3, 4))]))
     for (sz, region) in cases
       x = randn(Complex{T}, sz)
       ref = dftn(x, region)
@@ -87,10 +97,11 @@ using SIMD: Vec
   @testset "threads, $T" for T in (Float64, Float32)
     # sizes above the threading threshold: slices (dimension 1 of a 2D array), lane blocks
     # (last dimension), odd strides (last block with fewer lanes than the vector width)
-    for sz in [(256, 256), (64, 64, 64), (33, 1024), (100, 100, 10), (8, 4096), (1024, 37), (2 * 3^11,), (5^7,)]
+    for sz in pick([(256, 256), (64, 64, 64), (33, 1024), (100, 100, 10), (8, 4096), (1024, 37), (2 * 3^11,), (5^7,)],
+                   [(64, 64, 64), (33, 1024), (1024, 37), (2 * 3^11,)])
       x = randn(Complex{T}, sz)
       ref = FFTL.plan_fft(x; threads = 1) * x
-      for nt in (2, 3, 4)
+      for nt in pick((2, 3, 4), (3,))
         p = FFTL.plan_fft(x; threads = nt)
         @test relerr(p * x, ref) < tol(T)
         z = copy(x); mul!(z, p, z)
@@ -102,8 +113,9 @@ using SIMD: Vec
   @testset "passes on strided views, $T" for T in (Float64, Float32)
     # views of a padded array as an NFFT uses them: interior boxes and pruned boxes
     G0 = randn(Complex{T}, 40, 36, 30)
-    boxes = [(3:34, 2:33, 2:25), (3:6, 2:33, 2:25), (3:34, 5:9, 2:25), (1:40, 1:36, 1:30),
-             (2:38, 2:36, 3:3), (5:40, 1:36, 4:28)]
+    boxes = pick([(3:34, 2:33, 2:25), (3:6, 2:33, 2:25), (3:34, 5:9, 2:25), (1:40, 1:36, 1:30),
+                  (2:38, 2:36, 3:3), (5:40, 1:36, 4:28)],
+                 thin(T, [(3:34, 2:33, 2:25), (3:6, 2:33, 2:25), (2:38, 2:36, 3:3)]))
     for b in boxes, d in 1:3, sign in (-1, 1), nt in (1, 3)
       G = copy(G0)
       v = view(G, b...)
@@ -138,7 +150,8 @@ using SIMD: Vec
 
   @testset "pruned passes, $T" for T in (Float64, Float32)
     # NFFT pattern: N modes in a line of length n, the first N - N÷2 and the last N÷2 entries
-    for (n, N) in [(128, 64), (100, 40), (96, 70), (240, 180), (1024, 600), (162, 120), (64, 10)], d in 1:2, nt in (1, 3)
+    for (n, N) in pick([(128, 64), (100, 40), (96, 70), (240, 180), (1024, 600), (162, 120), (64, 10)],
+                       thin(T, [(128, 64), (96, 70), (64, 10)])), d in 1:2, nt in pick((1, 3), (3,))
       a = N - N ÷ 2; b = N ÷ 2
       rng = (1:a, n-b+1:n)
       dims = d == 1 ? (n + 4, 37) : (37, n + 4)
@@ -164,10 +177,12 @@ using SIMD: Vec
   end
 
   @testset "real transforms, $T" for T in (Float64, Float32)
-    for (sz, region) in [((8,), 1), ((9,), 1), ((10,), 1), ((15,), 1), ((16,), 1), ((37,), 1), ((100,), 1),
-                         ((101,), 1), ((1024,), 1), ((1023,), 1), ((3 * 2^11,), 1),
-                         ((8, 6), (1, 2)), ((9, 6), (1, 2)), ((7, 10), (1, 2)), ((8, 6), (2,)), ((12, 7), (2,)),
-                         ((6, 8, 5), (1, 2, 3)), ((6, 8, 5), (2, 3)), ((6, 9, 5), (2, 3)), ((5, 4, 6), (3,)), ((16, 9), (1,))]
+    for (sz, region) in pick([((8,), 1), ((9,), 1), ((10,), 1), ((15,), 1), ((16,), 1), ((37,), 1), ((100,), 1),
+                              ((101,), 1), ((1024,), 1), ((1023,), 1), ((3 * 2^11,), 1),
+                              ((8, 6), (1, 2)), ((9, 6), (1, 2)), ((7, 10), (1, 2)), ((8, 6), (2,)), ((12, 7), (2,)),
+                              ((6, 8, 5), (1, 2, 3)), ((6, 8, 5), (2, 3)), ((6, 9, 5), (2, 3)), ((5, 4, 6), (3,)), ((16, 9), (1,))],
+                             thin(T, [((9,), 1), ((16,), 1), ((37,), 1), ((1024,), 1), ((3 * 2^11,), 1),
+                                      ((9, 6), (1, 2)), ((12, 7), (2,)), ((6, 8, 5), (1, 2, 3)), ((6, 9, 5), (2, 3))]))
       x = randn(T, sz)
       reg = sort([region...]); d1 = reg[1]; n = sz[d1]; h = n ÷ 2 + 1
       full = dftn(x, reg)
@@ -184,7 +199,7 @@ using SIMD: Vec
       @test real(dot(yr, p * x)) ≈ dot(adjoint(p) * yr, x) rtol = 100tol(T)
     end
     # threads, large lines and strided lines
-    for (sz, region) in [((2^16, 4), (1, 2)), ((64, 513), (2,)), ((1000, 300), (1, 2))]
+    for (sz, region) in pick([((2^16, 4), (1, 2)), ((64, 513), (2,)), ((1000, 300), (1, 2))], [((2^16, 4), (1, 2)), ((64, 513), (2,))])
       x = randn(T, sz)
       @test relerr(FFTL.plan_rfft(x, region; threads = 4) * x, FFTL.plan_rfft(x, region; threads = 1) * x) < tol(T)
     end
@@ -220,7 +235,7 @@ using SIMD: Vec
               FFTL.RODFT01, FFTL.RODFT11, FFTL.DHT)
 
   @testset "real-to-real, $T" for T in (Float64, Float32)
-    for kind in r2rkinds, n in [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 15, 16, 31, 32, 33, 100, 101, 128]
+    for kind in r2rkinds, n in pick([1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 15, 16, 31, 32, 33, 100, 101, 128], thin(T, [1, 2, 3, 5, 16, 33]))
       kind == FFTL.REDFT00 && n < 2 && continue
       x = randn(T, n)
       @test relerr(FFTL.r2r(x, kind), r2r_ref(Float64.(x), kind)) < 10tol(T)
@@ -234,7 +249,7 @@ using SIMD: Vec
     for (d, k) in zip(1:3, kinds)
       ref = mapslices(u -> r2r_ref(u, k), ref; dims = d)
     end
-    for nt in (1, 3)
+    for nt in pick((1, 3), (3,))
       p = FFTL.plan_r2r(x, kinds, 1:3; threads = nt)
       @test relerr(p * x, ref) < 10tol(T)
       @test relerr(inv(p) * (p * x), x) < 10tol(T)
@@ -242,7 +257,7 @@ using SIMD: Vec
     @test relerr(FFTL.r2r(x, FFTL.REDFT00, (2,)), mapslices(u -> r2r_ref(u, FFTL.REDFT00), Float64.(x); dims = 2)) < 10tol(T)
     # pass plans on views of a padded array, all kinds, every dimension, in place and out of place
     G0 = randn(T, 26, 21, 13)
-    for kind in r2rkinds, d in 1:3, nt in (1, 2)
+    for kind in thin(T, collect(r2rkinds)), d in pick(1:3, (1, 3)), nt in pick((1, 2), (2,))
       b = (3:22, 2:18, 2:11)
       G = copy(G0); v = view(G, b...)
       ref = mapslices(u -> r2r_ref(u, kind), Float64.(Array(v)); dims = d)
@@ -253,7 +268,7 @@ using SIMD: Vec
       @test G[mask] == G0[mask]
     end
     # NFCT/NFST lengths: DCT-I with Ñ + 1 points, DST-I with Ñ - 1, Ñ smooth, even and odd
-    for Ñ in (96, 135, 250, 324), (kind, n) in ((FFTL.REDFT00, Ñ + 1), (FFTL.RODFT00, Ñ - 1))
+    for Ñ in pick((96, 135, 250, 324), (96, 135)), (kind, n) in ((FFTL.REDFT00, Ñ + 1), (FFTL.RODFT00, Ñ - 1))
       H0 = randn(T, n + 4, 7); H1 = similar(H0)
       v = view(H0, 3:n+2, 2:6); w = view(H1, 3:n+2, 2:6)
       mul!(w, FFTL.plan_r2r_pass(v, 1, kind), v)
