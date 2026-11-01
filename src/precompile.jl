@@ -38,81 +38,53 @@ The next load recompiles FFTL with the selected workload.
 """
 const PRECOMPILE_WORKLOAD = @load_preference("precompile_workload", "lean")
 
-if PRECOMPILE_WORKLOAD != "none"
-    @setup_workload begin
-        if PRECOMPILE_WORKLOAD == "broad"
-            for T in (Float64, Float32)
-                # 1D: benchmark lengths plus lengths that add the 3/5 and radix-8 codelets
-                xs = [randn(Complex{T}, n) for n in (1024, 100_000, 2^20, 1000, 360, 243, 128, 64, 1009)]
-                x2 = randn(Complex{T}, 256, 256)
-                x3 = randn(Complex{T}, 64, 64, 64)
-                xr1 = randn(T, 1024)
-                xr2 = randn(T, 64, 64)
-                zp = randn(Complex{T}, 64, 48)
-                v1 = view(zp, 5:60, 3:45)
-                v2 = view(zp, 5:60, :)
-                zl = randn(Complex{T}, 2^14)
-                @compile_workload begin
-                    for x in (xs..., x2, x3)
-                        p = plan_fft(x; threads = 1)
-                        mul!(similar(x), p, x)
-                        p = plan_bfft(x; threads = 1)
-                        mul!(similar(x), p, x)
-                        p = plan_ifft(x; threads = 1)
-                        mul!(similar(x), p, x)
-                    end
-                    for (sz, reg) in (([1024], [1]), ([1009], [1]), ([256, 256], [1, 2]), ([64, 64, 64], [1, 2, 3]))
-                        x = randn(Complex{T}, sz...)
-                        p = RPlan{T}(sz, reg, -1; threads = 1)
-                        mul!(similar(x), p, x)
-                    end
-                    for x in (xr1, xr2)
-                        p = plan_rfft(x; threads = 1)
-                        p * x
-                    end
-                    for (v, d) in ((v1, 1), (v2, 2))
-                        p = plan_pass(v, d)
-                        apply!(p, v)
-                    end
-                    # four-step for one long line on several threads
-                    p = plan_fft(zl; threads = 4)
-                    mul!(similar(zl), p, zl)
-                end
-            end
-        else
-            for T in (Float64, Float32)
-                xs = [randn(Complex{T}, n) for n in (1024, 1000, 1009)]
-                x2 = randn(Complex{T}, 16, 16)
-                x3 = randn(Complex{T}, 8, 8, 8)
-                xr1 = randn(T, 1024)
-                zp = randn(Complex{T}, 16, 16)
-                v1 = view(zp, 2:15, 2:15)
-                v2 = view(zp, 2:15, :)
-                @compile_workload begin
-                    for x in (xs..., x2, x3)
-                        p = plan_fft(x; threads = 1)
-                        mul!(similar(x), p, x)
-                        p = plan_bfft(x; threads = 1)
-                        mul!(similar(x), p, x)
-                        p = plan_ifft(x; threads = 1)
-                        mul!(similar(x), p, x)
-                    end
-                    for (sz, reg) in (([1024], [1]), ([1009], [1]), ([16, 16], [1, 2]), ([8, 8, 8], [1, 2, 3]))
-                        x = randn(Complex{T}, sz...)
-                        p = RPlan{T}(sz, reg, -1; threads = 1)
-                        mul!(similar(x), p, x)
-                    end
-                    p = plan_rfft(xr1; threads = 1)
-                    p * xr1
-                    for (v, d) in ((v1, 1), (v2, 2))
-                        p = plan_pass(v, d)
-                        apply!(p, v)
-                    end
-                end
-            end
-        end
-        # Do not serialise the twiddle/filter tables built while compiling: the image should
-        # contain code, not the runtime cache.
-        clear_cache!()
+# Plans built and applied by the workload for element type T: complex transforms of the
+# shapes (forward, backward, inverse), run-time plans, real transforms, passes on views.
+function precompile_workload(::Type{T}, shapes, rshapes, rplans, zp; fourstep = false) where {T}
+  for sz in shapes
+    x = randn(Complex{T}, sz...)
+    for plan in (plan_fft, plan_bfft, plan_ifft)
+      p = plan(x; threads = 1)
+      mul!(similar(x), p, x)
     end
+  end
+  for (sz, reg) in rplans
+    x = randn(Complex{T}, sz...)
+    p = RPlan{T}(sz, reg, -1; threads = 1)
+    mul!(similar(x), p, x)
+  end
+  for sz in rshapes
+    x = randn(T, sz...)
+    plan_rfft(x; threads = 1) * x
+  end
+  z = randn(Complex{T}, zp...)
+  for (v, d) in ((view(z, 2:zp[1]-1, 2:zp[2]-1), 1), (view(z, 2:zp[1]-1, :), 2))
+    apply!(plan_pass(v, d), v)
+  end
+  if fourstep   # one long line on several threads
+    x = randn(Complex{T}, 2^14)
+    mul!(similar(x), plan_fft(x; threads = 4), x)
+  end
+  nothing
+end
+
+if PRECOMPILE_WORKLOAD != "none"
+  @setup_workload begin
+    broad = PRECOMPILE_WORKLOAD == "broad"
+    shapes = broad ?
+      [(1024,), (100_000,), (2^20,), (1000,), (360,), (243,), (128,), (64,), (1009,), (256, 256), (64, 64, 64)] :
+      [(1024,), (1000,), (1009,), (16, 16), (8, 8, 8)]
+    rshapes = broad ? [(1024,), (64, 64)] : [(1024,)]
+    rplans = broad ? [([1024], [1]), ([1009], [1]), ([256, 256], [1, 2]), ([64, 64, 64], [1, 2, 3])] :
+                     [([1024], [1]), ([1009], [1]), ([16, 16], [1, 2]), ([8, 8, 8], [1, 2, 3])]
+    zp = broad ? (64, 48) : (16, 16)
+    @compile_workload begin
+      for T in (Float64, Float32)
+        precompile_workload(T, shapes, rshapes, rplans, zp; fourstep = broad)
+      end
+    end
+    # Do not serialise the twiddle/filter tables built while compiling: the image should
+    # contain code, not the runtime cache.
+    clear_cache!()
+  end
 end

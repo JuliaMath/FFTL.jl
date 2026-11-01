@@ -62,7 +62,9 @@ using Preferences, FFTL
 Preferences.set_preferences!(FFTL, "precompile_workload" => "broad"; force = true)
 ```
 
-`"none"` disables the workload. See `PRECOMPILE-REPORT.md` for the measured costs.
+`"none"` disables the workload. On an M1 Max the lean workload takes 32 s of precompilation
+and 96 MB of package image; a first plan and transform of a covered size then take a few
+milliseconds instead of about 4 s.
 
 ## How it works
 
