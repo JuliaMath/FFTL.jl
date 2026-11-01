@@ -16,6 +16,7 @@ using SIMD
 using LinearAlgebra
 import AbstractFFTs
 
+include("limits.jl")
 include("complexvec.jl")
 include("codegen.jl")
 include("kernels.jl")

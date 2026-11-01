@@ -12,14 +12,15 @@
 const THREAD_MIN_WORK = 1 << 15
 # Lane blocks are multiples of 8 complex values (a 128-byte cache line of ComplexF64).
 const LANE_ALIGN = 8
-# Complex values per lane-block buffer (2^16 ComplexF64 = 1 MB; 2^15–2^16 measured best on the M1).
-# Complex values per lane block buffer (a task holds two or three), 2^16 measured best on the M1.
+# Complex values per lane block buffer (a task holds two or three): 2^16 measured best on the
+# M1 (3 MB of L2 per core) and on Zen 3 with one thread, which then has the 32 MB L3 to itself.
 const BLOCK_BUDGET = 1 << 16
-# On x86 (Zen 3: 512 KB L2 per core, shared L3) with several threads, long lines (n >= 1024) take
-# blocks of at most 2^14 values: with 16 threads 2^22 Float64 1.6× and 2048² Float64 1.3× faster;
-# one thread keeps the larger blocks (2048² 1.6× slower with the small ones), as do short lines.
-const BLOCK_BUDGET_SHARED = 1 << 14
-block_budget(n, nt) = Sys.ARCH !== :aarch64 && nt > 1 && n >= 1024 ? BLOCK_BUDGET_SHARED : BLOCK_BUDGET
+# With several threads, long lines (n >= 1024) take blocks of half the L2 per core in ComplexF64
+# values: 2^14 on Zen 3 (512 KB L2 per core, shared L3; 16 threads: 2^22 Float64 1.6× and 2048²
+# Float64 1.3× faster than with 2^16), 2^16 on the M1. One thread keeps the large blocks (Zen 3
+# 2048² 1.6× slower with the small ones), as do short lines.
+block_budget(n, nt) = nt > 1 && n >= 1024 ?
+  clamp(prevpow2(CACHES[].l2 ÷ 32), 1 << 12, BLOCK_BUDGET) : BLOCK_BUDGET
 
 # Blocks per thread: threads take blocks from a shared counter, so a slow core (or one busy
 # with something else) delays the pass by one block, not by a fixed share.
@@ -163,13 +164,13 @@ function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C}
   n2 = n ÷ n1
   k1 = C{T}(n1, σ, radices(n1, n2; esize = sizeof(Complex{T})))
   k2 = C{T}(n2, σ, radices(n2, n1; esize = sizeof(Complex{T})))
-  # Above FACTOR_TWIDDLES bytes the table of W_n^(j1 k2) would be as large as the data and cost a
+  # Above factor_twiddles() bytes the table of W_n^(j1 k2) would be as large as the data and cost a
   # memory round trip: W_n^(j1 k2) = W_n1^a · W_n^b with j1 k2 = a n2 + b, from tables of n1 + n2
   # values (2^22 Float64 on 8 threads: 5 % faster on the M1). Cache-resident sizes keep the full
   # table: the extra product costs more there (65536 Float32: 4× slower with factor tables).
   tw = cached((:fourstep, T, n, σ, n1)) do
     W = unit_roots(σ, n)
-    if n * sizeof(Complex{T}) > FACTOR_TWIDDLES
+    if n * sizeof(Complex{T}) > factor_twiddles()
       [Complex{T}[W[a*n2+1] for a in 0:n1-1]; Complex{T}[W[b+1] for b in 0:n2-1]]
     else
       t = Vector{Complex{T}}(undef, n)
@@ -186,7 +187,9 @@ end
 
 const FOURSTEP_MIN = 1 << 13
 const ROW_PAD = 4
-const FACTOR_TWIDDLES = 1 << 23   # bytes; above this the four-step uses factor twiddle tables
+# Bytes above which the four-step uses factor twiddle tables: the last-level cache of a core
+# cluster (M1 Max: 12 MB L2 → 8 MB, measured).
+factor_twiddles() = max(prevpow2(CACHES[].llc), 1 << 20)
 
 use_fourstep(n, nt) = nt > 1 && n >= FOURSTEP_MIN && smooth(n) && fourstep_split(n) > 0
 
@@ -265,9 +268,11 @@ end
 # Passes along dimensions 1 and 2 fused per plane: when a plane (n1 × n2 values) fits in cache,
 # each plane gets both transforms while it is cached, so the two dimensions cost one memory
 # round trip. Planes are the work items; with several threads there must be enough of them.
-const PLANE_BUDGET = 1 << 17     # complex values per plane (2 MB ComplexF64)
+# Complex values per plane: the L2 per core in ComplexF64 values (M1: 2^17 = 2 MB, measured),
+# at most 2^17.
+plane_budget() = clamp(prevpow2(CACHES[].l2 ÷ 16), 1 << 12, 1 << 17)
 
-fuse_planes(n1, n2, outer, nt) = n1 * n2 <= PLANE_BUDGET && (nt == 1 || outer >= nt)
+fuse_planes(n1, n2, outer, nt) = n1 * n2 <= plane_budget() && (nt == 1 || outer >= nt)
 
 function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Union{Chain{T},RChain{T}}, k2::Union{Chain{T},RChain{T}},
                      n1::Int, n2::Int, outer::Int) where {T}
