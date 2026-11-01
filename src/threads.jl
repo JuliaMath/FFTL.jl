@@ -73,8 +73,10 @@ end
 # Separate function: the task closure in the same body slows the serial path above.
 @noinline function spawn_items(f::F, nitems, ntasks) where {F}
   next = Threads.Atomic{Int}(0)
-  @sync for c in 1:ntasks
-    Threads.@spawn begin
+  # tasks waited for one by one, not with @sync (its Channel{Any} does not compile ahead of time)
+  ts = Vector{Task}(undef, ntasks)
+  for c in 1:ntasks
+    ts[c] = Threads.@spawn begin
       local it = Threads.atomic_add!(next, 1)
       while it < nitems
         f(c, it)
@@ -82,6 +84,7 @@ end
       end
     end
   end
+  foreach(wait, ts)
   nothing
 end
 
@@ -168,21 +171,26 @@ function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C}
   # memory round trip: W_n^(j1 k2) = W_n1^a · W_n^b with j1 k2 = a n2 + b, from tables of n1 + n2
   # values (2^22 Float64 on 8 threads: 5 % faster on the M1). Cache-resident sizes keep the full
   # table: the extra product costs more there (65536 Float32: 4× slower with factor tables).
-  tw = cached((:fourstep, T, n, σ, n1)) do
-    W = unit_roots(σ, n)
-    if n * sizeof(Complex{T}) > FACTOR_TWIDDLES
-      [Complex{T}[W[a*n2+1] for a in 0:n1-1]; Complex{T}[W[b+1] for b in 0:n2-1]]
-    else
-      t = Vector{Complex{T}}(undef, n)
-      for j1 in 0:n1-1, k2 in 0:n2-1
-        t[j1*n2+k2+1] = Complex{T}(W[(j1*k2)%n+1])
-      end
-      t
-    end
-  end
+  tw = cached(() -> fourstep_twiddles(T, n, σ, n1), CacheKey(:fourstep, T, n, σ, [n1]))::Vector{Complex{T}}
   nw = max(lane_block(n1, n2, nt) * n2, lane_block(n2, n1, nt) * n1)
   FourStep{T,typeof(k1),typeof(k2)}(n, n1, n2, k1, k2, tw, Vector{Complex{T}}(undef, n1 * (n2 + ROW_PAD)),
                                     [Vector{Complex{T}}(undef, nw) for _ in 1:3nt])
+end
+
+function fourstep_twiddles(::Type{T}, n::Int, σ::Int, n1::Int) where {T}
+  n2 = n ÷ n1
+  W = unit_roots(σ, n)
+  if n * sizeof(Complex{T}) > FACTOR_TWIDDLES
+    t = Vector{Complex{T}}(undef, n1 + n2)
+    for a in 0:n1-1; t[a+1] = Complex{T}(W[a*n2+1]); end
+    for b in 0:n2-1; t[n1+b+1] = Complex{T}(W[b+1]); end
+  else
+    t = Vector{Complex{T}}(undef, n)
+    for j1 in 0:n1-1, k2 in 0:n2-1
+      t[j1*n2+k2+1] = Complex{T}(W[(j1*k2)%n+1])
+    end
+  end
+  t
 end
 
 const FOURSTEP_MIN = 1 << 13

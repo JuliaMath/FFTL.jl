@@ -70,11 +70,12 @@ end
 function packed_radices(n::Int)
   f, _ = factorize(n)
   bins = Int[]
-  for p in sort!(reduce(vcat, (fill(p, e) for (p, e) in f); init = Int[]); rev = true)
+  for p in reverse!(sort!(reduce(vcat, (fill(p, e) for (p, e) in f); init = Int[])))
     i = findfirst(b -> b * p <= 8, bins)
     i === nothing ? push!(bins, p) : (bins[i] *= p)
   end
-  sort!(bins; by = r -> (!ispow2(r), -r))
+  # powers of two first, each group in decreasing order
+  [reverse!(sort!(filter(ispow2, bins))); reverse!(sort!(filter(!ispow2, bins)))]
 end
 
 function heuristic_radices(n::Int, S::Int)
@@ -121,7 +122,7 @@ function heuristic_radices(n::Int, S::Int)
   pow2 = vcat(fill(8, eight), fill(4, fours), fill(2, two))
   # first stage: a power-of-two radix if available, then the rest, remaining powers of two last
   if isempty(pow2)
-    return sort(r; rev = true)
+    return reverse!(sort(r))
   end
   vcat(pow2[1], r, pow2[2:end])
 end

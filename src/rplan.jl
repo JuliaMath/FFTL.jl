@@ -64,8 +64,10 @@ function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Intege
     ntwork = max(ntwork, dims[1] * dims[2])
   end
   RPlan{T}(dims, reg, Int(σ), chains, blue, four, Vector{Complex{T}}(undef, nwork), Vector{Complex{T}}(undef, nwork),
-           nt, [Vector{Complex{T}}(undef, ntwork) for _ in 1:2nt])
+           nt, thread_buffers(T, ntwork, 2nt))
 end
+
+thread_buffers(::Type{T}, n::Int, k::Int) where {T} = Vector{Complex{T}}[Vector{Complex{T}}(undef, n) for _ in 1:k]
 
 RPlan{T}(sz::Tuple, region, σ::Integer; kw...) where {T} = RPlan{T}(collect(Int, sz), collect(Int, region), σ; kw...)
 

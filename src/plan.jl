@@ -19,16 +19,30 @@ end
 # Read-only parts of kernels (chains, four-step twiddles, Bluestein chirp and filter) are shared
 # between plans and threads: a second plan of a size costs a lookup. Bounded; when full, an
 # arbitrary entry is dropped. `clear_cache!()` frees everything.
-const KCACHE = Dict{Any,Any}()
+# Keys and values are concretely typed at every call site (kind, element type, sizes; values are
+# asserted by the caller), so the cache compiles ahead of time (juliac --trim).
+struct CacheKey
+  kind::Symbol
+  T::DataType
+  n::Int
+  σ::Int
+  rs::Vector{Int}
+end
+Base.hash(k::CacheKey, h::UInt) = hash(k.rs, hash(k.σ, hash(k.n, hash(k.T, hash(k.kind, h)))))
+Base.:(==)(a::CacheKey, b::CacheKey) = a.kind === b.kind && a.T === b.T && a.n == b.n && a.σ == b.σ && a.rs == b.rs
+
+const KCACHE = Dict{CacheKey,Any}()
 const KCACHE_LOCK = ReentrantLock()
 const KCACHE_MAX = 64
 
-function cached(f, key)
-  lock(KCACHE_LOCK) do
+function cached(f::F, key::CacheKey) where {F}
+  @lock KCACHE_LOCK begin
     v = get(KCACHE, key, nothing)
     v === nothing || return v
     length(KCACHE) >= KCACHE_MAX && delete!(KCACHE, first(keys(KCACHE)))
-    KCACHE[key] = f()
+    w = f()
+    KCACHE[key] = w
+    w
   end
 end
 
@@ -37,10 +51,10 @@ end
 
 Drop the twiddle and filter tables that FFTL keeps for reuse by later plans.
 """
-clear_cache!() = (lock(() -> empty!(KCACHE), KCACHE_LOCK); nothing)
+clear_cache!() = (@lock KCACHE_LOCK empty!(KCACHE); nothing)
 
 Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
-  cached(() -> build_chain(T, n, σ, rs), (:chain, T, n, σ, Tuple(rs)))
+  cached(() -> build_chain(T, n, σ, rs), CacheKey(:chain, T, n, σ, collect(Int, rs)))
 
 function build_chain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
   prod(rs; init = 1) == n || throw(ArgumentError("radices do not multiply to the length"))
@@ -267,20 +281,24 @@ function Bluestein{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
   fwd = C{T}(M, -1)
   bwd = C{T}(M, 1)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
-  chirp, b = cached((:bluestein, T, n, σ)) do
-    # c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n)
-    W = unit_roots(σ, 2n)
-    c = [Complex{T}(W[mod(j * j, 2n)+1]) for j in 0:n-1]
-    b = zeros(Complex{T}, M)
-    b[1] = conj(c[1])
-    for j in 1:n-1
-      b[j+1] = b[M-j+1] = conj(c[j+1])
-    end
-    GC.@preserve b w1 w2 run!(cptr(b), cptr(b), cptr(w1), cptr(w2), fwd, 1)
-    b ./= M
-    (c, b)
-  end
+  chirp, b = cached(() -> bluestein_tables(T, n, σ, fwd, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
+                   )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
   Bluestein{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, zeros(Complex{T}, M), w1, w2)
+end
+
+# chirp c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n) and the filter FFT_M(conj(c) wrapped) / M
+function bluestein_tables(::Type{T}, n::Int, σ::Int, fwd, w1::Vector{Complex{T}}, w2::Vector{Complex{T}}) where {T}
+  M = length(w1)
+  W = unit_roots(σ, 2n)
+  c = Complex{T}[Complex{T}(W[mod(j * j, 2n)+1]) for j in 0:n-1]
+  b = zeros(Complex{T}, M)
+  b[1] = conj(c[1])
+  for j in 1:n-1
+    b[j+1] = b[M-j+1] = conj(c[j+1])
+  end
+  GC.@preserve b w1 w2 run!(cptr(b), cptr(b), cptr(w1), cptr(w2), fwd, 1)
+  b ./= M
+  (c, b)
 end
 
 # Lane by lane: gather, convolve, scatter. Element j of lane i at px + i + Sx·j, py + i + Sy·j.

@@ -18,7 +18,7 @@ struct RChain{T} <: Kernel{T}
 end
 
 RChain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
-  cached(() -> build_rchain(T, n, σ, rs), (:rchain, T, n, σ, Tuple(rs)))::RChain{T}
+  cached(() -> build_rchain(T, n, σ, rs), CacheKey(:rchain, T, n, σ, collect(Int, rs)))::RChain{T}
 
 function build_rchain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
   prod(rs; init = 1) == n || throw(ArgumentError("radices do not multiply to the length"))
