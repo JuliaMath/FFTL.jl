@@ -156,7 +156,11 @@ function FourStep{T}(n::Int, σ::Int, nt::Int) where {T}
   n2 = n ÷ n1
   k1 = Chain{T}(n1, σ, radices(n1, n2; esize = sizeof(Complex{T})))
   k2 = Chain{T}(n2, σ, radices(n2, n1; esize = sizeof(Complex{T})))
-  tw = vec([Complex{T}(cispi(2σ * mod(j1 * k2, n) / n)) for k2 in 0:n2-1, j1 in 0:n1-1])
+  W = unit_roots(σ, n)
+  tw = Vector{Complex{T}}(undef, n)
+  for j1 in 0:n1-1, k2 in 0:n2-1
+    tw[j1*n2+k2+1] = Complex{T}(W[(j1*k2)%n+1])
+  end
   nw = max(lane_block(n1, n2, nt) * n2, lane_block(n2, n1, nt) * n1)
   FourStep{T,typeof(k1),typeof(k2)}(n, n1, n2, k1, k2, tw, Vector{Complex{T}}(undef, n1 * (n2 + ROW_PAD)),
                                     [Vector{Complex{T}}(undef, nw) for _ in 1:3nt])
