@@ -66,3 +66,16 @@ Base.@ccallable function fftl_trim_exec_f64()::Cint
   mul!(Y_EXEC, P_EXEC, X_EXEC)
   0
 end
+
+# threaded execution only (Claude Code's review point 4 of fftl.h): the plan comes from
+# build-time top-level code with threads = 2, the entry runs the spawn path. The runtime of
+# the trimmed library starts with one Julia thread (--jl-option threads=1); the check is
+# static, whether Threads.@spawn and friends resolve.
+const P_THR = FFTL.plan_fft(Array{ComplexF64}(undef, 33, 1024); threads = 2)
+const X_THR = Array{ComplexF64}(undef, 33, 1024)
+const Y_THR = similar(X_THR)
+
+Base.@ccallable function fftl_trim_exec_threaded_f64()::Cint
+  mul!(Y_THR, P_THR, X_THR)
+  0
+end
