@@ -117,8 +117,12 @@ fftl_plan fftl_plan_dft(int32_t rank, const int64_t *dims, int32_t transform_ran
  * holds the half spectrum: along the first transformed dimension d = region[0] it has
  * dims[d] / 2 + 1 values, the other dimensions as in dims. r2c reads the real array and
  * writes the complex one; c2r reads the complex array (and leaves it unchanged) and writes
- * the real one; c2r after r2c multiplies by the number of transformed elements. Both run out
- * of place only (out != in).
+ * the real one; c2r after r2c multiplies by the number of transformed elements.
+ *
+ * In place (out == in, as in FFTW): the real array is padded along d to 2 * (dims[d] / 2 + 1)
+ * values, so that it occupies exactly the memory of the complex half spectrum. Its values at
+ * positions dims[d] and above along d are ignored by r2c and undefined after c2r; the in-place
+ * c2r overwrites its input.
  */
 fftl_plan fftl_plan_dft_r2c(int32_t rank, const int64_t *dims, int32_t transform_rank,
                             const int32_t *region, int32_t precision, int32_t threads);
@@ -141,12 +145,13 @@ fftl_plan fftl_plan_r2r(int32_t rank, const int64_t *dims, int32_t transform_ran
  *
  * Executes the plan of any of the four kinds: transforms the elements of in according to the
  * plan's region and stores the result in out. out and in point to separate arrays (out of
- * place) or, for complex DFT and real-to-real plans, are the same pointer (in place):
- * fftl_plan_execute(p, buf, buf); out and in may not partially overlap. The buffers hold the
+ * place) or the same pointer (in place): fftl_plan_execute(p, buf, buf); out and in may not
+ * partially overlap. r2c/c2r plans in place use the padded real layout described at
+ * fftl_plan_dft_r2c. The buffers hold the
  * arrays described at the plan's creation (complex or real values in the plan's precision).
  *
- * Returns 0, or -1 if the handle is invalid or an r2c/c2r plan is called in place (then
- * fftl_last_error has the reason; the buffers are untouched).
+ * Returns 0, or -1 if the handle is invalid (then fftl_last_error has the reason; the buffers
+ * are untouched).
  */
 int32_t fftl_plan_execute(fftl_plan p, void *out, const void *in);
 

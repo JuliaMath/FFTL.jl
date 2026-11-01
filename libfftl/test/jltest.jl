@@ -265,7 +265,16 @@ for prec in (FFTL_PRECISION_DOUBLE, FFTL_PRECISION_SINGLE), (dims, region0) in
     N = prod(dims[r + 1] for r in region0)
     @CHECK maximum(abs.(z ./ N .- x)) <= tol * maximum(abs.(x)), "c2r round trip $T $dims $region0 threads $threads"
     @CHECK y == y0, "c2r leaves its input unchanged $T $dims"
-    @CHECK GC.@preserve(x, exe(pf, x, x)) == -1, "r2c in place rejected"
+    # in place: the real array padded along the first transformed dimension to 2(n÷2+1)
+    d1 = region0[1] + 1
+    psz = copy(dims); psz[d1] = 2 * (dims[d1] ÷ 2 + 1)
+    local buf = zeros(T, psz...)
+    buf[ntuple(i -> i == d1 ? (1:dims[d1]) : (:), length(dims))...] = x
+    GC.@preserve buf exe(pf, buf, buf)
+    @CHECK maximum(abs.(reinterpret(Complex{T}, vec(buf)) .- ref)) <= tol * maximum(abs.(ref)), "r2c in place $T $dims $region0"
+    GC.@preserve buf exe(pb, buf, buf)
+    back = buf[ntuple(i -> i == d1 ? (1:dims[d1]) : (:), length(dims))...] ./ N
+    @CHECK maximum(abs.(back .- x)) <= tol * maximum(abs.(x)), "c2r in place $T $dims $region0"
     @CHECK fftl_plan_destroy(pf) == 0 && fftl_plan_destroy(pb) == 0, "destroy real plans"
   end
 end

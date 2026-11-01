@@ -344,6 +344,14 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       z = similar(x)
       GC.@preserve y z FFTL.execute_c2r!(q, pointer(z), pointer(y))
       @test relerr(z ./ prod(sz[d] for d in reg), x) < 10tol(T)
+      # in place: real array padded to 2(n÷2+1) along the first transformed dimension
+      d1 = reg[1]; psz = collect(sz); psz[d1] = 2 * (sz[d1] ÷ 2 + 1)
+      buf = zeros(T, psz...); idx = ntuple(i -> i == d1 ? (1:sz[d1]) : (:), length(sz))
+      buf[idx...] = x
+      GC.@preserve buf FFTL.execute_r2c!(p, Ptr{Complex{T}}(pointer(buf)), pointer(buf))
+      @test relerr(reshape(reinterpret(Complex{T}, vec(buf)), size(ref)), ref) < 10tol(T)
+      GC.@preserve buf FFTL.execute_c2r!(q, pointer(buf), Ptr{Complex{T}}(pointer(buf)))
+      @test relerr(buf[idx...] ./ prod(sz[d] for d in reg), x) < 10tol(T)
     end
     x = randn(T, 9, 12, 5)
     ks = [FFTL.HC2R, FFTL.REDFT00, FFTL.RODFT11]

@@ -431,7 +431,7 @@ static void test_plan_reuse(void) {
 /* ------------------------------------------------------------------ real transforms */
 
 /* r2c (double and single) against the half of the naive complex DFT, c2r round trip, input of
- * c2r unchanged, in place rejected. */
+ * c2r unchanged, in place with the padded real layout (double). */
 static void check_real(const char *name, const int64_t *dims, int rank, const int32_t *region,
                        int trank, int32_t precision, int32_t threads) {
   int64_t n = prod(dims, rank), d = region[0];
@@ -492,7 +492,24 @@ static void check_real(const char *name, const int64_t *dims, int rank, const in
     free(y0);
   }
   CHECK(maxd < tol, name);
-  CHECK(fftl_plan_execute(pf, y, y) == -1, "r2c in place rejected");
+  /* in place (double): the real array padded along d to 2 * hdims[d] values */
+  if (!single) {
+    double *buf = calloc(2 * nh, sizeof(double));
+    for (int64_t o = 0; o < outer; o++)
+      for (int64_t j = 0; j < dims[d]; j++)
+        for (int64_t l = 0; l < S; l++)
+          buf[o * S * 2 * hdims[d] + j * S + l] = xr[o * S * dims[d] + j * S + l];
+    CHECK(fftl_plan_execute(pf, buf, buf) == 0, name);
+    CHECK(relerr(buf, ref, nh) < tol, "r2c in place");
+    CHECK(fftl_plan_execute(pb, buf, buf) == 0, name);
+    double md = 0;
+    for (int64_t o = 0; o < outer; o++)
+      for (int64_t j = 0; j < dims[d]; j++)
+        for (int64_t l = 0; l < S; l++)
+          md = fmax(md, fabs(buf[o * S * 2 * hdims[d] + j * S + l] / scale - xr[o * S * dims[d] + j * S + l]));
+    CHECK(md < tol, "c2r in place round trip");
+    free(buf);
+  }
   CHECK(fftl_plan_destroy(pf) == 0 && fftl_plan_destroy(pb) == 0, name);
   free(xr); free(z); free(full); free(ref); free(y); free(tmp); free(xf); free(zf); free(yf);
 }

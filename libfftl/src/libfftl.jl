@@ -233,7 +233,6 @@ end
 function exec_real(reg::Vector{Union{Nothing,RRFFTPlan{T}}}, idx::Int, typ::Int, out::Ptr{Cvoid}, in_::Ptr{Cvoid})::Cint where {T}
   e = lookup(reg, idx)
   (e === nothing || (typ == R2C) != (e.σ == -1)) && return invalid_handle()
-  out == in_ && (LAST_ERROR[] = "real-to-complex and complex-to-real plans run out of place only"; return Cint(-1))
   GC.@preserve e begin
     typ == R2C ? execute_r2c!(e, Ptr{Complex{T}}(out), Ptr{T}(in_)) : execute_c2r!(e, Ptr{T}(out), Ptr{Complex{T}}(in_))
   end
