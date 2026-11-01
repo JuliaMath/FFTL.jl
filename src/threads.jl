@@ -206,3 +206,26 @@ function twiddle_transpose!(pa::Ptr{Complex{T}}, pw::Ptr{Complex{T}}, ptw::Ptr{C
     end
   end
 end
+
+# Passes along dimensions 1 and 2 fused per plane: when a plane (n1 × n2 values) fits in cache,
+# each plane gets both transforms while it is cached, so the two dimensions cost one memory
+# round trip. Planes are the work items; with several threads there must be enough of them.
+const PLANE_BUDGET = 1 << 17     # complex values per plane (2 MB ComplexF64)
+
+fuse_planes(n1, n2, outer, nt) = n1 * n2 <= PLANE_BUDGET && (nt == 1 || outer >= nt)
+
+function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Chain{T}, k2::Chain{T}, n1::Int, n2::Int, outer::Int) where {T}
+  CT = 2 * sizeof(T)
+  step = n1 * n2 * CT
+  ntasks = threaded(n1, n2, outer, p.nthreads) ? p.nthreads : 1
+  parallel_items(outer, ntasks) do c, o
+    local pw1 = cptr(p.tbuf[2c-1]); local pw2 = cptr(p.tbuf[2c])
+    local base = o * step
+    for j in 0:n2-1
+      local off = base + j * n1 * CT
+      run!(py + off, px + off, pw1, pw2, k1, 1)
+    end
+    run!(py + base, py + base, pw1, pw2, k2, n1)
+  end
+  nothing
+end

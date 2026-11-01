@@ -41,6 +41,9 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Thre
   kernels = Tuple(dim_kernel(d) for d in reg)
   nwork = maximum((prod(sz[1:d]) for d in reg); init = 0)
   ntwork = maximum((thread_work(sz, d, nt) for d in reg); init = 0)
+  if length(reg) >= 2 && reg[1] == 1 && reg[2] == 2 && fuse_planes(sz[1], sz[2], dim_extent(sz, 2)[2], nt)
+    ntwork = max(ntwork, sz[1] * sz[2])
+  end
   tbuf = [Vector{Complex{T}}(undef, ntwork) for _ in 1:2nt]
   FFTLPlan{T,N,length(reg),typeof(kernels)}(sz, reg, σ, kernels, Vector{Complex{T}}(undef, nwork),
                                             Vector{Complex{T}}(undef, nwork), nt, tbuf)
@@ -66,8 +69,17 @@ check_size(p, x) = size(x) == p.sz ||
   throw(DimensionMismatch("plan for size $(p.sz) applied to an array of size $(size(x))"))
 
 # Dimensions one after the other; the tuple of kernels is peeled so that each call is static.
+# Dimensions 1 and 2 are fused per plane when a plane fits in cache (`run_planes!`).
 function apply_dims!(y::Array{Complex{T}}, x::Array{Complex{T}}, p::FFTLPlan{T}, ks::Tuple, ds::Tuple) where {T}
   isempty(ks) && return y
+  if length(ks) >= 2 && ds[1] == 1 && ds[2] == 2 && ks[1] isa Chain && ks[2] isa Chain
+    n1, n2 = p.sz[1], p.sz[2]
+    outer = dim_extent(p.sz, 2)[2]
+    if fuse_planes(n1, n2, outer, p.nthreads)
+      GC.@preserve x y p run_planes!(cptr(y), cptr(x), p, ks[1], ks[2], n1, n2, outer)
+      return apply_dims!(y, y, p, Base.tail(Base.tail(ks)), Base.tail(Base.tail(ds)))
+    end
+  end
   k, d = first(ks), first(ds)
   # loops, not prod(p.sz[1:d-1]): a tuple sliced by a run-time range has an unknown length
   S = 1; outer = 1
