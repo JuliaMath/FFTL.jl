@@ -315,6 +315,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     @test !FFTL.set_conflict(FFTL.radices(48, 2304), 48, 2304)
     @test all(<=(8), FFTL.radices(144, 144^2))
   end
+  include("inference.jl")
   include("ka.jl")
   include("aqua.jl")
 end
