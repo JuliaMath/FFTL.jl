@@ -261,10 +261,11 @@ function next_smooth(n::Int)
   end
 end
 
-function Bluestein{T}(n::Int, σ::Int) where {T}
+# C: the chain type of the two convolution transforms (Chain, or RChain for run-time plans)
+function Bluestein{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
   M = next_smooth(2n - 1)
-  fwd = Chain{T}(M, -1)
-  bwd = Chain{T}(M, 1)
+  fwd = C{T}(M, -1)
+  bwd = C{T}(M, 1)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
   chirp, b = cached((:bluestein, T, n, σ)) do
     # c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n)

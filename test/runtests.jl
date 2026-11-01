@@ -309,6 +309,21 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  # run-time plans (RChain kernels): same results as the reference, four-step and plane fusion
+  @testset "RPlan, $T" for T in pick((Float64, Float32), (Float64,))
+    for (sz, reg, nt) in pick([((1000,), [1], 1), ((2 * 3^11,), [1], 3), ((1009,), [1], 1), ((64, 48), [1, 2], 1),
+                               ((37, 100), [1, 2], 3), ((16, 9, 5), [1, 2, 3], 1), ((8, 37, 6), [2], 3), ((40, 36, 10), [1, 3], 3)],
+                              [((2 * 3^11,), [1], 3), ((1009,), [1], 1), ((37, 100), [1, 2], 3), ((16, 9, 5), [1, 2, 3], 1), ((8, 37, 6), [2], 3)])
+      x = randn(Complex{T}, sz)
+      p = FFTL.RPlan{T}(collect(sz), reg, -1; threads = nt)
+      ref = FFTL.plan_fft(x, Tuple(reg); threads = 1) * x
+      @test relerr(p * x, ref) < 10tol(T)
+      z = copy(x); GC.@preserve z FFTL.execute!(p, pointer(z), pointer(z))
+      @test relerr(z, ref) < 10tol(T)
+      @test relerr(inv(p) * (p * x), x) < 10tol(T)
+    end
+  end
+
   @testset "plans: in place, out of place, inv" begin
     for n in [1, 7, 64, 1000, 1009]
       x = randn(ComplexF64, n)

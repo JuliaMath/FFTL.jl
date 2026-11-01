@@ -83,7 +83,7 @@ function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer
   step = 2 * S * n * sizeof(T)
   if k isa FourStep
     run_fourstep!(py, px, k, nt)
-  elseif k isa Chain && use_lanes(S, n, outer, nt)
+  elseif (k isa Chain || k isa RChain) && use_lanes(S, n, outer, nt)
     B = lane_block(S, n, nt)
     nb = cld(S, B)
     ntasks = threaded(S, n, outer, nt) ? nt : 1
@@ -93,7 +93,7 @@ function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer
       local off = o * step + i0 * 2 * sizeof(T)
       run_lanes!(py + off, px + off, cptr(p.tbuf[2c-1]), cptr(p.tbuf[2c]), k, S, S, min(B, S - i0))
     end
-  elseif k isa Chain && threaded(S, n, outer, nt) && outer >= nt
+  elseif (k isa Chain || k isa RChain) && threaded(S, n, outer, nt) && outer >= nt
     # slices in groups, BLOCKS_PER_THREAD groups per thread
     ng = min(outer, BLOCKS_PER_THREAD * nt)
     parallel_items(ng, nt) do c, g
@@ -151,11 +151,12 @@ function fourstep_split(n)
   best
 end
 
-function FourStep{T}(n::Int, σ::Int, nt::Int) where {T}
+# C: the chain type of the two factors (Chain, or RChain for run-time plans)
+function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C}
   n1 = fourstep_split(n)
   n2 = n ÷ n1
-  k1 = Chain{T}(n1, σ, radices(n1, n2; esize = sizeof(Complex{T})))
-  k2 = Chain{T}(n2, σ, radices(n2, n1; esize = sizeof(Complex{T})))
+  k1 = C{T}(n1, σ, radices(n1, n2; esize = sizeof(Complex{T})))
+  k2 = C{T}(n2, σ, radices(n2, n1; esize = sizeof(Complex{T})))
   tw = cached((:fourstep, T, n, σ, n1)) do
     W = unit_roots(σ, n)
     t = Vector{Complex{T}}(undef, n)
@@ -226,7 +227,8 @@ const PLANE_BUDGET = 1 << 17     # complex values per plane (2 MB ComplexF64)
 
 fuse_planes(n1, n2, outer, nt) = n1 * n2 <= PLANE_BUDGET && (nt == 1 || outer >= nt)
 
-function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Chain{T}, k2::Chain{T}, n1::Int, n2::Int, outer::Int) where {T}
+function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Union{Chain{T},RChain{T}}, k2::Union{Chain{T},RChain{T}},
+                     n1::Int, n2::Int, outer::Int) where {T}
   CT = 2 * sizeof(T)
   step = n1 * n2 * CT
   ntasks = threaded(n1, n2, outer, p.nthreads) ? p.nthreads : 1
