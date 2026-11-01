@@ -1,21 +1,21 @@
-# Precompile workload: build and apply the plans whose generated kernels dominate the first
-# plan and first transform in a fresh process. The cost is almost all compilation of the
-# codelets and of the code that selects them, so the workload runs small arrays; one length
-# per radix family (4, 10/5, 12/6, 9/3, 8, 16), one Bluestein length, small 2D/3D arrays,
-# run-time plans, real transforms and passes, for both element types.
+# Precompile workload (variant BROAD) -- draft, copied into src/precompile.jl for measurement.
+# The benchmark shapes plus lengths that add the radix families 3, 5, 6, 8, 9, 10, 12, Bluestein,
+# run-time plans, real transforms, passes, and one four-step (threaded long line) case.
 
 using PrecompileTools: @setup_workload, @compile_workload
 
 @setup_workload begin
     for T in (Float64, Float32)
-        xs = [randn(Complex{T}, n) for n in (1024, 1000, 360, 243, 128, 64, 1009)]
-        x2 = randn(Complex{T}, 64, 64)
-        x3 = randn(Complex{T}, 16, 16, 16)
+        # 1D: benchmark lengths plus lengths that add the 3/5 and radix-8 codelets
+        xs = [randn(Complex{T}, n) for n in (1024, 100_000, 2^20, 1000, 360, 243, 128, 64, 1009)]
+        x2 = randn(Complex{T}, 256, 256)
+        x3 = randn(Complex{T}, 64, 64, 64)
         xr1 = randn(T, 1024)
         xr2 = randn(T, 64, 64)
         zp = randn(Complex{T}, 64, 48)
         v1 = view(zp, 5:60, 3:45)
         v2 = view(zp, 5:60, :)
+        zl = randn(Complex{T}, 2^14)
         @compile_workload begin
             for x in (xs..., x2, x3)
                 p = plan_fft(x; threads = 1)
@@ -25,8 +25,7 @@ using PrecompileTools: @setup_workload, @compile_workload
                 p = plan_ifft(x; threads = 1)
                 mul!(similar(x), p, x)
             end
-            # run-time plans: one smooth 1D, one Bluestein, one 2D and one 3D
-            for (sz, reg) in (([1024], [1]), ([1009], [1]), ([64, 64], [1, 2]), ([16, 16, 16], [1, 2, 3]))
+            for (sz, reg) in (([1024], [1]), ([1009], [1]), ([256, 256], [1, 2]), ([64, 64, 64], [1, 2, 3]))
                 x = randn(Complex{T}, sz...)
                 p = RPlan{T}(sz, reg, -1; threads = 1)
                 mul!(similar(x), p, x)
@@ -39,6 +38,9 @@ using PrecompileTools: @setup_workload, @compile_workload
                 p = plan_pass(v, d)
                 apply!(p, v)
             end
+            # four-step for one long line on several threads
+            p = plan_fft(zl; threads = 4)
+            mul!(similar(zl), p, zl)
         end
     end
     # Do not serialise the twiddle/filter tables built while compiling: the image should contain
