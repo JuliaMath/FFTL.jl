@@ -9,6 +9,9 @@
 #   4s and a 2 (not an 8) when there is a 3 or 5 to merge the 2 with.
 # - Other primes up to MAX_RADIX_PRIME are radices of their own.
 # The first stage takes a power-of-two radix when there is one.
+# - Float32, n ≥ 256: the last two radix-4 stages become one radix-16 stage (the last stage has
+#   no twiddles, so radix 16 fits the registers; brute force on M1 and Zen 3, e.g. Zen 3, 1024:
+#   (4, 4, 4, 16) 1.00 vs 4^5 1.11 × FFTW MEASURE).
 # - Batched transforms with a large stride S (a dimension ≥ 2 of a big array): a radix-R stage
 #   reads R streams S·m elements apart, which share cache sets when R ≥ 16 (64³, dimension 3:
 #   (4, 16) 1123 µs, (4, 4, 4) 408 µs). Above LARGE_STRIDE no radix is larger than 8.
@@ -37,11 +40,11 @@ smooth(n::Int) = factorize(n)[2] == 1
 const LARGE_STRIDE = 256
 
 """
-    radices(n, S = 1)
+    radices(n, S = 1, T = Float64)
 
-Radix sequence for a chain of length `n` applied to `S` interleaved sequences.
+Radix sequence for a chain of length `n` applied to `S` interleaved sequences of complex `T`.
 """
-function radices(n::Int, S::Int = 1)
+function radices(n::Int, S::Int = 1, ::Type{T} = Float64) where {T}
   n == 1 && return Int[]
   f, rest = factorize(n)
   rest == 1 || throw(ArgumentError("length $n has prime factors larger than $MAX_RADIX_PRIME"))
@@ -77,10 +80,10 @@ function radices(n::Int, S::Int = 1)
   for p in (7, 11, 13, 17, 19, 23, 29, 31), _ in 1:get(f, p, 0)
     push!(r, p)
   end
+  last16 = T == Float32 && S <= LARGE_STRIDE && n >= 256 && fours >= 3
+  last16 && (fours -= 2)
   pow2 = vcat(fill(8, eight), fill(4, fours), fill(2, two))
   # first stage: a power-of-two radix if available, then the rest, remaining powers of two last
-  if isempty(pow2)
-    return sort(r; rev = true)
-  end
-  vcat(pow2[1], r, pow2[2:end])
+  rs = isempty(pow2) ? sort(r; rev = true) : vcat(pow2[1], r, pow2[2:end])
+  last16 ? vcat(rs, 16) : rs
 end
