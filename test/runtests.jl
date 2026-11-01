@@ -369,7 +369,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     @test FFTL.count_cpus("0-7,128-135\n") == 16 && FFTL.count_cpus("0,128") == 2
     try
       FFTL.set_cpu_caches!(l1 = 128 << 10, l2 = 3 << 20, llc = 12 << 20)   # M1 Max
-      @test (FFTL.block_budget(2048, 8), FFTL.plane_budget(), FFTL.factor_twiddles()) == (1 << 16, 1 << 17, 1 << 23)
+      @test (FFTL.block_budget(2048, 8), FFTL.block_budget(2048, 1)) == (1 << 16, 1 << 16)
       FFTL.set_cpu_caches!(l1 = 32 << 10, l2 = 512 << 10, llc = 32 << 20)  # Zen 3
       @test (FFTL.block_budget(2048, 8), FFTL.block_budget(2048, 1), FFTL.block_budget(512, 8)) == (1 << 14, 1 << 16, 1 << 16)
       @test FFTL.cpu_caches().source === :user

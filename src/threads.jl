@@ -164,13 +164,13 @@ function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C}
   n2 = n ÷ n1
   k1 = C{T}(n1, σ, radices(n1, n2; esize = sizeof(Complex{T})))
   k2 = C{T}(n2, σ, radices(n2, n1; esize = sizeof(Complex{T})))
-  # Above factor_twiddles() bytes the table of W_n^(j1 k2) would be as large as the data and cost a
+  # Above FACTOR_TWIDDLES bytes the table of W_n^(j1 k2) would be as large as the data and cost a
   # memory round trip: W_n^(j1 k2) = W_n1^a · W_n^b with j1 k2 = a n2 + b, from tables of n1 + n2
   # values (2^22 Float64 on 8 threads: 5 % faster on the M1). Cache-resident sizes keep the full
   # table: the extra product costs more there (65536 Float32: 4× slower with factor tables).
   tw = cached((:fourstep, T, n, σ, n1)) do
     W = unit_roots(σ, n)
-    if n * sizeof(Complex{T}) > factor_twiddles()
+    if n * sizeof(Complex{T}) > FACTOR_TWIDDLES
       [Complex{T}[W[a*n2+1] for a in 0:n1-1]; Complex{T}[W[b+1] for b in 0:n2-1]]
     else
       t = Vector{Complex{T}}(undef, n)
@@ -187,9 +187,9 @@ end
 
 const FOURSTEP_MIN = 1 << 13
 const ROW_PAD = 4
-# Bytes above which the four-step uses factor twiddle tables: the last-level cache of a core
-# cluster (M1 Max: 12 MB L2 → 8 MB, measured).
-factor_twiddles() = max(prevpow2(CACHES[].llc), 1 << 20)
+# Bytes above which the four-step uses factor twiddle tables (measured on the M1; on Zen 3 a
+# threshold at its 32 MB L3 instead measures the same within noise, 0.93–1.07).
+const FACTOR_TWIDDLES = 1 << 23
 
 use_fourstep(n, nt) = nt > 1 && n >= FOURSTEP_MIN && smooth(n) && fourstep_split(n) > 0
 
@@ -268,11 +268,11 @@ end
 # Passes along dimensions 1 and 2 fused per plane: when a plane (n1 × n2 values) fits in cache,
 # each plane gets both transforms while it is cached, so the two dimensions cost one memory
 # round trip. Planes are the work items; with several threads there must be enough of them.
-# Complex values per plane: the L2 per core in ComplexF64 values (M1: 2^17 = 2 MB, measured),
-# at most 2^17.
-plane_budget() = clamp(prevpow2(CACHES[].l2 ÷ 16), 1 << 12, 1 << 17)
+# Complex values per plane (2 MB ComplexF64). Not the L2 per core: on Zen 3 (512 KB L2) planes of
+# 2^15 values are up to 1.37× slower than 2^17 with 16 threads (256³), the planes live in L3.
+const PLANE_BUDGET = 1 << 17
 
-fuse_planes(n1, n2, outer, nt) = n1 * n2 <= plane_budget() && (nt == 1 || outer >= nt)
+fuse_planes(n1, n2, outer, nt) = n1 * n2 <= PLANE_BUDGET && (nt == 1 || outer >= nt)
 
 function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Union{Chain{T},RChain{T}}, k2::Union{Chain{T},RChain{T}},
                      n1::Int, n2::Int, outer::Int) where {T}

@@ -1,5 +1,4 @@
-# Cache sizes of the CPU the package runs on. Lane blocks, fused planes and the four-step
-# twiddle tables are sized from them (threads.jl). They are read when the package is loaded
+# Cache sizes of the CPU the package runs on. Lane blocks are sized from them (threads.jl). They are read when the package is loaded
 # (macOS: sysctl of the performance cores, Linux: sysfs of cpu0); where that fails, defaults of
 # the two measured machines stand in: Apple M1 Max on aarch64, AMD Zen 3 elsewhere.
 
