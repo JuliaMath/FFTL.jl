@@ -281,6 +281,49 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     @test relerr(FFTL.idct(FFTL.dct(x, 2), 2), x) < 10tol(T)
   end
 
+  # quick run: Float64 only (the first RChain call compiles every codelet of its element type)
+  @testset "runtime-radix chains, $T" for T in pick((Float64, Float32), (Float64,))
+    # RChain runs the same codelets in the same order as Chain: results must be identical
+    p(a) = Ptr{T}(pointer(a))
+    for n in pick([1, 2, 7, 8, 16, 60, 100, 128, 243, 1000, 31 * 27, 4096, 2^14, 3^8, 2 * 10007 - 14],
+                  thin(T, [1, 8, 60, 128, 243, 1000, 31 * 27, 2^14]))
+      rs = FFTL.radices(n, 1; esize = sizeof(Complex{T}))
+      c = FFTL.build_chain(T, n, -1, rs); rc = FFTL.RChain{T}(n, -1, rs)
+      x = randn(Complex{T}, n); w1 = similar(x); w2 = similar(x)
+      y1 = similar(x); y2 = similar(x); z1 = copy(x); z2 = copy(x)
+      GC.@preserve x y1 y2 z1 z2 w1 w2 begin
+        FFTL.run!(p(y1), p(x), p(w1), p(w2), c, 1); FFTL.run!(p(y2), p(x), p(w1), p(w2), rc, 1)
+        FFTL.run!(p(z1), p(z1), p(w1), p(w2), c, 1); FFTL.run!(p(z2), p(z2), p(w1), p(w2), rc, 1)
+      end
+      @test y1 == y2 && z1 == z2
+      # three lanes, element j of lane i at i + 3j; strided batch S = 3 through run!
+      B = 3; xs = randn(Complex{T}, B * n); wl1 = similar(xs); wl2 = similar(xs)
+      l1 = similar(xs); l2 = similar(xs); s1 = similar(xs); s2 = similar(xs)
+      cS = FFTL.build_chain(T, n, 1, FFTL.radices(n, B; esize = sizeof(Complex{T})))
+      rS = FFTL.RChain{T}(n, 1, FFTL.radices(n, B; esize = sizeof(Complex{T})))
+      GC.@preserve xs l1 l2 s1 s2 wl1 wl2 begin
+        FFTL.run_lanes!(p(l1), p(xs), p(wl1), p(wl2), cS, B, B, B); FFTL.run_lanes!(p(l2), p(xs), p(wl1), p(wl2), rS, B, B, B)
+        FFTL.run!(p(s1), p(xs), p(wl1), p(wl2), cS, B); FFTL.run!(p(s2), p(xs), p(wl1), p(wl2), rS, B)
+      end
+      @test l1 == l2 && s1 == s2
+    end
+  end
+
+  # run-time plans (RChain kernels): same results as the reference, four-step and plane fusion
+  @testset "RPlan, $T" for T in pick((Float64, Float32), (Float64,))
+    for (sz, reg, nt) in pick([((1000,), [1], 1), ((2 * 3^11,), [1], 3), ((1009,), [1], 1), ((64, 48), [1, 2], 1),
+                               ((37, 100), [1, 2], 3), ((16, 9, 5), [1, 2, 3], 1), ((8, 37, 6), [2], 3), ((40, 36, 10), [1, 3], 3)],
+                              [((2 * 3^11,), [1], 3), ((1009,), [1], 1), ((37, 100), [1, 2], 3), ((16, 9, 5), [1, 2, 3], 1), ((8, 37, 6), [2], 3)])
+      x = randn(Complex{T}, sz)
+      p = FFTL.RPlan{T}(collect(sz), reg, -1; threads = nt)
+      ref = FFTL.plan_fft(x, Tuple(reg); threads = 1) * x
+      @test relerr(p * x, ref) < 10tol(T)
+      z = copy(x); GC.@preserve z FFTL.execute!(p, pointer(z), pointer(z))
+      @test relerr(z, ref) < 10tol(T)
+      @test relerr(inv(p) * (p * x), x) < 10tol(T)
+    end
+  end
+
   @testset "plans: in place, out of place, inv" begin
     for n in [1, 7, 64, 1000, 1009]
       x = randn(ComplexF64, n)
@@ -301,6 +344,9 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "radix choice" begin
+    # every radix the rule produces has a runtime codelet (RChain)
+    @test all(n -> all(in(FFTL.RADICES), FFTL.radices(n, 1)) && all(in(FFTL.RADICES), FFTL.radices(n, 4096)),
+              filter(FFTL.smooth, 2:pick(20000, 4000)))
     for n in [2^k for k in 0:22]
       @test prod(FFTL.radices(n); init = 1) == n
     end

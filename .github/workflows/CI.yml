@@ -55,6 +55,17 @@ jobs:
           check_bounds: ${{ env.FFTL_TEST_FULL == 'true' && 'yes' || 'auto' }}
       - uses: julia-actions/julia-processcoverage@v1
         if: env.COVERAGE == 'true'
+      # line coverage in the run summary (visible without access to Codecov)
+      - name: Coverage summary
+        if: env.COVERAGE == 'true'
+        run: |
+          awk -F: '/^SF:/ { f = $2; sub(/.*\/src\//, "src/", f) }
+                   /^LF:/ { lf[f] += $2; LF += $2 }
+                   /^LH:/ { lh[f] += $2; LH += $2 }
+                   END {
+                     printf "### Line coverage: %.1f %% (%d of %d lines)\n\n| file | lines | covered |\n|---|---:|---:|\n", 100 * LH / LF, LH, LF
+                     for (k in lf) printf "| %s | %d | %.1f %% |\n", k, lf[k], (lf[k] ? 100 * lh[k] / lf[k] : 100) | "sort"
+                   }' lcov.info | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: codecov/codecov-action@v5
         if: env.COVERAGE == 'true'
         with:

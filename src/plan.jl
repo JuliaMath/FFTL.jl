@@ -16,18 +16,108 @@ struct Chain{T,Rs,σ,K} <: Kernel{T}
   tw1::Vector{Complex{T}}             # first stage: w^(kp) at (k-1)m + p
 end
 
-function Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T}
-  prod(rs; init = 1) == n || throw(ArgumentError("radices $rs do not multiply to $n"))
+# Read-only parts of kernels (chains, four-step twiddles, Bluestein chirp and filter) are shared
+# between plans and threads: a second plan of a size costs a lookup. Bounded; when full, an
+# arbitrary entry is dropped. `clear_cache!()` frees everything.
+const KCACHE = Dict{Any,Any}()
+const KCACHE_LOCK = ReentrantLock()
+const KCACHE_MAX = 64
+
+function cached(f, key)
+  lock(KCACHE_LOCK) do
+    v = get(KCACHE, key, nothing)
+    v === nothing || return v
+    length(KCACHE) >= KCACHE_MAX && delete!(KCACHE, first(keys(KCACHE)))
+    KCACHE[key] = f()
+  end
+end
+
+"""
+    clear_cache!()
+
+Drop the twiddle and filter tables that FFTL keeps for reuse by later plans.
+"""
+clear_cache!() = (lock(() -> empty!(KCACHE), KCACHE_LOCK); nothing)
+
+Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
+  cached(() -> build_chain(T, n, σ, rs), (:chain, T, n, σ, Tuple(rs)))
+
+function build_chain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
+  prod(rs; init = 1) == n || throw(ArgumentError("radices do not multiply to the length"))
+  W = unit_roots(σ, n)
   tw = Vector{Complex{T}}[]
   L = n
   for r in rs
-    m = L ÷ r
-    push!(tw, vec([Complex{T}(cispi(2σ * k * p / L)) for k in 1:r-1, p in 0:m-1]))
-    L = m
+    push!(tw, stage_twiddles(T, W, r, L))
+    L ÷= r
   end
   r1 = isempty(rs) ? 1 : rs[1]
-  tw1 = vec([Complex{T}(cispi(2σ * k * p / n)) for p in 0:n÷r1-1, k in 1:r1-1])
-  Chain{T,Tuple(rs),σ,length(rs)}(n, Tuple(tw), tw1)
+  Chain{T,Tuple(rs),σ,length(rs)}(n, Tuple(tw), first_twiddles(T, W, r1))
+end
+
+"""
+    unit_roots(σ, n)
+
+`W[j+1] = exp(σ 2πi j/n)` for `j < n` in Float64. `cispi` is evaluated on the first octant only;
+the rest follows exactly from the symmetries of the unit circle (swap and sign changes), so the
+table is as accurate as `cispi` itself and costs n/8 evaluations.
+"""
+function unit_roots(σ::Int, n::Int)
+  W = Vector{ComplexF64}(undef, n)
+  n == 0 && return W
+  if n % 8 == 0
+    q = n ÷ 4; o = n ÷ 8
+    for j in 0:o
+      W[j+1] = cispi(2σ * j / n)
+    end
+    for j in o+1:q                      # second octant: w^j = σ i conj(w^(q-j))
+      c = W[q-j+1]
+      W[j+1] = σ > 0 ? complex(imag(c), real(c)) : complex(-imag(c), -real(c))
+    end
+  elseif n % 4 == 0
+    q = n ÷ 4
+    for j in 0:q
+      W[j+1] = cispi(2σ * j / n)
+    end
+  else
+    for j in 0:n÷2
+      W[j+1] = cispi(2σ * j / n)
+    end
+    for j in n÷2+1:n-1
+      W[j+1] = conj(W[n-j+1])
+    end
+    return W
+  end
+  q = n ÷ 4
+  for j in q+1:2q                       # second quarter: w^j = σ i w^(j-q)
+    c = W[j-q+1]
+    W[j+1] = σ > 0 ? complex(-imag(c), real(c)) : complex(imag(c), -real(c))
+  end
+  for j in 2q+1:n-1                     # second half: w^j = -w^(j-n/2)
+    W[j+1] = -W[j-2q+1]
+  end
+  W
+end
+
+# w_L^(k p) = W_n^(k p n/L) at (r-1) p + k for k < r, p < L/r. A function of its own: a
+# comprehension inside the loop above would capture the reassigned L in a box.
+function stage_twiddles(::Type{T}, W::Vector{ComplexF64}, r::Int, L::Int) where {T}
+  n = length(W); m = L ÷ r; step = n ÷ L
+  t = Vector{Complex{T}}(undef, (r - 1) * m)
+  for p in 0:m-1, k in 1:r-1
+    t[(r-1)*p+k] = Complex{T}(W[(k*p*step)%n+1])
+  end
+  t
+end
+
+# first stage: w_n^(k p) at (k-1) m + p
+function first_twiddles(::Type{T}, W::Vector{ComplexF64}, r::Int) where {T}
+  n = length(W); m = n ÷ r
+  t = Vector{Complex{T}}(undef, (r - 1) * m)
+  for k in 1:r-1, p in 0:m-1
+    t[(k-1)*m+p+1] = Complex{T}(W[(k*p)%n+1])
+  end
+  t
 end
 
 """
@@ -171,20 +261,25 @@ function next_smooth(n::Int)
   end
 end
 
-function Bluestein{T}(n::Int, σ::Int) where {T}
+# C: the chain type of the two convolution transforms (Chain, or RChain for run-time plans)
+function Bluestein{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
   M = next_smooth(2n - 1)
-  # j² mod 2n keeps the argument of the chirp small
-  chirp = [Complex{T}(cispi(σ * mod(j * j, 2n) / n)) for j in 0:n-1]
-  b = zeros(Complex{T}, M)
-  b[1] = conj(chirp[1])
-  for j in 1:n-1
-    b[j+1] = b[M-j+1] = conj(chirp[j+1])
-  end
-  fwd = Chain{T}(M, -1)
-  bwd = Chain{T}(M, 1)
+  fwd = C{T}(M, -1)
+  bwd = C{T}(M, 1)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
-  GC.@preserve b w1 w2 run!(cptr(b), cptr(b), cptr(w1), cptr(w2), fwd, 1)
-  b ./= M
+  chirp, b = cached((:bluestein, T, n, σ)) do
+    # c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n)
+    W = unit_roots(σ, 2n)
+    c = [Complex{T}(W[mod(j * j, 2n)+1]) for j in 0:n-1]
+    b = zeros(Complex{T}, M)
+    b[1] = conj(c[1])
+    for j in 1:n-1
+      b[j+1] = b[M-j+1] = conj(c[j+1])
+    end
+    GC.@preserve b w1 w2 run!(cptr(b), cptr(b), cptr(w1), cptr(w2), fwd, 1)
+    b ./= M
+    (c, b)
+  end
   Bluestein{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, zeros(Complex{T}, M), w1, w2)
 end
 
