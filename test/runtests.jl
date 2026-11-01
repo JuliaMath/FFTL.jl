@@ -361,6 +361,40 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     @test relerr(y, FFTL.r2r(x, Tuple(ks), 1:3)) < 10tol(T)
   end
 
+  @testset "generic float types (BigFloat)" begin
+    setprecision(BigFloat, 128) do
+      B = BigFloat; btol = 1e-35
+      dftB(x, σ) = [sum(x[j+1] * cispi(B(2σ) * mod(j * k, length(x)) / length(x)) for j in 0:length(x)-1) for k in 0:length(x)-1]
+      for n in pick((1, 2, 7, 12, 16, 37, 97, 100), (7, 16, 37))
+        x = Complex{B}.(randn(ComplexF64, n))
+        @test eltype(FFTL.fft(x)) == Complex{B}
+        @test relerr(FFTL.fft(x), dftB(x, -1)) < btol
+        @test relerr(FFTL.bfft(x), dftB(x, 1)) < btol
+        @test relerr(FFTL.ifft(FFTL.fft(x)), x) < btol
+      end
+      x = Complex{B}.(randn(ComplexF64, 6, 5, 4))
+      @test relerr(FFTL.fft(x, (1, 3)), FFTL.fft(FFTL.fft(x, 1), 3)) < btol
+      @test relerr(FFTL.ifft(FFTL.fft(x)), x) < btol
+      for (sz, reg) in (((16,), 1:1), ((37,), 1:1), ((6, 5), 1:2), ((6, 5), 2:2), ((4, 5, 3), (1, 3)))
+        xr = B.(randn(sz...))
+        X = FFTL.rfft(xr, reg)
+        d1 = minimum(reg)
+        @test relerr(X, FFTL.fft(Complex{B}.(xr), reg)[ntuple(i -> i == d1 ? (1:size(X, d1)) : (:), length(sz))...]) < btol
+        @test relerr(FFTL.irfft(X, sz[d1], reg), xr) < btol
+      end
+      # the r2r formulas against the Float64 kernels, the precision through the inverse pairs
+      for k in r2rkinds, n in (2, 5, 8, 33)
+        xr = B.(randn(n))
+        y = FFTL.r2r(xr, k)
+        @test eltype(y) == B
+        @test relerr(Float64.(y), FFTL.r2r(Float64.(xr), k)) < 1e-12
+        @test relerr(inv(FFTL.plan_r2r(xr, k)) * y, xr) < btol
+      end
+      xr = B.(randn(5, 6, 4))
+      @test relerr(FFTL.idct(FFTL.dct(xr)), xr) < btol
+    end
+  end
+
   @testset "plans: in place, out of place, inv" begin
     for n in [1, 7, 64, 1000, 1009]
       x = randn(ComplexF64, n)

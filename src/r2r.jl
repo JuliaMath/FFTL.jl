@@ -409,7 +409,8 @@ end
 Unnormalised real-to-real transforms; `kinds` is one `R2RKind` (REDFT00 … RODFT11, DHT, R2HC, HC2R) for all
 dimensions of `region` or one per dimension.
 """
-plan_r2r(x::AbstractArray, kinds, region = 1:ndims(x); kw...) = R2RPlan{realtype(x)}(size(x), kinds, region; kw...)
+plan_r2r(x::AbstractArray, kinds, region = 1:ndims(x); kw...) = generic_float(elreal(x)) ?
+  GR2RPlan{elreal(x)}(size(x), kinds, region) : R2RPlan{realtype(x)}(size(x), kinds, region; kw...)
 r2r(x::AbstractArray, kinds, region = 1:ndims(x)) = plan_r2r(x, kinds, region) * x
 
 """
@@ -428,7 +429,7 @@ function dct(x::AbstractArray, region = 1:ndims(x))
 end
 
 function idct(x::AbstractArray, region = 1:ndims(x))
-  y = convert(Array{realtype(x)}, copy(x))
+  y = convert(Array{generic_float(elreal(x)) ? elreal(x) : realtype(x)}, copy(x))
   for d in (region isa Integer ? (region,) : region)
     n = size(y, d)
     selectdim(y, d, 1) .*= sqrt(eltype(y)(2))

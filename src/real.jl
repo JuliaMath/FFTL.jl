@@ -340,11 +340,14 @@ realtype(::AbstractArray) = Float64
 Real-input forward DFT (half spectrum along the first dimension of `region`), its unnormalised
 inverse to real arrays with length `d` along that dimension, and the normalised inverse.
 """
-plan_rfft(x::AbstractArray, region = 1:ndims(x); kw...) = RFFTLPlan{realtype(x)}(size(x), region; kw...)
-plan_brfft(X::AbstractArray, d::Integer, region = 1:ndims(X); kw...) = BRFFTLPlan{realtype(X)}(size(X), Int(d), region; kw...)
+plan_rfft(x::AbstractArray, region = 1:ndims(x); kw...) = generic_float(elreal(x)) ?
+  GRPlan{elreal(x)}(size(x), size(x, minimum(region)), region, -1) : RFFTLPlan{realtype(x)}(size(x), region; kw...)
+plan_brfft(X::AbstractArray, d::Integer, region = 1:ndims(X); kw...) = generic_float(elreal(X)) ?
+  GRPlan{elreal(X)}(size(X), Int(d), region, 1) : BRFFTLPlan{realtype(X)}(size(X), Int(d), region; kw...)
 function plan_irfft(X::AbstractArray, d::Integer, region = 1:ndims(X); kw...)
   p = plan_brfft(X, d, region; kw...)
-  AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(realtype(X), AbstractFFTs.output_size(p), p.region))
+  T = generic_float(elreal(X)) ? elreal(X) : realtype(X)
+  AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(T, AbstractFFTs.output_size(p), p.region))
 end
 
 rfft(x::AbstractArray, region = 1:ndims(x)) = plan_rfft(x, region) * x

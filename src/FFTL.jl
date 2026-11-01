@@ -30,6 +30,7 @@ include("pass.jl")
 include("real.jl")
 include("r2r.jl")
 include("rreal.jl")
+include("generic.jl")
 include("ka.jl")
 include("precompile.jl")
 

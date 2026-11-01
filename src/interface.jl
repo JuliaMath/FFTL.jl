@@ -117,13 +117,20 @@ AbstractFFTs.plan_inv(p::FFTLPlan{T}) where {T} =
     plan_fft(x::AbstractArray, region = 1:ndims(x); threads = Threads.nthreads()) / plan_bfft / plan_ifft
 
 Plans for the forward, unnormalised backward and normalised inverse DFT along the dimensions
-`region` of arrays like `x` (Float32 or Float64 complex; other element types are converted to
-ComplexF64). Transforms large enough to profit run on up to `threads` threads.
+`region` of arrays like `x`. Float32 and Float64 (real or complex) use the SIMD kernels, and
+transforms large enough to profit run on up to `threads` threads. Other floating-point types
+(BigFloat, Double64, Float128, …) are transformed in their own precision by a generic,
+single-threaded path; Float16, integers and other numbers are converted to ComplexF64.
 """
-plan_fft(x::AbstractArray, region = 1:ndims(x); kw...) = FFTLPlan{plan_type(x)}(size(x), region, -1; kw...)
-plan_bfft(x::AbstractArray, region = 1:ndims(x); kw...) = FFTLPlan{plan_type(x)}(size(x), region, 1; kw...)
+plan_fft(x::AbstractArray, region = 1:ndims(x); kw...) =
+  generic_float(elreal(x)) ? GPlan{elreal(x)}(size(x), region, -1) : FFTLPlan{plan_type(x)}(size(x), region, -1; kw...)
+plan_bfft(x::AbstractArray, region = 1:ndims(x); kw...) =
+  generic_float(elreal(x)) ? GPlan{elreal(x)}(size(x), region, 1) : FFTLPlan{plan_type(x)}(size(x), region, 1; kw...)
 plan_ifft(x::AbstractArray, region = 1:ndims(x); kw...) =
-  AbstractFFTs.ScaledPlan(plan_bfft(x, region; kw...), AbstractFFTs.normalization(plan_type(x), size(x), region))
+  AbstractFFTs.ScaledPlan(plan_bfft(x, region; kw...),
+                          AbstractFFTs.normalization(generic_float(elreal(x)) ? elreal(x) : plan_type(x), size(x), region))
+
+elreal(x::AbstractArray) = real(eltype(x))
 
 plan_type(::AbstractArray{Complex{T}}) where {T<:FFTLFloat} = T
 plan_type(::AbstractArray{T}) where {T<:FFTLFloat} = T

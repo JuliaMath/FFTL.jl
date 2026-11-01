@@ -28,6 +28,10 @@ standard arrays, so it can be loaded next to FFTW.jl; call it qualified as `FFTL
 `FFTL.plan_fft`, … . The first plan for a new length compiles its kernels (a fraction of a second);
 later plans and all transforms run without compilation.
 
+Other floating-point types (`BigFloat`, `Double64`, `Float128`, …) are transformed in their own
+precision by a generic, single-threaded path without SIMD: complex, real (`rfft`, `irfft`) and
+real-to-real transforms, any length and dimensions, accurate to a few ulps of the type.
+
 ### GPUs
 
 With KernelAbstractions.jl and a GPU package loaded, the same functions work on GPU arrays
