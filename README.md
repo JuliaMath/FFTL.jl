@@ -1,5 +1,9 @@
 # FFTL.jl — Fastest Fourier Transform in Lübeck
 
+[![CI](https://github.com/JuliaMath/FFTL.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaMath/FFTL.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/JuliaMath/FFTL.jl/graph/badge.svg?branch=main)](https://codecov.io/gh/JuliaMath/FFTL.jl)
+[![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
+
 A pure-Julia fast Fourier transform for the CPU and, experimentally, GPUs: complex `Float32` and
 `Float64` data, any number of dimensions, any length, multithreaded. Work in progress; the
 interface may still change.
@@ -61,6 +65,13 @@ yet.
 - **Lengths with prime factors above 31** use Bluestein's algorithm.
 - **Threads** split each dimension over slices or blocks of columns; long 1D transforms use the
   four-step algorithm.
+
+## Tests
+
+`] test FFTL` runs a quick selection that covers every feature (about 1.5 min). Set
+`FFTL_TEST_FULL=true` for the full lists and `FFTL_TEST_VERBOSE=true` for the time of every test
+set. CI runs the quick tests on Linux and macOS for every push and pull request, and the full
+lists once a week.
 
 ## License
 

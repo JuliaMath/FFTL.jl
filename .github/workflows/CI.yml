@@ -1,0 +1,82 @@
+name: CI
+
+# Quick tests on every push and pull request on Linux x86 and macOS aarch64 (the two SIMD
+# paths); coverage from the Linux job on pushes to main (instrumentation recompiles every
+# dependency and slows the tests). Weekly and on demand: the full test lists with bounds
+# checking, and the oldest supported Julia (LTS).
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Run the full test lists'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 3 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  actions: write   # julia-actions/cache deletes outdated caches
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['1']
+        os: [ubuntu-latest, macos-latest]
+    env:
+      JULIA_NUM_THREADS: 2
+      COVERAGE: ${{ matrix.os == 'ubuntu-latest' && matrix.version == '1' && github.event_name == 'push' }}
+      FFTL_TEST_FULL: ${{ github.event_name == 'schedule' || inputs.full == true }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      # --check-bounds=yes (disables @inbounds and invalidates all precompiled packages) only in
+      # the full run: it triples the time of the quick run
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          coverage: ${{ env.COVERAGE }}
+          check_bounds: ${{ env.FFTL_TEST_FULL == 'true' && 'yes' || 'auto' }}
+      - uses: julia-actions/julia-processcoverage@v1
+        if: env.COVERAGE == 'true'
+      - uses: codecov/codecov-action@v5
+        if: env.COVERAGE == 'true'
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # the oldest supported Julia (compat bound), quick lists: weekly and on demand
+  lts:
+    name: Julia lts · ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JULIA_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v5
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: 'lts'
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          check_bounds: 'auto'
