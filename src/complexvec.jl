@@ -110,5 +110,9 @@ end
   :(shufflevector(vload(Vec{2,T}, p), Val($(Tuple(isodd(i) ? 0 : 1 for i in 1:N)))))
 end
 
+# complex conjugate of every complex lane
+@inline cconj(v::Vec{N,T}) where {N,T} = v * conj_signs(Vec{N,T})
+@generated conj_signs(::Type{Vec{N,T}}) where {N,T} = :(Vec{$N,$T}($(Tuple(isodd(i) ? one(T) : -one(T) for i in 1:N))))
+
 # number of complex values per vector
 ncomplex(::Type{Vec{N,T}}) where {N,T} = N ÷ 2

@@ -95,114 +95,167 @@ r2c!(c::Vector{Complex{T}}, r::Vector{T}, K::RealLine{T}, B) where {T} =
 c2r!(r::Vector{T}, c::Vector{Complex{T}}, K::RealLine{T}, B) where {T} =
   GC.@preserve c r B c2r_line!(pointer(r), pointer(c), cptr(B.b1), cptr(B.b2), cptr(B.b3), K)
 
-# y = transform of x, both contiguous of length n (y may alias x only through the buffers' copies)
+# y = transform of x along a line of length n (y may be the same line as x: each kind reads its
+# whole input first). One function per family: closures in a shared function would capture
+# variables assigned in several branches, which Julia boxes.
 function r2r_line!(y::AbstractVector{T}, x::AbstractVector{T}, K::R2RLine{T}, B::R2RBuffers{T}) where {T}
-  n = K.n; kind = K.kind
-  r = B.r; c = B.c
+  kind = K.kind
   if kind == REDFT10 || kind == RODFT10
-    sgn = kind == RODFT10
-    @inbounds for j in 0:(n-1)÷2
-      r[j+1] = sgn && isodd(2j) ? -x[2j+1] : x[2j+1]
-    end
-    @inbounds for j in 0:n÷2-1
-      v = x[2j+2]; r[n-j] = sgn ? -v : v                       # x_(2j+1) has odd index: sign flip
-    end
-    r2c!(c, r, K.inner, B)
-    @inbounds for k in 0:n÷2
-      u = K.tw[k+1] * c[k+1]
-      kk = sgn ? n - 1 - k : k
-      y[kk+1] = 2real(u)
-      if 0 < k < n - k
-        kk2 = sgn ? k - 1 : n - k
-        y[kk2+1] = -2imag(u)
-      end
-    end
+    dct2!(y, x, K, B, kind == RODFT10)
   elseif kind == REDFT01 || kind == RODFT01
-    rev = kind == RODFT01
-    xin(j) = rev ? x[n-j] : x[j+1]
-    @inbounds for k in 0:n÷2
-      xk = xin(k); xm = k == 0 ? zero(T) : xin(n - k)
-      c[k+1] = K.tw[k+1] * Complex(xk, -xm)
-    end
-    c2r!(r, c, K.inner, B)
-    @inbounds for j in 0:(n-1)÷2
-      y[2j+1] = r[j+1]
-    end
-    @inbounds for j in 0:n÷2-1
-      y[2j+2] = r[n-j]
-    end
-    if rev
-      @inbounds for k in 1:2:n-1
-        y[k+1] = -y[k+1]
-      end
-    end
+    dct3!(y, x, K, B, kind == RODFT01)
   elseif kind == REDFT11 || kind == RODFT11
-    sgn = kind == RODFT11
-    xs(j) = sgn && isodd(j) ? -x[j+1] : x[j+1]
-    out(k, v) = (y[(sgn ? n - 1 - k : k) + 1] = v)
-    b = B.b1
-    if iseven(n)
-      M = n ÷ 2
-      @inbounds for j in 0:M-1
-        b[j+1] = Complex(xs(2j), -xs(n - 1 - 2j)) * K.tw[j+1]
-      end
-      GC.@preserve b B run!(cptr(b), cptr(b), cptr(B.b2), cptr(B.b3), K.inner, 1)
-      @inbounds for m in 0:M-1
-        w = K.tw2[m+1] * b[m+1]
-        out(2m, 2real(w)); out(n - 1 - 2m, 2imag(w))
-      end
-    else
-      @inbounds for j in 0:n-1
-        b[j+1] = xs(j) * K.tw[j+1]
-      end
-      @inbounds for j in n:2n-1
-        b[j+1] = zero(Complex{T})
-      end
-      GC.@preserve b B run!(cptr(b), cptr(b), cptr(B.b2), cptr(B.b3), K.inner, 1)
-      @inbounds for k in 0:n-1
-        out(k, 2real(K.tw2[k+1] * b[k+1]))
-      end
-    end
+    dct4!(y, x, K, B, kind == RODFT11)
   elseif kind == REDFT00
-    N = n - 1
-    y1 = zero(T)
-    @inbounds for j in 0:N-1
-      xa = x[j+1]; xb = x[N-j+1]
-      bj = xa - xb
-      r[j+1] = (xa + xb) / 2 - imag(K.tw[j+1]) * bj
-      y1 += bj * real(K.tw[j+1])
+    dct1!(y, x, K, B)
+  elseif kind == RODFT00
+    dst1!(y, x, K, B)
+  else
+    dht!(y, x, K, B)
+  end
+  y
+end
+
+# DCT-II; with `dst` the DST-II as DCT-II of ((-1)^j x_j), output reversed
+function dct2!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
+  n = K.n; r = B.r; c = B.c
+  @inbounds for j in 0:(n-1)÷2
+    r[j+1] = x[2j+1]
+  end
+  @inbounds for j in 0:n÷2-1
+    v = x[2j+2]; r[n-j] = dst ? -v : v
+  end
+  r2c!(c, r, K.inner, B)
+  @inbounds for k in 0:n÷2
+    u = K.tw[k+1] * c[k+1]
+    y[(dst ? n - 1 - k : k) + 1] = 2real(u)
+    if 0 < k < n - k
+      y[(dst ? k - 1 : n - k) + 1] = -2imag(u)
     end
-    r2c!(c, r, K.inner, B)
-    @inbounds for k in 0:N÷2
+  end
+  y
+end
+
+# DCT-III; with `dst` the DST-III as (-1)^k DCT-III(reversed x)_k
+function dct3!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
+  n = K.n; r = B.r; c = B.c
+  @inbounds for k in 0:n÷2
+    xk = dst ? x[n-k] : x[k+1]
+    xm = k == 0 ? zero(T) : (dst ? x[k] : x[n-k+1])
+    c[k+1] = K.tw[k+1] * Complex(xk, -xm)
+  end
+  c2r!(r, c, K.inner, B)
+  @inbounds for j in 0:(n-1)÷2
+    y[2j+1] = r[j+1]
+  end
+  @inbounds for j in 0:n÷2-1
+    y[2j+2] = dst ? -r[n-j] : r[n-j]
+  end
+  y
+end
+
+# DCT-IV; with `dst` the DST-IV as DCT-IV of ((-1)^j x_j), output reversed
+function dct4!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
+  n = K.n; b = B.b1
+  if iseven(n)
+    M = n ÷ 2
+    @inbounds for j in 0:M-1
+      xe = x[2j+1]; xo = x[n-2j]                          # x_(2j) and x_(n-1-2j) (odd index)
+      b[j+1] = Complex(xe, dst ? xo : -xo) * K.tw[j+1]
+    end
+    GC.@preserve b B run!(cptr(b), cptr(b), cptr(B.b2), cptr(B.b3), K.inner, 1)
+    @inbounds for m in 0:M-1
+      w = K.tw2[m+1] * b[m+1]
+      k1 = 2m; k2 = n - 1 - 2m
+      y[(dst ? n - 1 - k1 : k1) + 1] = 2real(w)
+      y[(dst ? n - 1 - k2 : k2) + 1] = 2imag(w)
+    end
+  else
+    @inbounds for j in 0:n-1
+      v = x[j+1]
+      b[j+1] = (dst && isodd(j) ? -v : v) * K.tw[j+1]
+    end
+    @inbounds for j in n:2n-1
+      b[j+1] = zero(Complex{T})
+    end
+    GC.@preserve b B run!(cptr(b), cptr(b), cptr(B.b2), cptr(B.b3), K.inner, 1)
+    @inbounds for k in 0:n-1
+      y[(dst ? n - 1 - k : k) + 1] = 2real(K.tw2[k+1] * b[k+1])
+    end
+  end
+  y
+end
+
+# The pair (j, N-j) gives both r_j and r_(N-j) from x_j, x_(N-j): with a = x_j + x_(N-j),
+# b = x_j - x_(N-j) and s = sin(πj/N): r_j = a/2 - s·b, r_(N-j) = a/2 + s·b (DCT-I), and
+# r_j = s·a + b/2, r_(N-j) = s·a - b/2 (DST-I).
+function dct1!(y, x, K::R2RLine{T}, B) where {T}
+  N = K.n - 1; r = B.r; c = B.c
+  y1a = zero(T); y1b = zero(T)
+  @inbounds begin
+    r[1] = (x[1] + x[N+1]) / 2
+    y1a = x[1] - x[N+1]
+    for j in 1:(N-1)÷2
+      xa = x[j+1]; xb = x[N-j+1]
+      a = (xa + xb) / 2; bj = xa - xb; sj = imag(K.tw[j+1])
+      r[j+1] = a - sj * bj
+      r[N-j+1] = a + sj * bj
+      y1b += 2 * bj * real(K.tw[j+1])      # b_(N-j)·cos(π(N-j)/N) = b_j·cos(πj/N)
+    end
+    iseven(N) && (r[N÷2+1] = x[N÷2+1])     # j = N/2: b = 0
+  end
+  r2c!(c, r, K.inner, B)
+  @inbounds begin
+    for k in 0:N÷2
       y[2k+1] = 2real(c[k+1])
     end
-    @inbounds y[2] = y1
-    @inbounds for k in 1:(N-1)÷2
-      y[2k+2] = y[2k] - 2imag(c[k+1])
+    acc = y1a + y1b
+    y[2] = acc
+    for k in 1:(N-1)÷2
+      acc -= 2imag(c[k+1])
+      y[2k+2] = acc
     end
-  elseif kind == RODFT00
-    N = n + 1
-    xp(m) = (m == 0 || m == N) ? zero(T) : x[m]           # point m is x_(m-1)
-    @inbounds for j in 0:N-1
-      xa = xp(j); xb = xp(N - j)
-      r[j+1] = imag(K.tw[j+1]) * (xa + xb) + (xa - xb) / 2
+  end
+  y
+end
+
+function dst1!(y, x, K::R2RLine{T}, B) where {T}
+  n = K.n; N = n + 1; r = B.r; c = B.c
+  @inbounds begin
+    r[1] = zero(T)                                        # points 0 and N are zero
+    for j in 1:(N-1)÷2
+      xa = x[j]; xb = x[N-j]                              # points j and N-j are x_(j-1), x_(N-j-1)
+      sa = imag(K.tw[j+1]) * (xa + xb); hb = (xa - xb) / 2
+      r[j+1] = sa + hb
+      r[N-j+1] = sa - hb
     end
-    r2c!(c, r, K.inner, B)
-    @inbounds y[1] = real(c[1])
-    @inbounds for k in 1:N÷2
+    iseven(N) && (r[N÷2+1] = 2 * x[N÷2])                 # j = N/2: sin = 1, b = 0
+  end
+  r2c!(c, r, K.inner, B)
+  @inbounds begin
+    acc = real(c[1])
+    y[1] = acc
+    for k in 1:N÷2
       2k <= n && (y[2k] = -2imag(c[k+1]))
-      2k + 1 <= n && (y[2k+1] = y[2k-1] + 2real(c[k+1]))
+      if 2k + 1 <= n
+        acc += 2real(c[k+1])
+        y[2k+1] = acc
+      end
     end
-  else # DHT
-    @inbounds for j in 1:n
-      r[j] = x[j]
-    end
-    r2c!(c, r, K.inner, B)
-    @inbounds for k in 0:n÷2
-      f = c[k+1]
-      y[k+1] = real(f) - imag(f)
-      0 < k < n - k && (y[n-k+1] = real(f) + imag(f))
-    end
+  end
+  y
+end
+
+function dht!(y, x, K::R2RLine{T}, B) where {T}
+  n = K.n; r = B.r; c = B.c
+  @inbounds for j in 1:n
+    r[j] = x[j]
+  end
+  r2c!(c, r, K.inner, B)
+  @inbounds for k in 0:n÷2
+    f = c[k+1]
+    y[k+1] = real(f) - imag(f)
+    0 < k < n - k && (y[n-k+1] = real(f) + imag(f))
   end
   y
 end
@@ -212,15 +265,15 @@ end
 
 Plan for real-to-real transforms of arrays of size `sz`, one kind per dimension of `region`.
 """
-mutable struct R2RPlan{T<:FFTLFloat,N,L<:Tuple} <: AbstractFFTs.Plan{T}
+mutable struct R2RPlan{T<:FFTLFloat,N,L<:Tuple,D} <: AbstractFFTs.Plan{T}
   sz::NTuple{N,Int}
-  region::Tuple
-  kinds::Tuple
+  region::NTuple{D,Int}
+  kinds::NTuple{D,R2RKind}
   lines::L
   nthreads::Int
   bufs::Vector{R2RBuffers{T}}
   pinv::AbstractFFTs.Plan
-  R2RPlan{T,N,L}(sz, region, kinds, lines, nt, bufs) where {T,N,L} = new{T,N,L}(sz, region, kinds, lines, nt, bufs)
+  R2RPlan{T,N,L,D}(sz, region, kinds, lines, nt, bufs) where {T,N,L,D} = new{T,N,L,D}(sz, region, kinds, lines, nt, bufs)
 end
 
 function R2RPlan{T}(sz::NTuple{N,Int}, kinds, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
@@ -231,7 +284,7 @@ function R2RPlan{T}(sz::NTuple{N,Int}, kinds, region; threads::Integer = Threads
   lines = Tuple(R2RLine{T}(k, sz[d]) for (k, d) in zip(ks, reg))
   nt = max(1, Int(threads))
   nmax = maximum((sz[d] for d in reg); init = 1)
-  R2RPlan{T,N,typeof(lines)}(sz, reg, ks, lines, nt, [R2RBuffers{T}(nmax) for _ in 1:nt])
+  R2RPlan{T,N,typeof(lines),length(reg)}(sz, reg, ks, lines, nt, [R2RBuffers{T}(nmax) for _ in 1:nt])
 end
 
 Base.size(p::R2RPlan) = p.sz

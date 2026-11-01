@@ -38,13 +38,16 @@ function r2c_line!(py::Ptr{Complex{T}}, px::Ptr{T}, b1::Ptr{T}, b2::Ptr{T}, b3::
       z0 = unsafe_load(py, 1)
       unsafe_store!(py, Complex(real(z0) + imag(z0), zero(T)), 1)
       unsafe_store!(py, Complex(real(z0) - imag(z0), zero(T)), M + 1)
-      for k in 1:M÷2
-        zk = unsafe_load(py, k + 1); zm = unsafe_load(py, M - k + 1)
-        e = (zk + conj(zm)) / 2; o = (zk - conj(zm)) / 2
-        ok = Complex(imag(o), -real(o))                    # o / i
-        unsafe_store!(py, e + K.w[k+1] * ok, k + 1)
+      V = single_vec(T); CB = sizeof(Complex{T})
+      half = V((T(0.5), T(0.5)))
+      GC.@preserve K for k in 1:M÷2
+        zk = vload(V, Ptr{T}(py + k * CB)); czm = cconj(vload(V, Ptr{T}(py + (M - k) * CB)))
+        e = (zk + czm) * half
+        ok = fcadd270(zero(V), (zk - czm) * half)                 # (Z_k - conj Z_(M-k))/(2i)
+        wk = vload(V, Ptr{T}(pointer(K.w) + k * CB)); wm = vload(V, Ptr{T}(pointer(K.w) + (M - k) * CB))
         # the same pair gives E_(M-k) = conj(e), O_(M-k) = conj(ok)
-        unsafe_store!(py, conj(e) + K.w[M-k+1] * conj(ok), M - k + 1)
+        vstore(e + ccmul(wk, ok), Ptr{T}(py + k * CB))
+        vstore(cconj(e) + ccmul(wm, cconj(ok)), Ptr{T}(py + (M - k) * CB))
       end
     end
   else
@@ -65,13 +68,14 @@ function c2r_line!(py::Ptr{T}, px::Ptr{Complex{T}}, b1::Ptr{T}, b2::Ptr{T}, b3::
   cb1 = Ptr{Complex{T}}(b1)
   if iseven(n)
     M = n ÷ 2
-    @inbounds for k in 0:M-1
-      xk = unsafe_load(px, k + 1); xm = conj(unsafe_load(px, M - k + 1))
-      if k == 0
-        xk = Complex(real(xk), zero(T)); xm = Complex(real(xm), zero(T))
-      end
-      d = xk - xm
-      unsafe_store!(cb1, (xk + xm) + K.w[k+1] * Complex(-imag(d), real(d)), k + 1)   # i·w^k·d
+    let x0 = real(unsafe_load(px, 1)), xM = real(unsafe_load(px, M + 1))
+      unsafe_store!(cb1, Complex(x0 + xM, x0 - xM), 1)          # k = 0: real parts only
+    end
+    V = single_vec(T); CB = sizeof(Complex{T})
+    GC.@preserve K for k in 1:M-1
+      xk = vload(V, Ptr{T}(px + k * CB)); xm = cconj(vload(V, Ptr{T}(px + (M - k) * CB)))
+      wk = vload(V, Ptr{T}(pointer(K.w) + k * CB))
+      vstore((xk + xm) + ccmul(wk, fcadd90(zero(V), xk - xm)), Ptr{T}(cb1 + k * CB))   # + i·w^k·(xk - xm)
     end
     run!(py, b1, b2, b3, K.inner, 1)
   else
@@ -109,9 +113,9 @@ end
 Plan for the r2c DFT (forward) of real arrays of size `sz` along `region`: real along the first
 dimension of the region (output length n ÷ 2 + 1 there), complex along the others.
 """
-mutable struct RFFTLPlan{T<:FFTLFloat,N,K,C} <: AbstractFFTs.Plan{T}
+mutable struct RFFTLPlan{T<:FFTLFloat,N,K,C,D} <: AbstractFFTs.Plan{T}
   sz::NTuple{N,Int}
-  region::Tuple
+  region::NTuple{D,Int}
   line::K
   cplan::C                          # complex passes on the half spectrum, or nothing
   S::Int
@@ -120,8 +124,8 @@ mutable struct RFFTLPlan{T<:FFTLFloat,N,K,C} <: AbstractFFTs.Plan{T}
   nthreads::Int
   bufs::Vector{Vector{Complex{T}}}  # three per thread, plus line buffers for strided lines
   pinv::AbstractFFTs.Plan
-  RFFTLPlan{T,N,K,C}(sz, region, line, cplan, S, offs_r, offs_c, nt, bufs) where {T,N,K,C} =
-    new{T,N,K,C}(sz, region, line, cplan, S, offs_r, offs_c, nt, bufs)
+  RFFTLPlan{T,N,K,C,D}(sz, region, line, cplan, S, offs_r, offs_c, nt, bufs) where {T,N,K,C,D} =
+    new{T,N,K,C,D}(sz, region, line, cplan, S, offs_r, offs_c, nt, bufs)
 end
 
 """
@@ -130,10 +134,10 @@ end
 Plan for the unnormalised c2r DFT (backward) from half spectra of size `sz` to real arrays with
 length `d` along the first dimension of `region`.
 """
-mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C} <: AbstractFFTs.Plan{Complex{T}}
+mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C,D} <: AbstractFFTs.Plan{Complex{T}}
   sz::NTuple{N,Int}
   d::Int
-  region::Tuple
+  region::NTuple{D,Int}
   line::K
   cplan::C
   S::Int
@@ -143,8 +147,8 @@ mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C} <: AbstractFFTs.Plan{Complex{T}}
   bufs::Vector{Vector{Complex{T}}}
   copy::Vector{Complex{T}}          # the input, transformed along the complex dimensions
   pinv::AbstractFFTs.Plan
-  BRFFTLPlan{T,N,K,C}(sz, d, region, line, cplan, S, offs_r, offs_c, nt, bufs, copy) where {T,N,K,C} =
-    new{T,N,K,C}(sz, d, region, line, cplan, S, offs_r, offs_c, nt, bufs, copy)
+  BRFFTLPlan{T,N,K,C,D}(sz, d, region, line, cplan, S, offs_r, offs_c, nt, bufs, copy) where {T,N,K,C,D} =
+    new{T,N,K,C,D}(sz, d, region, line, cplan, S, offs_r, offs_c, nt, bufs, copy)
 end
 
 sortregion(region, N) = (reg = Tuple(sort(unique(collect(Int, region)))); all(d -> 1 <= d <= N, reg) ||
@@ -160,7 +164,7 @@ function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthr
   S, offs_r, offs_c = line_layout(sz, d1)
   nt = max(1, Int(threads))
   bufs = [Vector{Complex{T}}(undef, n) for _ in 1:5nt]
-  RFFTLPlan{T,N,typeof(line),typeof(cplan)}(sz, reg, line, cplan, S, offs_r, offs_c, nt, bufs)
+  RFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg)}(sz, reg, line, cplan, S, offs_r, offs_c, nt, bufs)
 end
 
 function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
@@ -174,7 +178,7 @@ function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Thr
   S, offs_r, offs_c = line_layout(rsz, d1)
   nt = max(1, Int(threads))
   bufs = [Vector{Complex{T}}(undef, d) for _ in 1:5nt]
-  BRFFTLPlan{T,N,typeof(line),typeof(cplan)}(sz, d, reg, line, cplan, S, offs_r, offs_c, nt, bufs,
+  BRFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg)}(sz, d, reg, line, cplan, S, offs_r, offs_c, nt, bufs,
                                               Vector{Complex{T}}(undef, prod(sz)))
 end
 
