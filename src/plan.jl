@@ -30,11 +30,25 @@ function Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {
   Chain{T,Tuple(rs),σ,length(rs)}(n, Tuple(tw), tw1)
 end
 
+"""
+    Pruning{FM,LM}
+
+Pruned first and last stage of a chain on lines with zero inputs or unneeded outputs: the first
+stage runs segment i over p ∈ `first[i]` with zero-input mask FM[i], the last stage segment i over
+q ∈ `last[i]` (q0 in lane blocks) with needed-output mask LM[i]. The masks are type parameters so
+that each segment calls its own generated codelet; an empty tuple means no pruning there.
+"""
+struct Pruning{FM,LM}
+  first::Vector{UnitRange{Int}}
+  last::Vector{UnitRange{Int}}
+end
+const NOPRUNE = Pruning{(),()}(UnitRange{Int}[], UnitRange{Int}[])
+
 # Stage calls of a chain from `src` through `dsts` (one destination per stage). `base` is a
 # number of complex values known to divide S (1 if nothing is known); stage i has stride
 # S·(R_1⋯R_(i-1)) and takes the widest vector type whose complex count divides base·R_1⋯R_(i-1).
 # With `single` (S = 1) the first stage groups 2 or 4 butterflies in one vector when m allows.
-function chain_body(T, Rs, σ, src, dsts, base, single)
+function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
   K = length(Rs)
   n = prod(Rs; init = 1)
   ladder = vec_ladder(T)
@@ -47,13 +61,35 @@ function chain_body(T, Rs, σ, src, dsts, base, single)
     dst = dsts[i]
     V = ladder[findfirst(V -> (base * sst) % ncomplex(V) == 0, ladder)]
     if i == K
-      push!(body, :(stage_last!($dst, $src, s, Val($r), Val($σ), $V)))
+      if isempty(LM) || K == 1
+        push!(body, :(stage_last!($dst, $src, s, Val($r), Val($σ), $V)))
+      else
+        for (j, need) in enumerate(LM)
+          push!(body, :(stage_last!($dst, $src, s, first(Pr.last[$j]), last(Pr.last[$j]) + 1, Val($r), Val($σ), $V, Val($need))))
+        end
+      end
     elseif single && i == 1 && group !== nothing && ncomplex(V) == 1
-      push!(body, :(m = L ÷ $r), :(stage_first_group!($dst, $src, cptr(P.tw1), m, Val($r), Val($σ), $(ladder[group]))),
-            :(L = m), :(s *= $r))
+      push!(body, :(m = L ÷ $r))
+      if isempty(FM)
+        push!(body, :(stage_first_group!($dst, $src, cptr(P.tw1), m, Val($r), Val($σ), $(ladder[group]))))
+      else
+        for (j, zin) in enumerate(FM)
+          push!(body, :(stage_first_group!($dst, $src, cptr(P.tw1), m, first(Pr.first[$j]), last(Pr.first[$j]) + 1,
+                                           Val($r), Val($σ), $(ladder[group]), Val($zin))))
+        end
+      end
+      push!(body, :(L = m), :(s *= $r))
     else
-      push!(body, :(m = L ÷ $r), :(stage!($dst, $src, cptr(P.tw[$i]), m, s, Val($r), Val($σ), $V)),
-            :(L = m), :(s *= $r))
+      push!(body, :(m = L ÷ $r))
+      if i > 1 || isempty(FM)
+        push!(body, :(stage!($dst, $src, cptr(P.tw[$i]), m, s, Val($r), Val($σ), $V)))
+      else
+        for (j, zin) in enumerate(FM)
+          push!(body, :(stage!($dst, $src, cptr(P.tw[$i]), m, s, first(Pr.first[$j]), last(Pr.first[$j]) + 1,
+                               Val($r), Val($σ), $V, Val($zin))))
+        end
+      end
+      push!(body, :(L = m), :(s *= $r))
     end
     src = dst
     sst *= r
@@ -78,7 +114,11 @@ end
 Transform S interleaved sequences of length `P.n` from `px` into `py` (which may equal `px`),
 using the work buffers `pw1`, `pw2` (S·n complex values each).
 """
-@generated function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K}, S::Int) where {T,Rs,σ,K}
+run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, S::Int) where {T} =
+  run!(py, px, pw1, pw2, P, S, NOPRUNE)
+
+@generated function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K}, S::Int,
+                         Pr::Pruning{FM,LM}) where {T,Rs,σ,K,FM,LM}
   K == 0 && return :(py == px || unsafe_copyto!(py, px, 2S); nothing)
   # Out of place: the stages alternate between py and pw1 and end in py; px is only read.
   oop = [iseven(K - i) ? :py : :pw1 for i in 1:K]
@@ -89,7 +129,7 @@ using the work buffers `pw1`, `pw2` (S·n complex values each).
     ip[i] = isodd(K - i) ? :pw1 : :pw2
   end
   dispatch(dsts) = stride_dispatch(T, (base, single) -> quote
-    $(chain_body(T, Rs, σ, :px, dsts, base, single)...)
+    $(chain_body(T, Rs, σ, :px, dsts, base, single, FM, LM)...)
   end)
   inplace = K == 1 ? quote
     $(dispatch([:pw1]))
@@ -185,8 +225,11 @@ kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T} =
 Transform a block of B lanes; element j of lane i at `px + i + Sx·j` and `py + i + Sy·j`
 (py may equal px). The work buffers hold B·n complex values each.
 """
+run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, Sx::Int, Sy::Int, B::Int) where {T} =
+  run_lanes!(py, px, pw1, pw2, P, Sx, Sy, B, NOPRUNE)
+
 @generated function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K},
-                               Sx::Int, Sy::Int, B::Int) where {T,Rs,σ,K}
+                               Sx::Int, Sy::Int, B::Int, Pr::Pruning{FM,LM}) where {T,Rs,σ,K,FM,LM}
   function body(V)
     ex = Any[:(L = P.n), :(s0 = 1)]
     src, srcS = :px, :Sx
@@ -195,11 +238,25 @@ Transform a block of B lanes; element j of lane i at `px + i + Sx·j` and `py + 
       last = i == K
       dst, dstS = last ? (:py, :Sy) : (isodd(i) ? :pw1 : :pw2, :B)
       if last
-        push!(ex, :(stage_last_lanes!($dst, $src, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
+        if isempty(LM)
+          push!(ex, :(stage_last_lanes!($dst, $src, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
+        else
+          for (j, need) in enumerate(LM)
+            push!(ex, :(stage_last_lanes!($dst, $src, s0, $srcS, $dstS, B, first(Pr.last[$j]), last(Pr.last[$j]) + 1,
+                                          Val($r), Val($σ), $V, Val($need))))
+          end
+        end
       else
-        push!(ex, :(m = L ÷ $r),
-              :(stage_lanes!($dst, $src, cptr(P.tw[$i]), m, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)),
-              :(L = m), :(s0 *= $r))
+        push!(ex, :(m = L ÷ $r))
+        if i > 1 || isempty(FM)
+          push!(ex, :(stage_lanes!($dst, $src, cptr(P.tw[$i]), m, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
+        else
+          for (j, zin) in enumerate(FM)
+            push!(ex, :(stage_lanes!($dst, $src, cptr(P.tw[$i]), m, s0, $srcS, $dstS, B, first(Pr.first[$j]), last(Pr.first[$j]) + 1,
+                                     Val($r), Val($σ), $V, Val($zin))))
+          end
+        end
+        push!(ex, :(L = m), :(s0 *= $r))
       end
       src, srcS = dst, dstS
     end

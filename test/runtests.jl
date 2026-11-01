@@ -136,6 +136,33 @@ using SIMD: Vec
     end
   end
 
+  @testset "pruned passes, $T" for T in (Float64, Float32)
+    # NFFT pattern: N modes in a line of length n, the first N - N÷2 and the last N÷2 entries
+    for (n, N) in [(128, 64), (100, 40), (96, 70), (240, 180), (1024, 600), (162, 120), (64, 10)], d in 1:2, nt in (1, 3)
+      a = N - N ÷ 2; b = N ÷ 2
+      rng = (1:a, n-b+1:n)
+      dims = d == 1 ? (n + 4, 37) : (37, n + 4)
+      idx(r) = d == 1 ? (2 .+ r, 3:35) : (3:35, 2 .+ r)
+      G0 = randn(Complex{T}, dims)
+      line_zero = trues(n); for r in rng; line_zero[r] .= false; end
+      for sign in (-1, 1)
+        # zero inputs outside the ranges
+        G = copy(G0); v = view(G, idx(1:n)...)
+        sel = d == 1 ? (findall(line_zero), :) : (:, findall(line_zero))
+        v[sel...] .= 0
+        ref = mapslices(u -> dft(ComplexF64.(u), sign), Array(v); dims = d)
+        FFTL.apply!(FFTL.plan_pass(v, d; sign, threads = nt, nonzero = rng), v)
+        @test relerr(v, ref) < 10tol(T)
+        # only the outputs in the ranges are needed
+        G = copy(G0); v = view(G, idx(1:n)...)
+        ref = mapslices(u -> dft(ComplexF64.(u), sign), Array(v); dims = d)
+        FFTL.apply!(FFTL.plan_pass(v, d; sign, threads = nt, needed = rng), v)
+        keep = d == 1 ? (findall(.!line_zero), :) : (:, findall(.!line_zero))
+        @test relerr(v[keep...], ref[keep...]) < 10tol(T)
+      end
+    end
+  end
+
   @testset "plans: in place, out of place, inv" begin
     for n in [1, 7, 64, 1000, 1009]
       x = randn(ComplexF64, n)
