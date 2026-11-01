@@ -1,0 +1,15 @@
+name = "fftl-trimcheck"
+uuid = "0d3a2c22-9d3e-4c6c-83ff-3f19b4de0a1e"
+authors = ["Tobias Knopp <tobias@knoppweb.de>"]
+version = "0.1.0-dev"
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+FFTL = "b53ef638-a7f0-46a4-97a9-16ee08a896af"
+
+[sources]
+FFTL = {path = "../.."}
+
+[compat]
+LinearAlgebra = "1"
+julia = "1.10"
