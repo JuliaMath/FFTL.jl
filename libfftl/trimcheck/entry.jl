@@ -163,8 +163,7 @@ end
 # --- 3. codelet isolation (diagnosis of the stage_first_group! failure) ----------------
 
 # The grouped first stage called directly from Main-verified code, like the phase-0 flat
-# runners did: if this resolves, the forwarder itself is fine and the phase-3 failure comes
-# from its call through FFTL.RChain's rstage_group!.
+# runners did: resolves (the forwarder and the generated body below it are fine).
 Base.@ccallable function fftl_trim_first_group_f64(m::Cint)::Cint
   x = Vector{ComplexF64}(undef, 4 * Int(m))
   y = similar(x)
@@ -215,23 +214,15 @@ Base.@ccallable function fftl_trim_rplan_bluestein_plan_f64()::Cint
   Cint(length(p.sz) + p.nthreads)
 end
 
-# The grouped first stage with a vector of ONE complex value (SIMD.Vec{2, Float64}), the type
-# rstage_group! carries as the vi == n branches below its 2/4-complex group vectors. Runtime
-# never picks it; the trim verifier walks the branch statically and the generated body fails.
-Base.@ccallable function fftl_trim_first_group1c_f64(m::Cint)::Cint
-  x = Vector{ComplexF64}(undef, 4 * Int(m))
-  y = similar(x)
-  pt = Vector{ComplexF64}(undef, 3 * Int(m))
-  GC.@preserve x y pt begin
-    FFTL.stage_first_group!(Ptr{Float64}(pointer(y)), Ptr{Float64}(pointer(x)),
-                            Ptr{Float64}(pointer(pt)), Int(m), Val(4), Val(-1),
-                            SIMD.Vec{2, Float64})
-  end
-  0
-end
+# The grouped first stage with a vector of ONE complex value (SIMD.Vec{2, Float64}) was the
+# phase-3 trim blocker: rstage_group! used to emit branches for every ladder vector, and the
+# generator of the grouped first stage cannot build codelets for one complex value per vector
+# (main 09558f8 fixed the branch emission and made the generator reject such widths, so the
+# direct-call repro entry fftl_trim_first_group1c_f64 is retired with it).
 
 # rstage_group! itself, all arguments run-time ints, from Main: the dispatch the run! body of
-# RChain uses; the verifier walks every vi branch here.
+# RChain uses; the verifier walks every vi branch here. After main 09558f8 the one-complex
+# branches are no longer emitted.
 Base.@ccallable function fftl_trim_rstage_group_f64(m::Cint)::Cint
   x = Vector{ComplexF64}(undef, 64 * Int(m))
   y = similar(x)

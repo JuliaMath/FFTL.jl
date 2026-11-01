@@ -12,7 +12,7 @@ const CASES = ("fftl_trim_1d_f64", "fftl_trim_1d_f32", "fftl_trim_2d_f64", "fftl
                "fftl_trim_rplan_exec_threaded_f64", "fftl_trim_first_group_f64",
                "fftl_trim_bluestein_ctor_f64", "fftl_trim_bluestein_exec_f64",
                "fftl_trim_rplan_smooth_plan_f64", "fftl_trim_rplan_bluestein_plan_f64",
-               "fftl_trim_first_group1c_f64", "fftl_trim_rstage_group_f64")
+               "fftl_trim_rstage_group_f64")
 
 function count_errors(path)
   lines = readlines(path)
