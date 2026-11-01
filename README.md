@@ -35,7 +35,10 @@ real-to-real transforms, any length and dimensions, accurate to a few ulps of th
 ### GPUs
 
 With KernelAbstractions.jl and a GPU package loaded, the same functions work on GPU arrays
-(experimental; complex `Float32`, `Float64` where the GPU supports it):
+(experimental; `Float32`, `Float64` where the GPU supports it). Complex transforms use tuned
+multi-stage kernels; `rfft`/`irfft` run at about the speed of a complex transform of the same
+size, real-to-real transforms (`r2r`, all kinds) go through a twiddled complex DFT of twice the
+length and are not tuned yet:
 
 ```julia
 using FFTL, Metal, KernelAbstractions          # or CUDA, AMDGPU, oneAPI

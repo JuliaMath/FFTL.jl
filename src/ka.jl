@@ -16,3 +16,17 @@ dimensions `region`. Requires `using KernelAbstractions`; with a GPU package loa
 (`y !== x`); kernels are queued on the backend without synchronization.
 """
 function plan_ka end
+
+"""
+    plan_ka_rfft(backend, T, dims; region = 1:length(dims))
+    plan_ka_brfft(backend, T, dims; region = 1:length(dims))
+    plan_ka_r2r(backend, T, dims, kinds; region = 1:length(dims))
+
+Real-input forward DFT (half spectrum along `region[1]`), its unnormalised inverse (`dims` is
+the size of the real array in both) and real-to-real transforms (one `R2RKind` per dimension) on
+a KernelAbstractions `backend`. Requires `using KernelAbstractions`; with a GPU package loaded,
+`FFTL.plan_rfft`, `plan_brfft`, `plan_irfft` and `plan_r2r` return these plans for GPU arrays.
+"""
+function plan_ka_rfft end
+function plan_ka_brfft end
+function plan_ka_r2r end

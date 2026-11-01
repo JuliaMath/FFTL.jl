@@ -652,4 +652,6 @@ function AbstractFFTs.plan_inv(p::KAPlan{T}) where {T}
                           AbstractFFTs.normalization(T, p.sz, p.region))
 end
 
+include("ka_real.jl")
+
 end

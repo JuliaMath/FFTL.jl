@@ -52,3 +52,27 @@ end
   y = p * x; KernelAbstractions.synchronize(be)
   @test relerr(y, FFTL.plan_fft(ComplexF64.(x)) * ComplexF64.(x)) < tol(Float32)
 end
+
+@testset "KernelAbstractions real transforms (CPU backend), $T" for T in (Float64, Float32)
+  be = KernelAbstractions.CPU()
+  for (sz, reg) in pick((((16,), 1:1), ((15,), 1:1), ((2,), 1:1), ((37,), 1:1), ((12, 10), 1:2), ((12, 10), 2:2), ((9, 8, 6), (1, 3))),
+                        (((16,), 1:1), ((15,), 1:1), ((12, 10), 1:2), ((9, 8, 6), (1, 3))))
+    x = randn(T, sz)
+    X = FFTL.plan_ka_rfft(be, T, sz; region = reg) * x; KernelAbstractions.synchronize(be)
+    @test relerr(X, FFTL.rfft(x, reg)) < tol(T)
+    Xc = copy(X)
+    z = FFTL.plan_ka_brfft(be, T, sz; region = reg) * X; KernelAbstractions.synchronize(be)
+    @test relerr(z, FFTL.brfft(Xc, sz[minimum(reg)], reg)) < tol(T)
+    @test X == Xc
+  end
+  for k in instances(FFTL.R2RKind), n in pick((2, 5, 8, 33), (5, 8))
+    x = randn(T, n)
+    y = FFTL.plan_ka_r2r(be, T, (n,), k) * x; KernelAbstractions.synchronize(be)
+    @test relerr(y, FFTL.r2r(x, k)) < 10tol(T)
+  end
+  x = randn(T, 9, 12, 5); ks = (FFTL.HC2R, FFTL.REDFT00, FFTL.RODFT11)
+  p = FFTL.plan_ka_r2r(be, T, size(x), ks; region = 1:3)
+  y = p * x; KernelAbstractions.synchronize(be)
+  @test relerr(y, FFTL.r2r(x, ks, 1:3)) < 10tol(T)
+  @test relerr(inv(p) * y, x) < 10tol(T)
+end
