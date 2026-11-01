@@ -29,5 +29,6 @@ include("pass.jl")
 include("real.jl")
 include("r2r.jl")
 include("ka.jl")
+include("precompile.jl")
 
 end
