@@ -55,6 +55,10 @@ for T in (Float32, Float64)
     typed = [a in (:py, :px, :pt) ? :($a::Ptr{$T}) : :($a::Int) for a in args]
     byσ = map((-1, 1)) do σ
       byv = map(enumerate(ladder)) do (vi, V)
+        # the grouped first stage exists for 2 or 4 complex values per vector only; run! never
+        # selects another vector type for it, and code compiled ahead of time must not contain
+        # the call (its generator would fail)
+        name === :rstage_group! && !(ncomplex(V) in (2, 4)) && return :()
         byr = [:(R == $r && return $(call(r, σ, V))) for r in RADICES]
         :(if vi == $vi; $(byr...); end)
       end

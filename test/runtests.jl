@@ -196,7 +196,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       @test relerr(FFTL.brfft(y, n, region), prod(sz[i] for i in reg) .* x) < 10tol(T)
       # adjoint: <y, p x> = <p' y, x>
       yr = randn(Complex{T}, size(y))
-      @test real(dot(yr, p * x)) ≈ dot(adjoint(p) * yr, x) rtol = 100tol(T)
+      # absolute tolerance on the scale |yr|·|p x|: a relative one fails when the product is near zero
+      @test abs(real(dot(yr, p * x)) - dot(adjoint(p) * yr, x)) <= 100tol(T) * norm(yr) * norm(p * x)
     end
     # threads, large lines and strided lines
     for (sz, region) in pick([((2^16, 4), (1, 2)), ((64, 513), (2,)), ((1000, 300), (1, 2))], [((2^16, 4), (1, 2)), ((64, 513), (2,))])

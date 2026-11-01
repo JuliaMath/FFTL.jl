@@ -13,7 +13,13 @@ const THREAD_MIN_WORK = 1 << 15
 # Lane blocks are multiples of 8 complex values (a 128-byte cache line of ComplexF64).
 const LANE_ALIGN = 8
 # Complex values per lane-block buffer (2^16 ComplexF64 = 1 MB; 2^15–2^16 measured best on the M1).
+# Complex values per lane block buffer (a task holds two or three), 2^16 measured best on the M1.
 const BLOCK_BUDGET = 1 << 16
+# On x86 (Zen 3: 512 KB L2 per core, shared L3) with several threads, long lines (n >= 1024) take
+# blocks of at most 2^14 values: with 16 threads 2^22 Float64 1.6× and 2048² Float64 1.3× faster;
+# one thread keeps the larger blocks (2048² 1.6× slower with the small ones), as do short lines.
+const BLOCK_BUDGET_SHARED = 1 << 14
+block_budget(n, nt) = Sys.ARCH !== :aarch64 && nt > 1 && n >= 1024 ? BLOCK_BUDGET_SHARED : BLOCK_BUDGET
 
 # Blocks per thread: threads take blocks from a shared counter, so a slow core (or one busy
 # with something else) delays the pass by one block, not by a fixed share.
@@ -22,7 +28,7 @@ const BLOCKS_PER_THREAD = 4
 # Lane block width: a multiple of LANE_ALIGN, within the cache budget, and small enough that
 # there are BLOCKS_PER_THREAD blocks per thread.
 function lane_block(S, n, nt)
-  Bc = max(LANE_ALIGN, LANE_ALIGN * fld(BLOCK_BUDGET ÷ n, LANE_ALIGN))
+  Bc = max(LANE_ALIGN, LANE_ALIGN * fld(block_budget(n, nt) ÷ n, LANE_ALIGN))
   Bt = LANE_ALIGN * cld(cld(S, BLOCKS_PER_THREAD * nt), LANE_ALIGN)
   min(Bc, Bt)
 end
@@ -129,7 +135,7 @@ struct FourStep{T,K1,K2} <: Kernel{T}
   n2::Int
   k1::K1                          # length n1, n2 interleaved lanes
   k2::K2                          # length n2, n1 interleaved lanes
-  tw::Vector{Complex{T}}          # W_n^(j1 k2) at k2 + n2·j1
+  tw::Vector{Complex{T}}          # W_n^(j1 k2) at k2 + n2 j1 (length n), or factor tables (n1 + n2)
   buf::Vector{Complex{T}}         # A, rows of n2 + ROW_PAD
   tbuf::Vector{Vector{Complex{T}}}  # three per thread
 end
@@ -157,13 +163,21 @@ function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C}
   n2 = n ÷ n1
   k1 = C{T}(n1, σ, radices(n1, n2; esize = sizeof(Complex{T})))
   k2 = C{T}(n2, σ, radices(n2, n1; esize = sizeof(Complex{T})))
+  # Above FACTOR_TWIDDLES bytes the table of W_n^(j1 k2) would be as large as the data and cost a
+  # memory round trip: W_n^(j1 k2) = W_n1^a · W_n^b with j1 k2 = a n2 + b, from tables of n1 + n2
+  # values (2^22 Float64 on 8 threads: 5 % faster on the M1). Cache-resident sizes keep the full
+  # table: the extra product costs more there (65536 Float32: 4× slower with factor tables).
   tw = cached((:fourstep, T, n, σ, n1)) do
     W = unit_roots(σ, n)
-    t = Vector{Complex{T}}(undef, n)
-    for j1 in 0:n1-1, k2 in 0:n2-1
-      t[j1*n2+k2+1] = Complex{T}(W[(j1*k2)%n+1])
+    if n * sizeof(Complex{T}) > FACTOR_TWIDDLES
+      [Complex{T}[W[a*n2+1] for a in 0:n1-1]; Complex{T}[W[b+1] for b in 0:n2-1]]
+    else
+      t = Vector{Complex{T}}(undef, n)
+      for j1 in 0:n1-1, k2 in 0:n2-1
+        t[j1*n2+k2+1] = Complex{T}(W[(j1*k2)%n+1])
+      end
+      t
     end
-    t
   end
   nw = max(lane_block(n1, n2, nt) * n2, lane_block(n2, n1, nt) * n1)
   FourStep{T,typeof(k1),typeof(k2)}(n, n1, n2, k1, k2, tw, Vector{Complex{T}}(undef, n1 * (n2 + ROW_PAD)),
@@ -172,6 +186,7 @@ end
 
 const FOURSTEP_MIN = 1 << 13
 const ROW_PAD = 4
+const FACTOR_TWIDDLES = 1 << 23   # bytes; above this the four-step uses factor twiddle tables
 
 use_fourstep(n, nt) = nt > 1 && n >= FOURSTEP_MIN && smooth(n) && fourstep_split(n) > 0
 
@@ -190,7 +205,11 @@ function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T
       local i0 = b * B
       local Bc = min(B, n1 - i0)
       run_lanes!(pw3, px + i0 * CT, cptr(P.tbuf[3c-2]), cptr(P.tbuf[3c-1]), P.k2, n1, Bc, Bc)
-      twiddle_transpose!(pa, cw3, ptw, i0, Bc, n2)
+      if length(P.tw) == P.n
+        twiddle_transpose!(pa, cw3, ptw, i0, Bc, n2)
+      else
+        twiddle_transpose!(pa, cw3, ptw, i0, Bc, n1, n2)
+      end
     end
     # 2. DFTs of length n1 over lane blocks of k2: A[k2 + n2 j1] → y[k2 + n2 k1]
     B2 = lane_block(n2, n1, nt)
@@ -216,6 +235,29 @@ function twiddle_transpose!(pa::Ptr{Complex{T}}, pw::Ptr{Complex{T}}, ptw::Ptr{C
       a = vload(V, Ptr{T}(pw + (i + Bc * k2) * CT))
       w = vload(V, Ptr{T}(ptw + (rowt + k2) * CT))
       vstore(ccmul(a, w), Ptr{T}(pa + (rowa + k2) * CT))
+    end
+  end
+end
+
+# The same with factor tables: W_n^(j1 k2), j1 = i0 + i, is tw[a] · tw[n1 + b] with
+# j1 k2 = a n2 + b; a and b advance by j1 per step.
+function twiddle_transpose!(pa::Ptr{Complex{T}}, pw::Ptr{Complex{T}}, ptw::Ptr{Complex{T}}, i0, Bc, n1, n2) where {T}
+  V = single_vec(T)
+  CT = sizeof(Complex{T})
+  pb = ptw + n1 * CT
+  for i in 0:Bc-1
+    j1 = i0 + i
+    rowa = (n2 + ROW_PAD) * j1
+    qa, rb = divrem(j1, n2)
+    ta = 0; tb = 0
+    for k2 in 0:n2-1
+      x = vload(V, Ptr{T}(pw + (i + Bc * k2) * CT))
+      w = ccmul(vload(V, Ptr{T}(ptw + ta * CT)), vload(V, Ptr{T}(pb + tb * CT)))
+      vstore(ccmul(x, w), Ptr{T}(pa + (rowa + k2) * CT))
+      ta += qa; tb += rb
+      if tb >= n2
+        tb -= n2; ta += 1
+      end
     end
   end
 end
