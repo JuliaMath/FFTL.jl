@@ -3,8 +3,9 @@
 Task: step 3 of the libfftl plan — merge `origin/main` (the RPlan interface), port the boundary
 to `FFTL.RPlan` / `FFTL.execute!`, update `include/fftl.h` per the review, build with
 `juliac --trim=safe`, run trim checks and C tests, measure the bundle. Everything is on branch
-`libfftl` in this worktree; package `src/` is untouched (the one required package change is in
-the Requests at the end, which also blocks the build — see STATUS).
+`libfftl` in this worktree; package `src/` is untouched (the package changes still needed are
+in the Requests at the end — request 2 blocks the trimmed build, see STATUS; the untrimmed
+library builds and its whole C matrix is green).
 
 Machine: remote03, AMD EPYC 7763 (Zen 3, AVX2, no AVX-512), shared. Julia 1.13.3, JuliaC 0.3.12
 (`libfftl/jc`). Runs pinned with `taskset -c 100-107` where threads matter.
@@ -22,6 +23,15 @@ julia -t 2 --project=. -e 'using Pkg; Pkg.test()'
 The 10 broken are the construction `@test_broken` cases in `test/inference.jl` — by design:
 construction goes through `plan_fft`/`FFTLPlan`, not RPlan, so they stay broken (position of
 the merge in step 1: the libfftl-relevant tests of the merged package pass).
+
+After request 1 (below) landed on main, `origin/main` @ 09558f8 was merged the same way — no
+rebase (merge commit e855818: the rchain fix plus the Threads changes 0044b76/07dcf23 it
+carried) — and the quick suite of the merged worktree is unchanged:
+
+```
+julia -t 2 --project=. -e 'using Pkg; Pkg.test()'
+819 passed, 10 broken, 829 total, 4m13.3s
+```
 
 ## 2. Boundary port to RPlan (commits a59420b, c8a6796, 6ac978e)
 
@@ -48,7 +58,11 @@ gone. `fftl_version` is new.
 
 `build.sh`: the runtime worker pool is baked at build time via `--jl-option threads=$FFTL_THREADS`
 (default 4, `auto` allowed); Julia and JuliaC versions are printed in the build log; single CPU
-target `x86-64-v3` (JuliaC.jl#190); the phase-0 library prune list is unchanged.
+target `x86-64-v3` (JuliaC.jl#190). `FFTL_TRIM` picks the juliac mode (new): `safe` (default,
+the verifier must resolve every statically reachable call — the state the library ships in)
+or `off` (plain `--output-lib`, used in section 6 for the C matrix while construction idioms
+fail the verifier — request 2). The phase-0 prune list now also drops libLLVM and
+libjulia-codegen (section 7).
 
 ## 3. Threading: measured, not guessed
 
@@ -83,78 +97,112 @@ Same machine, Julia 1.13.3; the Mac baseline (1.13.2) differs by precompile stat
 columns are shown. Attribution: an unresolved edge is reported once, credited to the entry
 whose exploration found it first, so per-entry numbers are an upper mapping of a stable total.
 
-| entry | Mac baseline (142) | remote03, RPlan build |
+| entry | Mac baseline (142) | remote03, RPlan build | after 09558f8 |
+|---|---|---|---|
+| fftl_trim_1d_f64 / 1d_f32 / 2d_f64 (public path, unchanged) | 2 / 26 / 22 | 26 / 26 / 22 | 26 / 26 / 22 |
+| fftl_trim_rfft_f64 / r2r_f64 (public path, out of scope) | 50 / 16 | 36 / 16 | 36 / 16 |
+| fftl_trim_plan_f64 (public construction) | 24 | 0 | 0 |
+| fftl_trim_exec_f64 / exec_threaded_f64 (public execution) | 2 / 0 | 0 / 0 | 0 / 0 |
+| fftl_trim_rchain_f64 (RChain build + run!, 256 = grouped first stage) | — | 0 | 0 |
+| fftl_trim_rplan_f64 / rplan2d / rplan_plan / rplan_exec | — | 2 / 0 / 0 / 0 | 2 / 0 / 0 / 0 |
+| fftl_trim_rplan_exec_threaded_f64 (threads=4 spawn path) | — | 0 | 0 |
+| fftl_trim_rplan_bluestein_f64 (n as argument) / rplan_smooth_plan | — | 0 / 0 | 0 / 0 |
+| fftl_trim_bluestein_ctor / bluestein_exec (97 prime) | — | 0 / 0 | 0 / 0 |
+| fftl_trim_rplan_bluestein_plan (97 constant) | — | 139 | 59 |
+| fftl_trim_first_group_f64 (direct, 2-complex vector) | — | 0 | 0 |
+| fftl_trim_first_group1c_f64 (direct, 1-complex vector) | — | 2 | retired with the fix |
+| fftl_trim_rstage_group_f64 (rstage_group! from Main) | — | 0 | 0 |
+| (unattributed) | — | 1 | 1 |
+| **total** | **142** | **270** | **188** |
+
+Reading after the fix: the dead-branch family is gone everywhere, and with every execution-only,
+codelet-isolation and RChain entry at 0 the target path's *execution* is fully trim-clean. What
+remains of the target path (62 attributed + 1 unattributed = 63 of the 188; the untouched
+public path accounts for the other 126) all sits in **plan construction**, unmasked by the fix:
+while the dead branches were statically reachable, the verifier stopped along each exploration
+path at them and never walked deeper. The `rplan_bluestein_plan` walk now continues into the
+construction machinery (the `cached` kernel cache, closure captures, sort-by, `@sync`) and finds
+a fixed set of idioms the verifier cannot compile ahead of time, itemized in section 5. The
+`fftl_trim_first_group1c_f64` repro is retired with the fix — the generator now *rejects*
+one-complex vectors on purpose, so the direct-call entry measures the intended rejection; it is
+removed from entry.jl/count.jl (repro stays in the git history and in section 5).
+
+## 5. The trim blockers: dead branches (fixed), construction idioms (open)
+
+**Resolved: the dead 1-complex branches of `rstage_group!`.** Phase 3's first blocker, in this
+report's first version (git history): `rstage_group!` emitted `vi == …` branches for every
+ladder vector including the 1-complex `Vec{2,T}`, runtime only ever picks 2- or 4-complex
+(`ncs[vi] in (2, 4)`), and the grouped-first-stage generator cannot generate codelets for one
+complex value (JIT repro: `BoundsError … at index [5]`; the untrimmed `--output-lib` build
+aborted in LLVM `Do not know how to split the result of this operator!`). Claude Code fixed it
+on main 09558f8 and hardened the generator to reject other widths. After the merge (e855818):
+`rstage_group_f64` = 0, `first_group_f64` = 0, the family is gone from every entry — and the
+untrimmed `--output-lib` build that this family used to kill at LLVM now completes (section 6).
+
+**Open: plan-construction idioms the trim verifier cannot compile ahead of time.** With the dead
+branches gone, the verifier walks the whole construction path for the first time (its walk
+stops at the first unresolved edge — the dead branches were masking everything below them).
+Plan *execution* is fully clean (every execution-only, codelet and RChain entry is 0; the
+boundary contributes nothing). The trimmed library build (merge e855818, both precisions, build
+with default `FFTL_THREADS=4`) fails with **120 errors** — a fixed set of root causes, one row
+per package location below, attribution by the failing stack's deepest FFTL frame, measured
+from the build log (reproduce: `bash libfftl/build.sh`):
+
+| package location (deepest FFTL frame of the failing stack) | # | idiom the verifier rejects |
 |---|---|---|
-| fftl_trim_1d_f64 / 1d_f32 / 2d_f64 (public path, unchanged) | 2 / 26 / 22 | 26 / 26 / 22 |
-| fftl_trim_rfft_f64 / r2r_f64 (public path, out of scope) | 50 / 16 | 36 / 16 |
-| fftl_trim_plan_f64 (public construction) | 24 | 0 |
-| fftl_trim_exec_f64 / exec_threaded_f64 (public execution) | 2 / 0 | 0 / 0 |
-| fftl_trim_rchain_f64 (RChain build + run!, 256 = grouped first stage) | — | 0 |
-| fftl_trim_rplan_f64 / rplan2d / rplan_plan / rplan_exec | — | 2 / 0 / 0 / 0 |
-| fftl_trim_rplan_exec_threaded_f64 (threads=4 spawn path) | — | 0 |
-| fftl_trim_rplan_bluestein_f64 (n as argument) / rplan_smooth_plan | — | 0 / 0 |
-| fftl_trim_bluestein_ctor / bluestein_exec (97 prime) | — | 0 / 0 |
-| fftl_trim_rplan_bluestein_plan (97 constant) | — | 139 |
-| fftl_trim_first_group_f64 (direct, 2-complex vector) | — | 0 |
-| fftl_trim_first_group1c_f64 (direct, 1-complex vector) | — | 2 |
-| fftl_trim_rstage_group_f64 (rstage_group! from Main) | — | 0 |
-| (unattributed) | — | 1 |
-| **total** | **142** | **270** |
+| plan.jl:275/277/279/280 — body of Bluestein's `cached` do-block | 42 | the block's local `b` shares its name with the outer destructure target → `Core.Box`ed capture; its stores, `cptr(b)` inside `run!`, `b ./= M` read `getfield(box)::Any` |
+| plan.jl:270 — `(chirp, b) = cached(…)` in `Bluestein{T}` | 8 | `cached` returns `::Any` (untyped `f`), the tuple destructure is `indexed_iterate(::Any, i)` |
+| plan.jl:283 — `Bluestein{…}(n, chirp, b, …)` | 4 | inner ctor must convert fields from `::Any` values |
+| plan.jl:28/30/31 — `cached` body, `KCACHE::Dict{Any,Any}` | 22 | `f()` with `f::Any` is a dynamic call; `get`/`delete!`/`setindex!` carry `::Any` keys/values (`isequal`, `hashindex`) |
+| rchain.jl:20 — `cached(() -> build_rchain(T, …), key)` | 4 | the closure argument through the untyped `f` |
+| rplan.jl:61/64 — `max(nwork, …)` in `RPlan{T}(…; threads)` | 8 | `nwork`/`ntwork` are captured by the tbuf comprehension → boxed → `max(::Any, ::Int)` |
+| rplan.jl:66/67 — RPlan inner ctor + `[Vector{Complex{T}}(undef, ntwork) …]` | 16 | the comprehension allocates `Array(undef, ::Any)` over the boxed `ntwork`, `collect` leaves a plain `::Vector`, the struct ctor then converts from it |
+| threads.jl:75 — `@sync` in `spawn_items` | 2 | Base's `sync_end` calls `wait(r)` on a non-Task item of a `Channel{Any}` → `wait(::Any)` |
+| threads.jl:183 — `FourStep{…}` keyword constructor | 4 | the same `cached`/capture pattern as Bluestein |
+| factor.jl:124 — `sort(…; by = …, rev = …)` in `heuristic_radices` | 10 | `By(::Function)`, `Lt`, `ReverseOrdering` hide the comparator from the verifier |
+| **total** | **120** | |
 
-Reading: through RPlan/RChain, construction and execution resolve — every target-path entry is
-0 **except** one family, itemized below. It also appears in the *public* path now (e.g. inside
-`fftl_trim_2d_f64`): the same dead branches are statically reachable from any `run!`.
-
-## 5. The one blocker: dead 1-complex branches of rstage_group!
-
-All trim errors outside the untouched public path share the same signature, e.g.
+The boxing mechanism, one error in full (error #2 of the trimmed build; all 120 are in the same
+shape tree — the full list is the output of `bash libfftl/build.sh`):
 
 ```
-unresolved invoke from statement stage_first_group!(py::Ptr{Float64}, …, m::Int64, 0::Int64,
-…, Val{2}()::Val{2}, Val{-1}()::Val{-1}, Vec{2, Float64}::Type{Vec{2, Float64}},
-Val{0}()::Val{0})::Any
+unresolved call from statement max(
+  getfield(Box()::Core.Box, :contents::Symbol
+  )::Any,
+  (…)::Int64
+)::Any
+Stacktrace:
+ [1] RPlan{Float32}(sz::Vector{Int64}, region::Vector{Int64}, σ::Int64; threads::Int64)
+   @ FFTL src/rplan.jl:61
+ [2] plan_dft(prec::Int64, ...) @ Main libfftl/src/libfftl.jl:105
+ [3] fftl_plan_dft(rank::Int32, ...) @ Main libfftl/src/libfftl.jl:118
 ```
 
-The vector type `SIMD.Vec{2, Float64}` carries **one** complex value. Facts, all measured:
+`nwork` is captured by the thread-buffer comprehension five lines below (`[Vector{Complex{T}}
+(undef, ntwork) for _ in 1:2nt]`), so reads go through a `Core.Box` and arrive as `::Any`. The
+same shape explains the Bluestein rows (`b`), and the untyped `f` of `cached(f, key)` makes every
+`f()` a dynamic call. None of this is a *runtime* problem: the JIT compiles these paths fine —
+the package quick suite, jltest and even the full C matrix against the untrimmed library (which
+AOT-compiles everything the tests execute, section 6) are green. The trim verifier, however,
+must name the method for every statically reachable call, and an argument or receiver of `::Any`
+defeats it. With 280 errors devoured by the dead branches before, and their absence since
+09558f8, this masked set is now the whole distance to a trimmed library.
 
-1. `FFTL.rstage_group!` (src/rchain.jl:54-67) emits its `vi == …` dispatch branches for
-   **every** entry of `vec_ladder(T)` — that ladder ends in a 1-complex vector (`Vec{2,T}`).
-   Runtime never picks them: `run!` calls the grouped first stage only with vectors of 2 or 4
-   complex values (`ncs[vi] in (2, 4)`, rchain.jl:96-101). In JIT mode nothing ever compiles
-   the dead branches — that is why the package tests pass.
-2. The generator of the grouped first stage (src/kernels.jl:76-116) only supports
-   `ncomplex(VT) in (2, 4)`: for one complex value it takes the `C == 2 ? pick(outs[k+1],
-   outs[k+2], l) : shufflevector(pick(outs[k+1], outs[k+2], l), pick(outs[k+3], outs[k+4], l),
-   …)` branch with only `k + 1 <= R` guaranteed, and indexes `outs` out of bounds. JIT repro:
+No boundary-side workaround exists: construction runs per `fftl_plan_dft` call and the idioms
+live inside the package's plan/KCACHE machinery. Suggestions per family, all in package `src/`,
+none semantically load-bearing:
 
-   ```
-   julia --project=libfftl/trimcheck -e 'using FFTL; import SIMD
-     … stage_first_group!(…, 2, 0, 2, Val(4), Val(-1), SIMD.Vec{2,Float64}, Val(0))'
-   → BoundsError: attempt to access 4-element Vector{Any} at index [5]
-   (the 2-complex sibling, Vec{4,Float64}, compiles and runs)
-   ```
-
-3. AOT builds cannot skip statically reachable branches. `juliac --trim=safe` therefore fails
-   with 280 verifier errors — all this family, none other — and produces no library (build/
-   is not written). The committed repro entry `fftl_trim_first_group1c_f64` reproduces it from
-   Main with 2 errors per (radix, sign) signature.
-4. Even the **untrimmed** `--output-lib` build dies on this code on AVX2 — with exactly the
-   dead family forced into AOT codegen it aborts:
-
-   ```
-   LLVM ERROR: Do not know how to split the result of this operator!
-   signal 6: Aborted — ERROR: Failed to compile src/libfftl.jl
-   ```
-
-   (juliac implicitly AOT-compiles all @ccallable entry points and their inferred call graph
-   for `--output-lib`; there is no flag that disables it — `add_ccallables` is force-set.)
-
-So the phase-2 milestone "0 errors through RPlan" is reached **except** for this package-side
-dead code; the boundary itself contributes 0 errors. No boundary-side change can avoid the
-verifier walking those branches: every `RChain.run!` statically contains the
-`single && i == 1 && grp != 0 && ncs[vi] == 1` arm, and building a CPU target without a
-1-complex ladder entry is impossible (the ladder always ends at one complex value; and this
-host has no AVX-512, so `x86-64-v4` is not a way out either).
+1. `cached(f::F, key) where {F}` — one word; makes `f()` and everything it feeds resolvable.
+2. Bluestein's do-block (plan.jl:270-282): a named function with `where {T}` taking
+   `(n, σ, M, fwd)`, called through the typed `cached` — kills the `b` box and the `::Any`
+   destructure; `FourStep`'s constructor (threads.jl:183) is the same pattern.
+3. The tbuf comprehension (rplan.jl:67): a named helper that preallocates
+   `Vector{Vector{Complex{T}}}(undef, 2nt)` and fills it — no capture, no box, and `ntwork`
+   reads stay `Int64`.
+4. `heuristic_radices` (factor.jl:124): sort a `Vector{<:Tuple}` without `by`/`rev` (Base's
+   `isless` on tuples AOT-compiles), or a small hand-rolled selection.
+5. `spawn_items` (threads.jl:75): collect the tasks in a `Vector{Task}` and `foreach(wait, ts)`
+   — `wait(::Task)` resolves; `@sync`'s `sync_end(::Channel{Any})` cannot.
 
 ## 6. Functional validation: jltest (no juliac needed), 229 checks
 
@@ -184,87 +232,136 @@ and that are fixed now:
 
 `test/test.c` is the same matrix as a real C program against `libfftl.so` (created for a
 trimmed build, threads=1 and 4, plus C-specific behavior: NULL region for trank=0, region
-NULL, poison checks on out-of-place writes). The `cc` line is in build.sh. It cannot run
-until the package fix — then:
+NULL, poison checks on out-of-place writes). The `cc` line is in build.sh. It **ran**: the
+dead-branch family that used to kill even the untrimmed `--output-lib` build at LLVM is fixed,
+so with the new `FFTL_TRIM=off` knob (section 2) build.sh completes the bundle and compiles the
+test as-is:
 
 ```
-bash libfftl/build.sh     # target: 0 verifier errors, build/lib/libfftl.so
-libfftl/test/test          # runs the matrix
+FFTL_TRIM=off bash libfftl/build.sh    # 0 errors, build/lib/libfftl.so
+taskset -c 100-107 libfftl/test/test
+libfftl tests: 378 checks, 0 failed
 ```
+
+(threads=4 baked as by build.sh default, pinned to 8 CPUs; without the pin: same result.) The C matrix exercises exactly the paths the
+trim verifier still rejects — construction through the boundary incl. Bluestein (prime
+lengths), threaded `execute!` — which answers the *functional* half of the remaining blocker:
+the boundary and its tests are done; only verifiable-ahead-of-time code is missing for the
+trimmed image. jltest re-run after the merge: unchanged, 229 checks, 0 failed.
 
 ## 7. Sizes
 
-The trimmed bundle could not be produced (see 5 and STATUS) — no number for it exists yet.
-What was measured on this machine, for scale: a **probe** library built exactly like libfftl
-but without trim (same bundle layout, threads=2) measures
+The **untrimmed** bundle — the first `libfftl.so` that exists (see 6) — measured right after
+build.sh's phase-0 prune list, still including the two JIT libraries:
 
 ```
-bundle total                      571 MB   (du -sh, /tmp/libfftl-p3/probe/bA)
-lib/libprobe.so (untrimmed image) 274 MB
-lib/julia/ (runtime libraries)    298 MB
-  libLLVM.so.20.1jl               120 MB   (JIT only — a trimmed image does not compile)
+bundle total                       492 MB   (du -sh build/)
+lib/libfftl.so (AOT, untrimmed)    263 MB
+lib/julia/ (runtime libraries)    229 MB
+  libLLVM.so.20.1jl               120 MB   (JIT only)
   libjulia-codegen.so.1.13.3       84 MB   (JIT only)
-  libopenblas64_.so.0.3            35 MB   (removed by build.sh, as in phase 0)
-  libblastrampoline.so.5           3.5 MB  (removed by build.sh)
-  libstdc++.so.6.0.34              21 MB    (removed by build.sh)
-  libgfortran.so.5.0.0             11 MB    (removed by build.sh)
-  libjulia-internal.so.1.13.3     16 MB
+  libjulia-internal.so.1.13.3      16 MB
+  libblastrampoline.so.5          3.5 MB
+  gmp, mpfr, pcre2, unwind, uv, z, zstd, gcc_s, openlibm — together ≈ 6 MB
 ```
 
-The phase-0 sizes on the Mac are not in the journal, so there is no before/after column to
-fill; after the package fix the real numbers go here (build.sh also deletes the
-networking/git/C++ libraries as in phase 0 — the list is in build.sh).
+**libLLVM + libjulia-codegen out (request 3 below): measured, and yes.** With both moved out of the
+bundle, the full C matrix passes unchanged (378 checks, 0 failed) — the tests execute plan
+construction, Bluestein, threaded execution and error paths, and nothing they call reaches
+codegen, because juliac AOT-compiles everything the entry graph infers. This is the *untrimmed*
+image, the harder case (it could JIT); a trimmed image is stricter by construction. A missing
+JIT also fails loudly if some future path would want it (abort at the first compile attempt),
+not silently. build.sh now prunes both by default (with that comment), so the canonical
+untrimmed bundle is:
+
+```
+bundle total                       289 MB
+lib/libfftl.so (AOT, untrimmed)    263 MB
+lib/julia/                          26 MB
+```
+
+For scale, the earlier probe library (/tmp/libfftl-p3/probe/bA: threads=2, same layout,
+before any prune ran) measured 571 MB total = lib-image 274 MB + lib/julia 298 MB (of which
+libLLVM 120, codegen 84, openblas 35, stdc++ 21, gfortran 11, libjulia-internal 16,
+blastrampoline 3.5); build.sh's prune list covers openblas, gfortran, quadmath, gomp, crypto,
+ssl, git2, ssh2, curl, nghttp2, stdc++, ssp, gmpxx, dSFMT, atomic — and now LLVM + codegen.
+
+The **trimmed** bundle still cannot be produced: the 120 construction-idiom errors of section 5
+abort juliac before anything is written. Once they are fixed, `bash libfftl/build.sh` puts the
+trimmed `libfftl.so` next to the 263 MB untrimmed image here.
 
 ## 8. Requests to Claude Code
 
-1. **rstage_group! must not emit branches for 1-complex vectors** (fixes trim and C tests).
-   In src/rchain.jl, the `byv` map over the ladder emits `stage_first_group!` calls for every
-   `vi`; the grouped first stage supports only 2 or 4 complex values (generator indexes
-   `outs[k+3..k+4]` guarded by `k + C <= R`, valid only for C ∈ {2, 4}), and runtime only ever
-   calls it with `grp` from `ncs[vi] in (2, 4)`. Suggested patch:
+1. **[landed] rstage_group! must not emit branches for 1-complex vectors** — fixed on main
+   09558f8 (branch emission in src/rchain.jl, plus the generator hardening that rejects other
+   widths in src/kernels.jl), merged here as e855818. Verified: the family is gone from every
+   trim entry, and the untrimmed `--output-lib` build it used to kill at LLVM completes. Thank
+   you — the turnaround made everything in sections 6 and 7 possible today. The first version
+   of this report (git history) carries the full diagnosis with the suggested patch, the JIT
+   repro (`BoundsError … at index [5]` from the 10-arg generator, while the 2-complex sibling
+   compiles) and the old repro entry, now retired.
 
-   ```julia
-   byv = map(enumerate(ladder)) do (vi, V)
-     name != :rstage_group! || ncomplex(V) in (2, 4) || return :()
-     byr = [:(R == $r && return $(call(r, σ, V))) for r in RADICES]
-     :(if vi == $vi; $(byr...); end)
-   end
-   ```
+2. **[blocking] Make plan construction trim-verifiable** — the 120 errors of section 5 are
+   the last distance to a trimmed `libfftl.so`. Five idioms, none load-bearing at runtime
+   (the same code runs green in the JIT, the package suite, jltest and the C matrix):
 
-   (the runtime `throw(ArgumentError(…))` fallback already covers any other `vi`, which is
-   unreachable anyway). Optional hardening: assert `C in (2, 4)` in the generator (kernels.jl)
-   so future misuse fails loudly at generation time rather than as a verifier error or an
-   LLVM abort. Repros: section 5 (JIT one-liner with the exact BoundsError, the committed
-   entry `fftl_trim_first_group1c_f64` → 2 verifier errors, and `build.sh` → 280).
+   - `cached(f, key)` (plan.jl:26): `f` is untyped, `f()` is an `::Any` call — and `::Any`
+     flows on into `KCACHE`'s `get`/`delete!`/`setindex!` edges. One word fixes the head of
+     the family: `cached(f::F, key) where {F}`.
+   - Bluestein's `cached` do-block (plan.jl:270-282): the block's `b` is also the outer
+     destructure target → `Core.Box`; its stores, `cptr(b)` and `b ./= M` read
+     `getfield(box)::Any`, and the `::Any` inherits into the destructure at :270 and the
+     struct ctor at :283. Suggestion: a named `bluestein_tables(::Type{T}, …) where {T}`
+     called through the typed `cached` — same pattern for `FourStep{T}` (threads.jl:183).
+   - The thread-buffer comprehension (rplan.jl:67) boxes the `nwork`/`ntwork` accumulators →
+     `max(::Any, ::Int)` at :61/:64, `Array(undef, ::Any)` in the loop, and a plain
+     `::Vector` reaching the RPlan ctor at :66. Suggestion: a named
+     `thread_buffers(::Type{T}, ntwork, nt) where {T}` that preallocates
+     `Vector{Vector{Complex{T}}}(undef, 2nt)` and fills it.
+   - `heuristic_radices` (factor.jl:124): `sort(…; by = …, rev = …)` hides the comparator
+     behind `By(::Function)`/`Lt(::Function)`. Suggestion: sort a tuple vector without
+     `by`/`rev` — Base's `isless` on tuples AOT-compiles.
+   - `spawn_items` (threads.jl:75): `@sync` expands to `sync_end(::Channel{Any})`, whose
+     non-Task branch is `wait(::Any)`. Suggestion: collect the spawned tasks in a
+     `Vector{Task}` and `foreach(wait, ts)` — `wait(::Task)` resolves.
 
-2. After it lands: rerun `build.sh` (this report updates with the 0-error build, the test.c
-   results and the trimmed bundle sizes) and consider whether the trimmed bundle still needs
-   `libLLVM`/`libjulia-codegen` (JIT-only, 204 MB of the probe bundle — the trimmed library
-   never compiles; phase 0 kept them).
+   Reproduce: `bash libfftl/build.sh` (120 errors, full stacks), `bash
+   libfftl/trimcheck/run.sh` (per-entry attribution — 62 + 1 unattributed of the 188 total
+   are the target path, the other 126 the unchanged public entries). After it lands I rerun
+   both, fill §7 with the trimmed sizes and flip STATUS.
 
-3. Small, non-blocking: with RPlan-based construction inferable, the construction cases in
+3. **[answered by measurement] libLLVM/libjulia-codegen can be left out of the bundle** —
+   section 7: with both moved out, the full C matrix passes unchanged on the *untrimmed*
+   image (the harder case, it could still JIT); nothing the tests execute reaches codegen
+   because juliac AOT-compiles the visible entry graph. build.sh prunes them by default now,
+   with the measurement recorded in its comment. The trimmed image stays to be re-measured
+   once request 2 lands (trimmed is stricter by construction, so this only gets safer).
+
+4. Non-blocking: with RPlan-based construction inferable, the construction cases in
    `test/inference.jl` can flip from `@test_broken` to `@test` with your merge (they stay
    broken against `plan_fft`, which is what they measure — perhaps add RPlan construction
    cases instead).
 
 ## 9. Open questions
 
-- Where exactly the untrimmed build's `LLVM ERROR: Do not know how to split` arises (it is
-  clearly the same dead 1-complex family dragged into AOT codegen — a partial throw-free
-  generation for some (R, C=1) with wildly mixed vector widths — but the trim verifier's
-  BoundsError surfaces earlier and is the cleaner repro; not pursued further because the
-  fix removes the family entirely).
-- Trimmed bundle sizes (blocked; then also the LLVM/codegen question of request 2).
+- The untrimmed build's `LLVM ERROR: Do not know how to split` is explained after the fact:
+  with the dead family removed, the very same `--output-lib` build completes — the abort was
+  indeed the partial `(R, C=1)` generation dragged into AOT codegen, as suspected. Closed.
+- Trimmed bundle size (blocked on request 2; the untrimmed bundle measures 289 MB, §7).
 - The plan-cache (KCACHE) is shared between plans of the same size — a C API to clear it
   (phase-0 `FFTL.clear_cache!()` exists in the package) was not added to the header yet; the
   review's interface stays as it is.
 
 ## Conclusion
 
-Everything on my side of the fence is done and committed: merge + tests, RPlan boundary,
-reviewed header with measured threading semantics, build pipeline, the full C matrix, the
-Julia-side boundary tests, the extended trim check with before/after numbers — and the one
-blocker is a two-line package change, precisely diagnosed, with three repros and a suggested
-patch. STATUS below follows the task rules (Requests instead of touching package src/).
+Everything on my side of the fence is done and committed: both merges with green package
+suites, the RPlan boundary, the reviewed header with measured threading semantics, the build
+pipeline (now with the `FFTL_TRIM` knob and a 289 MB validated bundle), the full C matrix
+green against the real library (378 checks, 0 failed), the Julia-side boundary tests
+(229 checks) and the extended trim check with before/after numbers around your fix. What
+remains between this and `STATUS: done` is one request, request 2: five small construction
+idioms must become trim-verifiable — precisely diagnosed, with counts, per-location
+attribution and repros in section 5. STATUS follows the task rules (Requests instead of
+touching package src/).
 
-STATUS: blocked (the trim build needs the package-side fix of request 1 — src/rchain.jl emits dead rstage_group! branches for 1-complex vectors whose grouped-first-stage codelets cannot be generated; no library can be built until Claude Code lands it; everything else is done and committed)
+STATUS: blocked (juliac --trim=safe still reports 120 verifier errors, all in package plan construction — untyped-f cached() calls, Core.Boxed closure captures (Bluestein/tbuf), sort-by in heuristic_radices, @sync in spawn_items — see REPORT section 5 and request 2; the boundary builds untrimmed with FFTL_TRIM=off and passes the full C matrix against the real shared library)
