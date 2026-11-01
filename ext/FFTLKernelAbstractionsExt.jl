@@ -236,13 +236,15 @@ function pass_twiddles(T, R, σ, N)
   [t; [Complex{T}(cispi(2σ * mod(j << (i * ebits), N) / N)) for j in 0:(1 << ebits)-1, i in 0:TWLEV-1][:]]
 end
 
-# largest G ≤ lim dividing d
-divisor_le(d, lim) = maximum(g for g in 1:min(d, lim) if d % g == 0)
+# largest G ≤ lim dividing d (1: G is always divisible; also covers lim < 1 from the W cap)
+divisor_le(d, lim) = maximum(g for g in 1:min(d, lim) if d % g == 0; init = 1)
 
-# G for a pass: G R ≤ NMAX, G ≤ gmax, G | sp (or G | m when sp = 1, G | B for batch lanes)
-function pass_G(R, s, m, E, B, gmax)
-  N = R * m * s
-  lim = min(NMAX ÷ R, gmax, E > 1 && R == N ? 16 : gmax)   # one-pass strided dimension: G ≤ 16 measured best
+# G for a pass: G R ≤ cap (workgroup memory), G ≤ gmax, G | sp (or G | m when sp = 1, G | B for
+# batch lanes).
+function pass_G_cap(R, s, m, E, B, gmax, N, cap)
+  lim = min(cap ÷ R, gmax, E > 1 && R == N ? 16 : gmax)   # one-pass strided dimension: G ≤ 16 measured best
+  # also keep W = cld(G·R, largest radix) ≤ 1024 threads per workgroup
+  lim = min(lim, (1024 * maximum(local_radices(R); init = 1)) ÷ R)
   sp = E * s
   # one-pass transforms of contiguous data: about 512 elements per workgroup measured best
   E * m * s == 1 && return divisor_le(B, min(lim, max(1, 512 ÷ R)))
@@ -250,6 +252,21 @@ function pass_G(R, s, m, E, B, gmax)
   # G dividing sp keeps p fixed per workgroup; otherwise lanes may span several p (any G | sp m)
   g1 = divisor_le(sp, lim); g2 = divisor_le(sp * m, lim)
   2g1 >= g2 ? g1 : g2
+end
+
+# G for a pass of the plan. cap > NMAX (the CUDA dynamic shared memory flavor) only adopts the
+# larger G for power-of-two pass lengths, and only when the workgroup runs with (nearly) 1024
+# threads: a >48 KB shared block is one workgroup per SM, so G growth that leaves W = 512 halves
+# the occupancy of the static plan (2^22 [256] G32 dyn 1.39× cuFFT vs G16 static 1.24×), and
+# the longer register chains of odd-radix stages do not pay either (10^6 [1000] G8 dyn 0.89×
+# vs G4 static 0.80×); the measured wins are 2^20 [1024] G8, 2^21 [2048] G4 + [1024] G8,
+# 2^22 [2048] G4 -- all W = 1000..1024 threads.
+function pass_G(R, s, m, E, B, gmax, nmax = NMAX)
+  N = R * m * s
+  nmax <= NMAX && return pass_G_cap(R, s, m, E, B, gmax, N, nmax)
+  G = pass_G_cap(R, s, m, E, B, gmax, N, NMAX)
+  Gd = pass_G_cap(R, s, m, E, B, gmax, N, nmax)
+  Gd > G && ispow2(R) && 8 * cld(Gd * R, maximum(local_radices(R); init = 1)) >= 7 * 1024 ? Gd : G
 end
 
 # Pass lengths (powers of two). A last pass of radix ≤ 16 needs no exchange in threadgroup
@@ -263,16 +280,19 @@ device_profile(backend) = nameof(typeof(backend)) === :MetalBackend ? :apple : :
 # Generic 1D rule (A6000): two balanced passes up to 2^21 (2^20 [1024, 1024] 1.11× cuFFT, three
 # passes 1.22×); from 2^22 on at least three passes ≤ 512 (2^22 [256, 128, 128] 1.23× vs
 # [1024, 256, 16] 1.41×; 2^24 [256, 256, 256] 0.97× vs [64, 64, 64, 64] 1.30×).
-function generic_passes(N)
-  ispow2(N) || return mixed_passes(N)
+# With dynamic shared memory (nmax > NMAX) two passes reach one pass further: 2^21 G 4/8 and
+# 2^22 [2048, 2048] 1.09× (a 3rd pass is worth its cost only when W = 1024 workgroups saturate:
+# 2^22 3-pass dyn 1.38×, at 2^24 nothing beats the static plan 0.97×).
+function generic_passes(N, nmax = NMAX)
+  ispow2(N) || return mixed_passes(N, nmax)
   e = trailing_zeros(N)
   e <= 12 && return [N]
-  e <= 21 && return [1 << cld(e, 2), 1 << (e ÷ 2)]
+  e <= (nmax > NMAX ? 22 : 21) && return [1 << cld(e, 2), 1 << (e ÷ 2)]
   balance_passes(N, max(3, cld(e, 9)))
 end
 
-function default_passes(N, prof = :apple)
-  prof === :generic && return generic_passes(N)
+function default_passes(N, prof = :apple, nmax = NMAX)
+  prof === :generic && return generic_passes(N, nmax)
   ispow2(N) || return mixed_passes(N)
   e = trailing_zeros(N)
   e <= 12 && return [N]
@@ -286,10 +306,13 @@ end
 # on the M1 a pass whose workgroups touch more than ~32 rows far apart (load and store) runs
 # at a fraction of the bandwidth, radix ≤ 16 passes run at copy speed.
 const SLC_BYTES = 40 << 20  # M1 Max system level cache: 48 MB
-function dim_passes(N, E, bytes; padded = false, first = true, last = true, prof = :apple)
-  E == 1 && return default_passes(N, prof)
+function dim_passes(N, E, bytes; padded = false, first = true, last = true, prof = :apple, gmax = 64, nmax = NMAX)
+  E == 1 && return default_passes(N, prof, nmax)
   if prof === :generic   # A6000: 256³ [256] per dimension 0.99× cuFFT; 4096² dim 2 [64, 64]
     N <= 1024 && return [N]
+    # one pass of a strided dimension when its workgroups read/write at least 4 lanes per row
+    # (2048² dim 2: [2048] G 4;  4096² and 3000² stay multi-pass: W > 1024 or G < 4)
+    pass_G(N, 1, 1, E, 1, gmax, nmax) >= 4 && return [N]
     return balance_passes(N, max(2, cld(ceil(Int, log2(N)), 8)))
   end
   if bytes > SLC_BYTES && padded
@@ -319,7 +342,7 @@ end
 # - Two passes (launch-bound sizes): the split with the most lanes per workgroup in the worse
 #   pass, then the most balanced one.
 # - Otherwise balanced passes; one more pass if a pass gets G < 4 (3^13: [243, 81, 81]).
-function mixed_passes(N)
+function mixed_passes(N, nmax = NMAX)
   N <= NMAX && return [N]
   o = N >> trailing_zeros(N)
   if o <= 256 && N >= 1 << 19
@@ -329,17 +352,17 @@ function mixed_passes(N)
   end
   P = N <= 1 << 21 ? 2 : N <= 1 << 24 ? 3 : cld(ceil(Int, log2(N)), 6)
   if P == 2
-    cands = [[d, N ÷ d] for d in 1:NMAX if N % d == 0 && N ÷ d <= NMAX]
-    rs = argmax(c -> (minimum(passes_G(N, c)), -abs(log(c[1] / c[2]))), cands)
+    cands = [[d, N ÷ d] for d in 1:nmax if N % d == 0 && N ÷ d <= nmax]
+    rs = argmax(c -> (minimum(passes_G(N, c, nmax)), -abs(log(c[1] / c[2]))), cands)
   else
     rs = balance_passes(N, P)
   end
-  minimum(passes_G(N, rs)) >= 4 && return rs
+  minimum(passes_G(N, rs, nmax)) >= 4 && return rs
   rs2 = balance_passes(N, P + 1)
-  minimum(passes_G(N, rs2)) > minimum(passes_G(N, rs)) ? rs2 : rs
+  minimum(passes_G(N, rs2, nmax)) > minimum(passes_G(N, rs, nmax)) ? rs2 : rs
 end
 
-passes_G(N, rs) = (s = 1; [(G = pass_G(R, s, N ÷ (R * s), 1, 1, 64); s *= R; G) for R in rs])
+passes_G(N, rs, nmax = NMAX) = (s = 1; [(G = pass_G(R, s, N ÷ (R * s), 1, 1, 64, nmax); s *= R; G) for R in rs])
 
 # N as few pass lengths ≤ cap as first-fit decreasing packing of the prime factors finds
 function pack_passes(N, cap)
@@ -404,6 +427,7 @@ end
 # DFT along the dimensions `region` of an array of size `dims` (column major). The buffers :a
 # and :b may use a padded layout (`pad` elements after each run of dims[1]).
 function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64,
+                nmax = NMAX,   # workgroup memory cap for rule tuning (like gmax)
                 pad = default_pad(dims, region, T, device_profile(backend))) where {T,D}
   prof = device_profile(backend)
   specs = Any[]; rsall = Vector{Int}[]
@@ -415,7 +439,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     N = dims[d]; E = prod(dims[1:d-1]; init = 1); B = prod(dims[d+1:end]; init = 1)
     blue = FFTL.factorize(N)[2] > 1
     M, cin, bhat = blue ? bluestein_tables(backend, T, N, σ) : (N, dummy, dummy)
-    rs = radices === nothing ? dim_passes(M, E, E * M * B * sizeof(Complex{T}); padded = pad > 0, first = i == 1, last = i == length(region), prof) : radices[i]
+    rs = radices === nothing ? dim_passes(M, E, E * M * B * sizeof(Complex{T}); padded = pad > 0, first = i == 1, last = i == length(region), prof, gmax = gmax, nmax = nmax) : radices[i]
     @assert prod(rs) == M
     push!(rsall, collect(rs))
     chains = blue ? [(-1, rs), (1, rs)] : [(σ, rs)]
@@ -447,7 +471,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   lay(p) = p ? (dims[1], pad) : (1, 0)
   steps = Any[]
   for (i, sp) in enumerate(specs)
-    G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax)
+    G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, nmax)
     k, W, groups = pass_kernel(sp.R, G, sp.σ, T, sp.s, sp.M, sp.E, sp.B; Nx = sp.Nx, Ny = sp.Ny,
                                padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]))
     kk = Base.invokelatest(k, backend, W)
