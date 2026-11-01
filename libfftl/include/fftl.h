@@ -117,7 +117,8 @@ size_t fftl_last_error(char *buf, size_t buf_len);
  *
  * libfftl embeds the Julia runtime, whose worker pool is fixed when the library is BUILT and
  * cannot change afterwards: build.sh bakes the number through juliac's --jl-option threads
- * (its FFTL_THREADS variable: a number - this build uses 4 - or "auto", which bakes one
+ * (its FFTL_THREADS variable: a number, or "auto" - the default except on macOS, where it is
+ * the number of performance cores of the build machine -, which bakes one
  * worker per CPU of the machine the library is LOADED on, counted at load time from the
  * process's CPU affinity). The option is applied by the generated loader before the runtime
  * starts; setting JULIA_NUM_THREADS in the environment of the loading process has NO effect

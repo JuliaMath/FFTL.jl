@@ -24,7 +24,13 @@ if [ -z "$JULIA_CPU_TARGET" ]; then
     *) export JULIA_CPU_TARGET=generic ;;
   esac
 fi
-FFTL_THREADS="${FFTL_THREADS:-4}"
+# Default: one worker per CPU ("auto"), on macOS one per performance core - workers on the
+# efficiency cores hold up the threaded passes (64³ with 8 threads: 300 instead of 214 µs on the
+# M1 Max). The macOS count is the build machine's.
+if [ -z "$FFTL_THREADS" ]; then
+  FFTL_THREADS=auto
+  [ "$(uname -s)" = Darwin ] && FFTL_THREADS=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || echo auto)
+fi
 # FFTL_TRIM=safe (default): trimmed image, the verifier must resolve every statically reachable
 #   call - the state the final library ships in.
 # FFTL_TRIM=off: plain --output-lib (AOT entry points, full method tables) - usable for running
