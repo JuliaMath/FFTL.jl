@@ -16,7 +16,33 @@ struct Chain{T,Rs,σ,K} <: Kernel{T}
   tw1::Vector{Complex{T}}             # first stage: w^(kp) at (k-1)m + p
 end
 
-function Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T}
+# Read-only parts of kernels (chains, four-step twiddles, Bluestein chirp and filter) are shared
+# between plans and threads: a second plan of a size costs a lookup. Bounded; when full, an
+# arbitrary entry is dropped. `clear_cache!()` frees everything.
+const KCACHE = Dict{Any,Any}()
+const KCACHE_LOCK = ReentrantLock()
+const KCACHE_MAX = 64
+
+function cached(f, key)
+  lock(KCACHE_LOCK) do
+    v = get(KCACHE, key, nothing)
+    v === nothing || return v
+    length(KCACHE) >= KCACHE_MAX && delete!(KCACHE, first(keys(KCACHE)))
+    KCACHE[key] = f()
+  end
+end
+
+"""
+    clear_cache!()
+
+Drop the twiddle and filter tables that FFTL keeps for reuse by later plans.
+"""
+clear_cache!() = (lock(() -> empty!(KCACHE), KCACHE_LOCK); nothing)
+
+Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
+  cached(() -> build_chain(T, n, σ, rs), (:chain, T, n, σ, Tuple(rs)))
+
+function build_chain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
   prod(rs; init = 1) == n || throw(ArgumentError("radices do not multiply to the length"))
   W = unit_roots(σ, n)
   tw = Vector{Complex{T}}[]
@@ -237,19 +263,22 @@ end
 
 function Bluestein{T}(n::Int, σ::Int) where {T}
   M = next_smooth(2n - 1)
-  # c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n)
-  W = unit_roots(σ, 2n)
-  chirp = [Complex{T}(W[mod(j * j, 2n)+1]) for j in 0:n-1]
-  b = zeros(Complex{T}, M)
-  b[1] = conj(chirp[1])
-  for j in 1:n-1
-    b[j+1] = b[M-j+1] = conj(chirp[j+1])
-  end
   fwd = Chain{T}(M, -1)
   bwd = Chain{T}(M, 1)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
-  GC.@preserve b w1 w2 run!(cptr(b), cptr(b), cptr(w1), cptr(w2), fwd, 1)
-  b ./= M
+  chirp, b = cached((:bluestein, T, n, σ)) do
+    # c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n)
+    W = unit_roots(σ, 2n)
+    c = [Complex{T}(W[mod(j * j, 2n)+1]) for j in 0:n-1]
+    b = zeros(Complex{T}, M)
+    b[1] = conj(c[1])
+    for j in 1:n-1
+      b[j+1] = b[M-j+1] = conj(c[j+1])
+    end
+    GC.@preserve b w1 w2 run!(cptr(b), cptr(b), cptr(w1), cptr(w2), fwd, 1)
+    b ./= M
+    (c, b)
+  end
   Bluestein{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, zeros(Complex{T}, M), w1, w2)
 end
 
