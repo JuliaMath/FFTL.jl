@@ -52,6 +52,7 @@ end
 Base.size(p::FFTLPlan) = p.sz
 Base.ndims(::FFTLPlan{T,N}) where {T,N} = N
 AbstractFFTs.fftdims(p::FFTLPlan) = p.region
+AbstractFFTs.AdjointStyle(::FFTLPlan) = AbstractFFTs.FFTAdjointStyle()
 
 function Base.show(io::IO, p::FFTLPlan{T}) where {T}
   dir = p.σ == -1 ? "forward" : "backward"

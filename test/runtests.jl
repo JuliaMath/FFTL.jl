@@ -163,6 +163,90 @@ using SIMD: Vec
     end
   end
 
+  @testset "real transforms, $T" for T in (Float64, Float32)
+    for (sz, region) in [((8,), 1), ((9,), 1), ((10,), 1), ((15,), 1), ((16,), 1), ((37,), 1), ((100,), 1),
+                         ((101,), 1), ((1024,), 1), ((1023,), 1), ((3 * 2^11,), 1),
+                         ((8, 6), (1, 2)), ((9, 6), (1, 2)), ((7, 10), (1, 2)), ((8, 6), (2,)), ((12, 7), (2,)),
+                         ((6, 8, 5), (1, 2, 3)), ((6, 8, 5), (2, 3)), ((6, 9, 5), (2, 3)), ((5, 4, 6), (3,)), ((16, 9), (1,))]
+      x = randn(T, sz)
+      reg = sort([region...]); d1 = reg[1]; n = sz[d1]; h = n ÷ 2 + 1
+      full = dftn(x, reg)
+      sel = ntuple(i -> i == d1 ? (1:h) : (:), length(sz))
+      p = FFTL.plan_rfft(x, region)
+      y = p * x
+      @test size(y) == Base.setindex(sz, h, d1)
+      @test relerr(y, full[sel...]) < 10tol(T)
+      @test relerr(FFTL.irfft(y, n, region), x) < 10tol(T)
+      # brfft of a half spectrum of a real array gives the array times the transform size
+      @test relerr(FFTL.brfft(y, n, region), prod(sz[i] for i in reg) .* x) < 10tol(T)
+      # adjoint: <y, p x> = <p' y, x>
+      yr = randn(Complex{T}, size(y))
+      @test real(dot(yr, p * x)) ≈ dot(adjoint(p) * yr, x) rtol = 100tol(T)
+    end
+    # threads, large lines and strided lines
+    for (sz, region) in [((2^16, 4), (1, 2)), ((64, 513), (2,)), ((1000, 300), (1, 2))]
+      x = randn(T, sz)
+      @test relerr(FFTL.plan_rfft(x, region; threads = 4) * x, FFTL.plan_rfft(x, region; threads = 1) * x) < tol(T)
+    end
+  end
+
+  # real-to-real kinds by their definitions
+  function r2r_ref(x, kind)
+    n = length(x); y = zeros(Float64, n)
+    for k in 0:n-1
+      y[k+1] = if kind == FFTL.REDFT00
+        x[1] + (-1)^k * x[n] + 2sum((x[j+1] * cospi(j * k / (n - 1)) for j in 1:n-2); init = 0.0)
+      elseif kind == FFTL.REDFT10
+        2sum(x[j+1] * cospi((j + 0.5) * k / n) for j in 0:n-1)
+      elseif kind == FFTL.REDFT01
+        x[1] + 2sum((x[j+1] * cospi(j * (k + 0.5) / n) for j in 1:n-1); init = 0.0)
+      elseif kind == FFTL.REDFT11
+        2sum(x[j+1] * cospi((j + 0.5) * (k + 0.5) / n) for j in 0:n-1)
+      elseif kind == FFTL.RODFT00
+        2sum(x[j+1] * sinpi((j + 1) * (k + 1) / (n + 1)) for j in 0:n-1)
+      elseif kind == FFTL.RODFT10
+        2sum(x[j+1] * sinpi((j + 0.5) * (k + 1) / n) for j in 0:n-1)
+      elseif kind == FFTL.RODFT01
+        (-1)^k * x[n] + 2sum((x[j+1] * sinpi((j + 1) * (k + 0.5) / n) for j in 0:n-2); init = 0.0)
+      elseif kind == FFTL.RODFT11
+        2sum(x[j+1] * sinpi((j + 0.5) * (k + 0.5) / n) for j in 0:n-1)
+      else
+        sum(x[j+1] * (cospi(2j * k / n) + sinpi(2j * k / n)) for j in 0:n-1)
+      end
+    end
+    y
+  end
+  r2rkinds = (FFTL.REDFT00, FFTL.REDFT10, FFTL.REDFT01, FFTL.REDFT11, FFTL.RODFT00, FFTL.RODFT10,
+              FFTL.RODFT01, FFTL.RODFT11, FFTL.DHT)
+
+  @testset "real-to-real, $T" for T in (Float64, Float32)
+    for kind in r2rkinds, n in [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 15, 16, 31, 32, 33, 100, 101, 128]
+      kind == FFTL.REDFT00 && n < 2 && continue
+      x = randn(T, n)
+      @test relerr(FFTL.r2r(x, kind), r2r_ref(Float64.(x), kind)) < 10tol(T)
+      p = FFTL.plan_r2r(x, kind)
+      @test relerr(inv(p) * (p * x), x) < 10tol(T)
+    end
+    # several dimensions with mixed kinds, strided dimensions, threads
+    x = randn(T, 9, 12, 5)
+    kinds = (FFTL.REDFT10, FFTL.RODFT11, FFTL.DHT)
+    ref = Float64.(x)
+    for (d, k) in zip(1:3, kinds)
+      ref = mapslices(u -> r2r_ref(u, k), ref; dims = d)
+    end
+    for nt in (1, 3)
+      p = FFTL.plan_r2r(x, kinds, 1:3; threads = nt)
+      @test relerr(p * x, ref) < 10tol(T)
+      @test relerr(inv(p) * (p * x), x) < 10tol(T)
+    end
+    @test relerr(FFTL.r2r(x, FFTL.REDFT00, (2,)), mapslices(u -> r2r_ref(u, FFTL.REDFT00), Float64.(x); dims = 2)) < 10tol(T)
+    # orthonormal DCT
+    y = FFTL.dct(x)
+    @test sum(abs2, y) ≈ sum(abs2, x) rtol = 10tol(T)
+    @test relerr(FFTL.idct(y), x) < 10tol(T)
+    @test relerr(FFTL.idct(FFTL.dct(x, 2), 2), x) < 10tol(T)
+  end
+
   @testset "plans: in place, out of place, inv" begin
     for n in [1, 7, 64, 1000, 1009]
       x = randn(ComplexF64, n)

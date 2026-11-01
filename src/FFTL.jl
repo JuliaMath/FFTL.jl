@@ -21,5 +21,7 @@ include("plan.jl")
 include("threads.jl")
 include("interface.jl")
 include("pass.jl")
+include("real.jl")
+include("r2r.jl")
 
 end
