@@ -215,7 +215,7 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Bluestein{T}, S::Int) 
   run_lanes!(py, px, pw1, pw2, P, S, S, S)
 
 kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T} =
-  smooth(n) ? Chain{T}(n, σ, radices(n, S)) : Bluestein{T}(n, σ)
+  smooth(n) ? Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T}))) : Bluestein{T}(n, σ)
 
 """
     run_lanes!(py, px, pw1, pw2, P::Chain, Sx, Sy, B)
