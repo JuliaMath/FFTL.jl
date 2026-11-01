@@ -87,7 +87,7 @@ using SIMD: Vec
   @testset "threads, $T" for T in (Float64, Float32)
     # sizes above the threading threshold: slices (dimension 1 of a 2D array), lane blocks
     # (last dimension), odd strides (last block with fewer lanes than the vector width)
-    for sz in [(256, 256), (64, 64, 64), (33, 1024), (100, 100, 10), (8, 4096), (1024, 37)]
+    for sz in [(256, 256), (64, 64, 64), (33, 1024), (100, 100, 10), (8, 4096), (1024, 37), (2 * 3^11,), (5^7,)]
       x = randn(Complex{T}, sz)
       ref = FFTL.plan_fft(x; threads = 1) * x
       for nt in (2, 3, 4)

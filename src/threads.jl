@@ -130,14 +130,15 @@ struct FourStep{T,K1,K2} <: Kernel{T}
   tbuf::Vector{Vector{Complex{T}}}  # three per thread
 end
 
-# Split n = n1·n2 with n1 as close to √n as possible, both multiples of LANE_ALIGN.
+# Split n = n1·n2 with n1 as close to √n as possible, both at least LANE_ALIGN (lane blocks
+# take any width; a last block narrower than the vector width uses narrower vectors).
 function fourstep_split(n)
   best = 0
   for d in 1:isqrt(n)
     n % d == 0 || continue
     for n1 in (d, n ÷ d)
       n2 = n ÷ n1
-      n1 % LANE_ALIGN == 0 && n2 % LANE_ALIGN == 0 && smooth(n1) && smooth(n2) || continue
+      n1 >= LANE_ALIGN && n2 >= LANE_ALIGN && smooth(n1) && smooth(n2) || continue
       if best == 0 || abs(log(n1 / sqrt(n))) < abs(log(best / sqrt(n)))
         best = n1
       end
