@@ -255,7 +255,24 @@ end
 # Pass lengths (powers of two). A last pass of radix ≤ 16 needs no exchange in threadgroup
 # memory; on the M1 a last pass with exchange (large store stride) runs at half bandwidth
 # once the data no longer fit the system level cache.
-function default_passes(N)
+# Rule sets: :apple measured on an M1 Max against Metal.jl's FFT (48 MB system level cache, a
+# pass with large power-of-two strides on both sides is slow there), :generic measured on an
+# RTX A6000 against cuFFT (6 MB L2; passes up to 512 run at copy speed, no stride penalty).
+device_profile(backend) = nameof(typeof(backend)) === :MetalBackend ? :apple : :generic
+
+# Generic 1D rule (A6000): two balanced passes up to 2^21 (2^20 [1024, 1024] 1.11× cuFFT, three
+# passes 1.22×); from 2^22 on at least three passes ≤ 512 (2^22 [256, 128, 128] 1.23× vs
+# [1024, 256, 16] 1.41×; 2^24 [256, 256, 256] 0.97× vs [64, 64, 64, 64] 1.30×).
+function generic_passes(N)
+  ispow2(N) || return mixed_passes(N)
+  e = trailing_zeros(N)
+  e <= 12 && return [N]
+  e <= 21 && return [1 << cld(e, 2), 1 << (e ÷ 2)]
+  balance_passes(N, max(3, cld(e, 9)))
+end
+
+function default_passes(N, prof = :apple)
+  prof === :generic && return generic_passes(N)
   ispow2(N) || return mixed_passes(N)
   e = trailing_zeros(N)
   e <= 12 && return [N]
@@ -269,8 +286,12 @@ end
 # on the M1 a pass whose workgroups touch more than ~32 rows far apart (load and store) runs
 # at a fraction of the bandwidth, radix ≤ 16 passes run at copy speed.
 const SLC_BYTES = 40 << 20  # M1 Max system level cache: 48 MB
-function dim_passes(N, E, bytes; padded = false, first = true, last = true)
-  E == 1 && return default_passes(N)
+function dim_passes(N, E, bytes; padded = false, first = true, last = true, prof = :apple)
+  E == 1 && return default_passes(N, prof)
+  if prof === :generic   # A6000: 256³ [256] per dimension 0.99× cuFFT; 4096² dim 2 [64, 64]
+    N <= 1024 && return [N]
+    return balance_passes(N, max(2, cld(ceil(Int, log2(N)), 8)))
+  end
   if bytes > SLC_BYTES && padded
     # (measured, M1 Max) small stride (≤ 64 KB): one pass up to 1024 (1024×1024×32 dim 2).
     # Reading the unpadded input: passes ≤ 64 (4096² dim 2 only: [64, 64] 0.91×, [256, 16] 1.11×).
@@ -383,7 +404,8 @@ end
 # DFT along the dimensions `region` of an array of size `dims` (column major). The buffers :a
 # and :b may use a padded layout (`pad` elements after each run of dims[1]).
 function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64,
-                pad = default_pad(dims, region, T)) where {T,D}
+                pad = default_pad(dims, region, T, device_profile(backend))) where {T,D}
+  prof = device_profile(backend)
   specs = Any[]; rsall = Vector{Int}[]
   dummy = KA.allocate(backend, Complex{T}, 1)
   cur = :x; scratch = 0
@@ -393,7 +415,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     N = dims[d]; E = prod(dims[1:d-1]; init = 1); B = prod(dims[d+1:end]; init = 1)
     blue = FFTL.factorize(N)[2] > 1
     M, cin, bhat = blue ? bluestein_tables(backend, T, N, σ) : (N, dummy, dummy)
-    rs = radices === nothing ? dim_passes(M, E, E * M * B * sizeof(Complex{T}); padded = pad > 0, first = i == 1, last = i == length(region)) : radices[i]
+    rs = radices === nothing ? dim_passes(M, E, E * M * B * sizeof(Complex{T}); padded = pad > 0, first = i == 1, last = i == length(region), prof) : radices[i]
     @assert prod(rs) == M
     push!(rsall, collect(rs))
     chains = blue ? [(-1, rs), (1, rs)] : [(σ, rs)]
@@ -444,7 +466,7 @@ end
 # Padding the intermediate arrays: a pass that reads and writes with a large power-of-two
 # stride (64 rows 2 MB apart) runs at a third of the bandwidth beyond the SLC; with padded
 # buffers each pass has at most one such side (4096²: 0.83× Metal instead of 1.03×).
-default_pad(dims, region, T) = length(dims) > 1 && any(>(1), region) && prod(dims) * sizeof(Complex{T}) > SLC_BYTES ? 64 : 0
+default_pad(dims, region, T, prof = :apple) = prof === :apple && length(dims) > 1 && any(>(1), region) && prod(dims) * sizeof(Complex{T}) > SLC_BYTES ? 64 : 0
 
 
 # y = DFT(x) without synchronization: kernels are queued in order on the backend's stream
