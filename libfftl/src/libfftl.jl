@@ -379,7 +379,7 @@ Base.@ccallable function fftl_plan_create(t::Cint, size::Clonglong, sign::Cint):
   end
 end
 
-Base.@ccallable function fftl_plan_dft(h::Clonglong, out::Ptr{Cvoid}, in_::Ptr{Cvoid})::Cint
+Base.@ccallable function fftl_plan_execute(h::Clonglong, out::Ptr{Cvoid}, in_::Ptr{Cvoid})::Cint
   ti, si, ni, idx = unhandle(Int64(h))
   variants_exec(ti, si, ni, idx, out, in_)
 end

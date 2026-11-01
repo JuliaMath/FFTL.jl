@@ -39,7 +39,7 @@ static void check_naive(int32_t prec, int64_t n) {
         double ang = -2.0 * M_PI * (double)k * j / n;
         ref[k] += x[j] * (cos(ang) + I * sin(ang));
       }
-    if (fftl_plan_dft(p, y, x) != 0) { printf("FAIL dft prec %d n %" PRId64 ": %s\n", prec, n, last_error()); failures++; }
+    if (fftl_plan_execute(p, y, x) != 0) { printf("FAIL dft prec %d n %" PRId64 ": %s\n", prec, n, last_error()); failures++; }
     for (int64_t k = 0; k < n; k++) { scale += cabs(ref[k]); err += cabs(y[k] - ref[k]); }
     free(x); free(y);
   } else {
@@ -51,7 +51,7 @@ static void check_naive(int32_t prec, int64_t n) {
         double ang = -2.0 * M_PI * (double)k * j / n;
         ref[k] += (double complex)x[j] * (cos(ang) + I * sin(ang));
       }
-    if (fftl_plan_dft(p, y, x) != 0) { printf("FAIL dft prec %d n %" PRId64 ": %s\n", prec, n, last_error()); failures++; }
+    if (fftl_plan_execute(p, y, x) != 0) { printf("FAIL dft prec %d n %" PRId64 ": %s\n", prec, n, last_error()); failures++; }
     for (int64_t k = 0; k < n; k++) { scale += cabs(ref[k]); err += cabs((double complex)y[k] - (double complex)(float complex)ref[k]); }
     free(x); free(y);
   }
@@ -75,15 +75,15 @@ static void check_roundtrip(int32_t prec, int64_t n) {
   if (prec == 1) {
     d = malloc(2 * n * sizeof *d);
     for (int64_t j = 0; j < n; j++) d[j] = xr[j] + I * xi[j];
-    fftl_plan_dft(pf, d + n, d);
-    fftl_plan_dft(pb, d, d + n);
+    fftl_plan_execute(pf, d + n, d);
+    fftl_plan_execute(pb, d, d + n);
     for (int64_t j = 0; j < n; j++) { err += cabs(d[j] - n * (xr[j] + I * xi[j])); scale += n * cabs(xr[j] + I * xi[j]); }
     free(d);
   } else {
     f = malloc(2 * n * sizeof *f);
     for (int64_t j = 0; j < n; j++) f[j] = (float)xr[j] + I * (float)xi[j];
-    fftl_plan_dft(pf, f + n, f);
-    fftl_plan_dft(pb, f, f + n);
+    fftl_plan_execute(pf, f + n, f);
+    fftl_plan_execute(pb, f, f + n);
     for (int64_t j = 0; j < n; j++) { err += cabs(f[j] - n * ((float)xr[j] + I * (float)xi[j])); scale += n * cabs((float)xr[j] + I * (float)xi[j]); }
     free(f);
   }
@@ -107,7 +107,7 @@ int main(void) {
   int64_t h = fftl_plan_create(1, 123, -1);
   if (h != -1) { printf("FAIL unsupported size returned a plan\n"); failures++; fftl_plan_destroy(h); }
   else printf("pass unsupported size: %s\n", last_error());
-  if (fftl_plan_dft(12345, malloc(16), malloc(16)) != -1) { printf("FAIL invalid handle accepted\n"); failures++; }
+  if (fftl_plan_execute(12345, malloc(16), malloc(16)) != -1) { printf("FAIL invalid handle accepted\n"); failures++; }
   else printf("pass invalid handle: %s\n", last_error());
 
   printf(failures ? "%d FAILURES\n" : "all passed (%d)\n", failures);
