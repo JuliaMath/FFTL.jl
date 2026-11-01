@@ -13,11 +13,13 @@ const THREAD_MIN_WORK = 1 << 15
 # Lane blocks are multiples of 8 complex values (a 128-byte cache line of ComplexF64).
 const LANE_ALIGN = 8
 # Complex values per lane-block buffer (2^16 ComplexF64 = 1 MB; 2^15–2^16 measured best on the M1).
-# Complex values per lane block buffer. A task holds two or three such buffers, which should stay in
-# the core's private cache: 2^16 measured best on the M1 (aarch64); on Zen 3 (512 KB L2) blocks of
-# that size stream through L3, and 2^14 made 2^22 Float64 on 16 threads 1.45× and 2048² 1.27×
-# faster (notes/tasks/threads-x86.md).
-const BLOCK_BUDGET = Sys.ARCH === :aarch64 ? 1 << 16 : 1 << 14
+# Complex values per lane block buffer (a task holds two or three), 2^16 measured best on the M1.
+const BLOCK_BUDGET = 1 << 16
+# On x86 (Zen 3: 512 KB L2 per core, shared L3) with several threads, long lines (n >= 1024) take
+# blocks of at most 2^14 values: with 16 threads 2^22 Float64 1.6× and 2048² Float64 1.3× faster;
+# one thread keeps the larger blocks (2048² 1.6× slower with the small ones), as do short lines.
+const BLOCK_BUDGET_SHARED = 1 << 14
+block_budget(n, nt) = Sys.ARCH !== :aarch64 && nt > 1 && n >= 1024 ? BLOCK_BUDGET_SHARED : BLOCK_BUDGET
 
 # Blocks per thread: threads take blocks from a shared counter, so a slow core (or one busy
 # with something else) delays the pass by one block, not by a fixed share.
@@ -26,7 +28,7 @@ const BLOCKS_PER_THREAD = 4
 # Lane block width: a multiple of LANE_ALIGN, within the cache budget, and small enough that
 # there are BLOCKS_PER_THREAD blocks per thread.
 function lane_block(S, n, nt)
-  Bc = max(LANE_ALIGN, LANE_ALIGN * fld(BLOCK_BUDGET ÷ n, LANE_ALIGN))
+  Bc = max(LANE_ALIGN, LANE_ALIGN * fld(block_budget(n, nt) ÷ n, LANE_ALIGN))
   Bt = LANE_ALIGN * cld(cld(S, BLOCKS_PER_THREAD * nt), LANE_ALIGN)
   min(Bc, Bt)
 end
