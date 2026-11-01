@@ -162,7 +162,7 @@ function FourStep{T}(n::Int, σ::Int, nt::Int) where {T}
                                     [Vector{Complex{T}}(undef, nw) for _ in 1:3nt])
 end
 
-const FOURSTEP_MIN = 1 << 16
+const FOURSTEP_MIN = 1 << 13
 const ROW_PAD = 4
 
 use_fourstep(n, nt) = nt > 1 && n >= FOURSTEP_MIN && smooth(n) && fourstep_split(n) > 0
