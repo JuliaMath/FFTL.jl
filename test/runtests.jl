@@ -316,4 +316,5 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     @test all(<=(8), FFTL.radices(144, 144^2))
   end
   include("ka.jl")
+  include("aqua.jl")
 end

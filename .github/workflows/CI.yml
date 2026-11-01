@@ -2,7 +2,7 @@ name: CI
 
 # Quick tests on every push and pull request (Linux x86 and macOS aarch64, the two SIMD paths;
 # the oldest supported Julia on Linux), coverage from the Linux job. The full test lists
-# (FFTL_TEST_FULL) run weekly and on demand.
+# (FFTL_TEST_FULL, with bounds checking) run weekly and on demand.
 on:
   push:
     branches: [main]
@@ -41,15 +41,18 @@ jobs:
       JULIA_NUM_THREADS: 2
       FFTL_TEST_FULL: ${{ github.event_name == 'schedule' || inputs.full == true }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
+      # --check-bounds=yes (disables @inbounds and invalidates all precompiled packages) only in
+      # the full run: it triples the time of the quick run
       - uses: julia-actions/julia-runtest@v1
         with:
           coverage: ${{ matrix.coverage }}
+          check_bounds: ${{ env.FFTL_TEST_FULL == 'true' && 'yes' || 'auto' }}
       - uses: julia-actions/julia-processcoverage@v1
         if: matrix.coverage
       - uses: codecov/codecov-action@v5
