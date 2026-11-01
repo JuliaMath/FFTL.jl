@@ -18,9 +18,11 @@
 #   W_m = e^(iπ(4m+1)/(4n))·V_m; Y_(2m) = 2 Re W_m, Y_(n-1-2m) = 2 Im W_m.
 #   n odd: Y_k = 2 Re[e^(-iπ(2k+1)/(4n)) DFT_(2n)(x_j e^(-iπj/(2n)), zero padded)_k].
 # - DST-II/IV: DCT-II/IV of ((-1)^j x_j), output reversed. DST-III: (-1)^k DCT-III(reversed x)_k.
-# - DCT-I: r2c of the even extension (x_0 … x_(n-1), x_(n-2) … x_1) of length 2(n-1).
-# - DST-I: r2c of the odd extension (0, x_0 … x_(n-1), 0, -x_(n-1) … -x_0) of length 2(n+1),
-#   Y_k = -Im of entry k+1.
+# - DCT-I, N = n - 1 (points 0…N): with a_j = x_j + x_(N-j), b_j = x_j - x_(N-j),
+#   y_j = a_j/2 - sin(πj/N)·b_j (j < N) and F = r2c(y) of length N:
+#   Y_2k = 2 Re F_k, Y_1 = Σ_j b_j cos(πj/N), Y_(2k+1) = Y_(2k-1) - 2 Im F_k.
+# - DST-I, N = n + 1 (points 1…N-1, x_0 = x_N = 0): y_j = sin(πj/N)·a_j + b_j/2, F = r2c(y):
+#   Y_2k = -2 Im F_k, Y_1 = Re F_0, Y_(2k+1) = Y_(2k-1) + 2 Re F_k.
 # - DHT: F = r2c(x); Y_k = Re F_k - Im F_k, Y_(n-k) = Re F_k + Im F_k.
 
 @enum R2RKind REDFT00 REDFT10 REDFT01 REDFT11 RODFT00 RODFT10 RODFT01 RODFT11 DHT
@@ -60,9 +62,13 @@ function R2RLine{T}(kind::R2RKind, n::Int) where {T}
       tw2 = [Complex{T}(cispi(-(2k + 1) / (4n))) for k in 0:n-1]
     end
   elseif base == REDFT00
-    inner = RealLine{T}(2(n - 1), -1)
+    N = n - 1
+    inner = RealLine{T}(N, -1)
+    tw = [Complex{T}(cospi(j / N), sinpi(j / N)) for j in 0:N-1]
   elseif base == RODFT00
-    inner = RealLine{T}(2(n + 1), -1)
+    N = n + 1
+    inner = RealLine{T}(N, -1)
+    tw = [Complex{T}(cospi(j / N), sinpi(j / N)) for j in 0:N-1]
   else # DHT
     inner = RealLine{T}(n, -1)
   end
@@ -80,12 +86,9 @@ struct R2RBuffers{T}
   b1::Vector{Complex{T}}
   b2::Vector{Complex{T}}
   b3::Vector{Complex{T}}
-  lin::Vector{T}
-  lout::Vector{T}
 end
 R2RBuffers{T}(n) where {T} = R2RBuffers{T}(Vector{T}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4),
-  Vector{Complex{T}}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4),
-  Vector{T}(undef, n), Vector{T}(undef, n))
+  Vector{Complex{T}}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4))
 
 r2c!(c::Vector{Complex{T}}, r::Vector{T}, K::RealLine{T}, B) where {T} =
   GC.@preserve c r B r2c_line!(pointer(c), pointer(r), cptr(B.b1), cptr(B.b2), cptr(B.b3), K)
@@ -161,25 +164,34 @@ function r2r_line!(y::AbstractVector{T}, x::AbstractVector{T}, K::R2RLine{T}, B:
       end
     end
   elseif kind == REDFT00
-    @inbounds for j in 0:n-1
-      r[j+1] = x[j+1]
-    end
-    @inbounds for j in 1:n-2
-      r[2(n-1)-j+1] = x[j+1]
+    N = n - 1
+    y1 = zero(T)
+    @inbounds for j in 0:N-1
+      xa = x[j+1]; xb = x[N-j+1]
+      bj = xa - xb
+      r[j+1] = (xa + xb) / 2 - imag(K.tw[j+1]) * bj
+      y1 += bj * real(K.tw[j+1])
     end
     r2c!(c, r, K.inner, B)
-    @inbounds for k in 0:n-1
-      y[k+1] = real(c[k+1])
+    @inbounds for k in 0:N÷2
+      y[2k+1] = 2real(c[k+1])
+    end
+    @inbounds y[2] = y1
+    @inbounds for k in 1:(N-1)÷2
+      y[2k+2] = y[2k] - 2imag(c[k+1])
     end
   elseif kind == RODFT00
-    N2 = 2(n + 1)
-    r[1] = zero(T); r[n+2] = zero(T)
-    @inbounds for j in 0:n-1
-      r[j+2] = x[j+1]; r[N2-j] = -x[j+1]
+    N = n + 1
+    xp(m) = (m == 0 || m == N) ? zero(T) : x[m]           # point m is x_(m-1)
+    @inbounds for j in 0:N-1
+      xa = xp(j); xb = xp(N - j)
+      r[j+1] = imag(K.tw[j+1]) * (xa + xb) + (xa - xb) / 2
     end
     r2c!(c, r, K.inner, B)
-    @inbounds for k in 0:n-1
-      y[k+1] = -imag(c[k+2])
+    @inbounds y[1] = real(c[1])
+    @inbounds for k in 1:N÷2
+      2k <= n && (y[2k] = -2imag(c[k+1]))
+      2k + 1 <= n && (y[2k+1] = y[2k-1] + 2real(c[k+1]))
     end
   else # DHT
     @inbounds for j in 1:n
@@ -230,22 +242,34 @@ function Base.show(io::IO, p::R2RPlan{T}) where {T}
   print(io, "FFTL r2r plan for $(join(p.sz, "×")) $T, ", join(("dim $d: $k" for (d, k) in zip(p.region, p.kinds)), ", "))
 end
 
-# one dimension, lines gathered into the task's buffers (contiguous lines are copied as well)
+"""
+    StridedLine{T}
+
+One line of an array as a vector: `n` values `stride` apart from `ptr` (the array must be kept
+alive by the caller). Line kernels read and write through it without copies; every kind reads
+its whole input before writing, so input and output may be the same line.
+"""
+struct StridedLine{T} <: AbstractVector{T}
+  ptr::Ptr{T}
+  stride::Int
+  n::Int
+end
+Base.size(l::StridedLine) = (l.n,)
+Base.@propagate_inbounds Base.getindex(l::StridedLine, i::Int) = unsafe_load(l.ptr, 1 + (i - 1) * l.stride)
+Base.@propagate_inbounds Base.setindex!(l::StridedLine{T}, v, i::Int) where {T} = unsafe_store!(l.ptr, T(v), 1 + (i - 1) * l.stride)
+Base.IndexStyle(::Type{<:StridedLine}) = IndexLinear()
+
+# one dimension of an Array, each line read and written in place through a StridedLine
 function r2r_dim!(y::Array{T}, x::Array{T}, d::Int, K::R2RLine{T}, p::R2RPlan{T}) where {T}
   S, outer = dim_extent(p.sz, d)
   n = p.sz[d]
-  nlines = S * outer
-  each_line(nlines, n, p.nthreads) do c, l
-    local B = p.bufs[c]
-    local o, i
-    o, i = divrem(l, S)
-    local base = i + S * n * o
-    for j in 0:n-1
-      @inbounds B.lin[j+1] = x[base+S*j+1]
-    end
-    r2r_line!(view(B.lout, 1:n), view(B.lin, 1:n), K, B)
-    for j in 0:n-1
-      @inbounds y[base+S*j+1] = B.lout[j+1]
+  GC.@preserve x y begin
+    px = pointer(x); py = pointer(y)
+    each_line(S * outer, n, p.nthreads) do c, l
+      local o, i
+      o, i = divrem(l, S)
+      local off = (i + S * n * o) * sizeof(T)
+      r2r_line!(StridedLine{T}(py + off, S, n), StridedLine{T}(px + off, S, n), K, p.bufs[c])
     end
   end
   y
@@ -310,3 +334,57 @@ function idct(x::AbstractArray, region = 1:ndims(x))
   end
   r2r(y, REDFT01, region)
 end
+
+"""
+    R2RPassPlan{T}
+
+Real-to-real transform of one kind along dimension `d` of all lines of arrays with a given size
+and strides (any strides), like `PassPlan` for complex data.
+"""
+struct R2RPassPlan{T<:FFTLFloat,N,K}
+  sz::NTuple{N,Int}
+  st::NTuple{N,Int}
+  d::Int
+  line::K
+  offs::Vector{Int}
+  nthreads::Int
+  bufs::Vector{R2RBuffers{T}}
+end
+
+"""
+    plan_r2r_pass(v::StridedArray{<:Real}, d, kind; threads = 1)
+
+Plan for the real-to-real transform `kind` (REDFT00 … RODFT11, DHT; unnormalised) along
+dimension `d` of all lines of arrays with the size and strides of `v`. Apply in place with
+`apply!(p, v)` or into an array of the same layout with `mul!(w, p, v)`.
+"""
+function plan_r2r_pass(v::StridedArray{T,N}, d::Integer, kind::R2RKind; threads::Integer = 1) where {T<:FFTLFloat,N}
+  1 <= d <= N || throw(ArgumentError("dimension $d is not within 1:$N"))
+  sz = size(v); st = strides(v)
+  outer = Tuple(i for i in 1:N if i != d)
+  offs = vec([sum(((I[j] - 1) * st[outer[j]] for j in eachindex(outer)); init = 0)
+              for I in CartesianIndices(ntuple(j -> sz[outer[j]], length(outer)))])
+  line = R2RLine{T}(kind, sz[d])
+  nt = max(1, Int(threads))
+  R2RPassPlan{T,N,typeof(line)}(sz, st, Int(d), line, offs, nt, [R2RBuffers{T}(sz[d]) for _ in 1:nt])
+end
+
+function Base.show(io::IO, p::R2RPassPlan{T}) where {T}
+  print(io, "FFTL r2r pass plan, $(p.line.kind) along dim $(p.d) of $(join(p.sz, "×")) $T, strides $(p.st)")
+end
+
+function LinearAlgebra.mul!(w::StridedArray{T,N}, p::R2RPassPlan{T,N}, v::StridedArray{T,N}) where {T,N}
+  (size(v) == p.sz && strides(v) == p.st && size(w) == p.sz && strides(w) == p.st) ||
+    throw(DimensionMismatch("r2r pass plan for size $(p.sz) and strides $(p.st)"))
+  n = p.sz[p.d]; sd = p.st[p.d]
+  GC.@preserve v w p begin
+    pv = pointer(v); pw = pointer(w)
+    each_line(length(p.offs), n, p.nthreads) do c, l
+      local off = p.offs[l+1] * sizeof(T)
+      r2r_line!(StridedLine{T}(pw + off, sd, n), StridedLine{T}(pv + off, sd, n), p.line, p.bufs[c])
+    end
+  end
+  w
+end
+
+apply!(p::R2RPassPlan, v) = mul!(v, p, v)

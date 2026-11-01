@@ -240,6 +240,25 @@ using SIMD: Vec
       @test relerr(inv(p) * (p * x), x) < 10tol(T)
     end
     @test relerr(FFTL.r2r(x, FFTL.REDFT00, (2,)), mapslices(u -> r2r_ref(u, FFTL.REDFT00), Float64.(x); dims = 2)) < 10tol(T)
+    # pass plans on views of a padded array, all kinds, every dimension, in place and out of place
+    G0 = randn(T, 26, 21, 13)
+    for kind in r2rkinds, d in 1:3, nt in (1, 2)
+      b = (3:22, 2:18, 2:11)
+      G = copy(G0); v = view(G, b...)
+      ref = mapslices(u -> r2r_ref(u, kind), Float64.(Array(v)); dims = d)
+      p = FFTL.plan_r2r_pass(v, d, kind; threads = nt)
+      FFTL.apply!(p, v)
+      @test relerr(v, ref) < 10tol(T)
+      mask = trues(size(G)); mask[b...] .= false
+      @test G[mask] == G0[mask]
+    end
+    # NFCT/NFST lengths: DCT-I with Ñ + 1 points, DST-I with Ñ - 1, Ñ smooth, even and odd
+    for Ñ in (96, 135, 250, 324), (kind, n) in ((FFTL.REDFT00, Ñ + 1), (FFTL.RODFT00, Ñ - 1))
+      H0 = randn(T, n + 4, 7); H1 = similar(H0)
+      v = view(H0, 3:n+2, 2:6); w = view(H1, 3:n+2, 2:6)
+      mul!(w, FFTL.plan_r2r_pass(v, 1, kind), v)
+      @test relerr(w, mapslices(u -> r2r_ref(u, kind), Float64.(Array(v)); dims = 1)) < 10tol(T)
+    end
     # orthonormal DCT
     y = FFTL.dct(x)
     @test sum(abs2, y) ≈ sum(abs2, x) rtol = 10tol(T)
