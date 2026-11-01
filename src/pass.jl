@@ -30,7 +30,8 @@ end
 Plan for the batched 1D DFT along dimension `d` of arrays with the size and strides of `v`
 (`sign = -1` forward, `+1` unnormalised backward). Apply with `mul!(w, p, v)` (w with the same
 size and strides, `w === v` in place) or `apply!(p, v)`. With `threads > 1` the lines are split
-among threads; callers that thread over many arrays themselves keep the default 1.
+among threads, and a single long line (d = 1) uses the four-step algorithm; callers that thread
+over many arrays themselves keep the default 1.
 """
 function plan_pass(v::StridedArray{Complex{T},N}, d::Integer; sign::Integer = -1, threads::Integer = 1) where {T<:FFTLFloat,N}
   1 <= d <= N || throw(ArgumentError("dimension $d is not within 1:$N"))
@@ -53,7 +54,9 @@ function plan_pass(v::StridedArray{Complex{T},N}, d::Integer; sign::Integer = -1
   end
   offs = [sum(((I[j] - 1) * st[outer[j]] for j in eachindex(outer)); init = 0)
           for I in CartesianIndices(ntuple(j -> sz[outer[j]], length(outer)))] |> vec
-  k = d == 1 ? kernel(T, n, sign) : kernel(T, n, sign, Sd)
+  # a single long line on several threads: four-step
+  k = d == 1 && length(offs) == 1 && use_fourstep(n, nt) ? FourStep{T}(n, sign, nt) :
+      d == 1 ? kernel(T, n, sign) : kernel(T, n, sign, Sd)
   B = d == 1 ? 1 : lane_block(lanes, n, k isa Chain ? nt : 1)
   nw = d == 1 ? n : B * n
   PassPlan{T,N,typeof(k)}(sz, st, d, sign, k, lanes, Sd, offs, B, nt,
@@ -87,7 +90,10 @@ apply!(p::PassPlan, v) = mul!(v, p, v)
 
 function run_pass!(py::Ptr{T}, px::Ptr{T}, p::PassPlan{T}) where {T}
   k = p.kernel; CT = 2 * sizeof(T)
-  if p.d == 1
+  if k isa FourStep
+    off = p.offs[1] * CT
+    run_fourstep!(py + off, px + off, k, p.nthreads)
+  elseif p.d == 1
     ntasks = (k isa Chain && p.nthreads > 1 && length(p.offs) * p.sz[1] >= THREAD_MIN_WORK) ? p.nthreads : 1
     ng = min(length(p.offs), BLOCKS_PER_THREAD * ntasks)
     parallel_items(ng, ntasks) do c, g

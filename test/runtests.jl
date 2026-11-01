@@ -123,6 +123,17 @@ using SIMD: Vec
       @test relerr(w, mapslices(u -> dft(ComplexF64.(u)), Array(v); dims = d)) < 10tol(T)
     end
     @test_throws DimensionMismatch FFTL.apply!(FFTL.plan_pass(view(G0, 1:8, 1:8, 1:2), 2), view(G0, 1:8, 1:9, 1:2))
+    # one long line on several threads (four-step), inside a padded vector
+    L0 = randn(Complex{T}, 2^17 + 8)
+    for sign in (-1, 1)
+      L = copy(L0); v = view(L, 5:2^17+4)
+      ref = copy(v); FFTL.apply!(FFTL.plan_pass(ref, 1; sign), ref)
+      p = FFTL.plan_pass(v, 1; sign, threads = 3)
+      @test p.kernel isa FFTL.FourStep
+      FFTL.apply!(p, v)
+      @test relerr(v, ref) < 10tol(T)
+      @test L[1:4] == L0[1:4] && L[end-3:end] == L0[end-3:end]
+    end
   end
 
   @testset "plans: in place, out of place, inv" begin
