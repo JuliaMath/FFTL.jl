@@ -1,9 +1,18 @@
 #!/bin/bash
-# Build build/lib/libfftl with juliac --trim (JuliaC.jl in its own environment jc/), the C test
-# test/test against it. Needs Julia >= 1.12.
+# Builds build/lib/libfftl with juliac --trim (JuliaC.jl in its own environment jc/), compiles
+# the C test test/test against it. Needs Julia >= 1.12.
+#
+# The embedded Julia runtime's worker pool is fixed when the library is built (baked through
+# --jl-option; JULIA_NUM_THREADS in the loading process's environment is ignored - the baked
+# option takes precedence, including for "auto"). FFTL_THREADS sets the baked count: a number,
+# or "auto" for one worker per CPU of the machine the library loads on, counted at load time
+# from the process's CPU affinity. Plans may request more threads than are baked; they run
+# correctly on fewer workers, which gives no speedup. See include/fftl.h, section Threading.
 set -e
 cd "$(dirname "$0")"
 julia --project=jc -e 'using Pkg; Pkg.instantiate()'
+julia --project=jc -e 'using Pkg; print("juliac ", Pkg.dependencies()[Base.UUID("acedd4c2-ced6-4a15-accc-2607eb759ba2")].version)'
+julia -e 'println(", Julia ", VERSION)'
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 # One CPU target: a library built for several targets (Julia's default) hangs at the first garbage
 # collection triggered by a second host thread, https://github.com/JuliaLang/JuliaC.jl/issues/190.
@@ -14,13 +23,14 @@ if [ -z "$JULIA_CPU_TARGET" ]; then
     *) export JULIA_CPU_TARGET=generic ;;
   esac
 fi
+FFTL_THREADS="${FFTL_THREADS:-4}"
 rm -rf build
 julia --project=jc -m JuliaC --output-lib build/libfftl --project . --bundle build \
   --trim=safe --compile-ccallable --experimental \
-  --jl-option threads=1 --jl-option handle-signals=yes "$@" src/libfftl.jl
-# Libraries of the Julia installation that the library never loads (checked with
-# DYLD_PRINT_LIBRARIES, as with libnfftjl): BLAS (src/libfftl.jl disables its init), networking,
-# git, C++.
+  --jl-option threads=$FFTL_THREADS --jl-option handle-signals=yes "$@" src/libfftl.jl
+# Libraries of the Julia installation that the library never loads (checked on the Mac with
+# DYLD_PRINT_LIBRARIES, as with libnfftjl; re-checked on Linux with ldd after this build):
+# BLAS (src/libfftl.jl disables its init), networking, git, C++.
 for lib in openblas gfortran quadmath gomp crypto ssl git2 ssh2 curl nghttp2 stdc++ ssp gmpxx dSFMT atomic; do
   rm -f build/lib/julia/lib${lib}*.{so,dylib,dll} build/lib/julia/lib${lib}*.so.* build/bin/lib${lib}*.dll
 done
