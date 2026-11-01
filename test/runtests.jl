@@ -300,4 +300,5 @@ using SIMD: Vec
     @test !FFTL.set_conflict(FFTL.radices(48, 2304), 48, 2304)
     @test all(<=(8), FFTL.radices(144, 144^2))
   end
+  include("ka.jl")
 end

@@ -6,6 +6,9 @@ Fastest Fourier Transform in Lübeck: a pure-Julia FFT with generated SIMD codel
     p = FFTL.plan_fft(x)     # x::Vector{ComplexF64} or Vector{ComplexF32}
     y = p * x
     FFTL.fft(x), FFTL.bfft(x), FFTL.ifft(x)
+
+GPU arrays (with KernelAbstractions and a GPU package such as Metal or CUDA loaded) get plans
+from the KernelAbstractions extension through the same functions; see [`plan_ka`](@ref).
 """
 module FFTL
 
@@ -23,5 +26,6 @@ include("interface.jl")
 include("pass.jl")
 include("real.jl")
 include("r2r.jl")
+include("ka.jl")
 
 end

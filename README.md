@@ -1,7 +1,8 @@
 # FFTL.jl — Fastest Fourier Transform in Lübeck
 
-A pure-Julia fast Fourier transform for the CPU: complex `Float32` and `Float64` data, any number
-of dimensions, any length, multithreaded. Work in progress; the interface may still change.
+A pure-Julia fast Fourier transform for the CPU and, experimentally, GPUs: complex `Float32` and
+`Float64` data, any number of dimensions, any length, multithreaded. Work in progress; the
+interface may still change.
 
 ## Usage
 
@@ -22,6 +23,26 @@ Plans are `AbstractFFTs.Plan`s. FFTL does not add methods to `AbstractFFTs.fft`/
 standard arrays, so it can be loaded next to FFTW.jl; call it qualified as `FFTL.fft`,
 `FFTL.plan_fft`, … . The first plan for a new length compiles its kernels (a fraction of a second);
 later plans and all transforms run without compilation.
+
+### GPUs
+
+With KernelAbstractions.jl and a GPU package loaded, the same functions work on GPU arrays
+(experimental; complex `Float32`, `Float64` where the GPU supports it):
+
+```julia
+using FFTL, Metal, KernelAbstractions          # or CUDA, AMDGPU, oneAPI
+
+xd = MtlArray(randn(ComplexF32, 1024, 1024))
+yd = FFTL.fft(xd)
+p = FFTL.plan_fft(xd, 2)                       # mul!(yd, p, xd) needs yd !== xd
+```
+
+`FFTL.plan_ka(backend, T, dims, σ; region)` makes a plan for any KernelAbstractions backend,
+including the CPU. The GPU kernels come from the same codelet generator: each kernel computes one
+pass of large radix (up to 4096 points) in workgroup memory, a transform is one to five passes per
+dimension. Pass and workgroup sizes are tuned on an Apple M1 Max, where Float32 transforms are
+faster than Metal.jl's FFT in nearly all measured cases; other GPUs work but are not tuned for
+yet.
 
 ## How it works
 
