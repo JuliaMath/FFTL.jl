@@ -292,5 +292,12 @@ using SIMD: Vec
     for n in [1000, 3000, 10^6, 2^5 * 3^4 * 5^3 * 7 * 11 * 13]
       @test prod(FFTL.radices(n)) == n
     end
+    for (n, S) in [(48, 2304), (144, 20736), (160, 25600), (120, 14400), (100, 10000), (128, 16384), (11, 4096)]
+      @test prod(FFTL.radices(n, S)) == n
+    end
+    # (4, 12) at stride 2304 puts 12 streams into one L1 set; the packed choice has radices ≤ 8
+    @test FFTL.set_conflict([4, 12], 48, 2304)
+    @test !FFTL.set_conflict(FFTL.radices(48, 2304), 48, 2304)
+    @test all(<=(8), FFTL.radices(144, 144^2))
   end
 end

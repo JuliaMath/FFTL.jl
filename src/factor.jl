@@ -2,7 +2,9 @@
 #
 # Rules from brute-force searches over all decompositions (M1, Float32 and Float64, n ≤ 4·10^6):
 # - n ≤ 16 with small factors: one codelet.
-# - Powers of two: radix 4 throughout, one 8 (or 2) for an odd exponent; radix 16 and above lose
+# - Powers of two up to 16384 (stride ≤ LARGE_STRIDE): radix 8 as often as possible and a 4 (two
+#   4s for one spare bit) for the rest, 2–7 % faster than 4s with one 8 up to 4096 (M1, F32 and F64).
+#   Above that radix 4 throughout, one 8 (or 2) for an odd exponent; radix 16 and above lose
 #   (register spills, cache-set conflicts at large strides).
 # - A factor 3 is merged with a 4 into 12, else with a 2 into 6; two 3s give 9.
 # - A factor 5 is merged with a spare 2 into 10, else stays 5. An odd power of two is split as
@@ -42,12 +44,48 @@ const LARGE_STRIDE = 256
 Radix sequence for a chain of length `n` applied to `S` interleaved sequences.
 """
 function radices(n::Int, S::Int = 1)
+  r = heuristic_radices(n, S)
+  S > LARGE_STRIDE && set_conflict(r, n, S) || return r
+  alt = packed_radices(n)
+  set_conflict(alt, n, S) ? r : alt
+end
+
+# A stage of radix R reads and writes R streams S·n/R complex values apart. When that spacing is
+# a multiple of the L1 set stride, the streams share a cache set and more than 8 of them
+# thrash (48³ dimension 3: (4, 12) 392 µs, (6, 8) 107 µs; 144³: (12, 12) 12.8 ms, (4, 6, 6) 5.6 ms).
+const L1_SET_LOG2 = Sys.ARCH === :aarch64 ? 14 : 12
+
+function set_conflict(rs, n, S)
+  for r in rs
+    v = trailing_zeros(S * (n ÷ r) * 16)
+    cld(r, 1 << clamp(L1_SET_LOG2 - v, 0, L1_SET_LOG2)) > 8 && return true
+  end
+  false
+end
+
+# Prime factors packed into radices of at most 8, powers of two first.
+function packed_radices(n::Int)
+  f, _ = factorize(n)
+  bins = Int[]
+  for p in sort!(reduce(vcat, (fill(p, e) for (p, e) in f); init = Int[]); rev = true)
+    i = findfirst(b -> b * p <= 8, bins)
+    i === nothing ? push!(bins, p) : (bins[i] *= p)
+  end
+  sort!(bins; by = r -> (!ispow2(r), -r))
+end
+
+function heuristic_radices(n::Int, S::Int)
   n == 1 && return Int[]
   f, rest = factorize(n)
   rest == 1 || throw(ArgumentError("length $n has prime factors larger than $MAX_RADIX_PRIME"))
   small = S > LARGE_STRIDE ? 8 : 16
   if ispow2(n) && n > small && n <= 64
     return S > LARGE_STRIDE ? (n == 64 ? [4, 4, 4] : [4, n ÷ 4]) : [4, n ÷ 4]
+  end
+  if ispow2(n) && 64 < n <= 16384 && S <= LARGE_STRIDE
+    k = trailing_zeros(n)
+    spare = k % 3
+    return vcat(spare == 2 ? [4] : spare == 1 ? [4, 4] : Int[], fill(8, (k - (spare == 2 ? 2 : spare == 1 ? 4 : 0)) ÷ 3))
   end
   (n <= small || (length(f) == 1 && haskey(f, n))) && return [n]   # small n or a prime
   a = get(f, 2, 0); b = get(f, 3, 0); c = get(f, 5, 0)

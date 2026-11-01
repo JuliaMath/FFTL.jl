@@ -53,14 +53,18 @@ chunk_range(c, nchunks, n) = (div((c - 1) * n, nchunks)):(div(c * n, nchunks) - 
 
 # f(c, item) for item = 0…nitems-1 on ntasks tasks; task c owns buffer set c and takes items
 # from a shared counter.
-function parallel_items(f, nitems, ntasks)
-  ntasks = min(ntasks, nitems)
-  if ntasks <= 1
+function parallel_items(f::F, nitems, ntasks) where {F}
+  if min(ntasks, nitems) <= 1
     for it in 0:nitems-1
       f(1, it)
     end
     return nothing
   end
+  spawn_items(f, nitems, min(ntasks, nitems))
+end
+
+# Separate function: the task closure in the same body slows the serial path above.
+@noinline function spawn_items(f::F, nitems, ntasks) where {F}
   next = Threads.Atomic{Int}(0)
   @sync for c in 1:ntasks
     Threads.@spawn begin

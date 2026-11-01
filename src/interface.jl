@@ -32,11 +32,11 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Thre
   nt = max(1, Int(threads))
   # dimensions with the same length and stride class share the kernel; a single long contiguous
   # transform on several threads uses the four-step algorithm
-  cache = Dict{Tuple{Int,Bool},Kernel{T}}()
+  cache = Dict{Tuple{Int,Int},Kernel{T}}()
   function dim_kernel(d)
     S, outer = dim_extent(sz, d)
     S == 1 && outer == 1 && use_fourstep(sz[d], nt) && return FourStep{T}(sz[d], σ, nt)
-    get!(() -> kernel(T, sz[d], σ, S), cache, (sz[d], S > LARGE_STRIDE))
+    get!(() -> kernel(T, sz[d], σ, S), cache, (sz[d], S > LARGE_STRIDE ? S : 0))
   end
   kernels = Tuple(dim_kernel(d) for d in reg)
   nwork = maximum((prod(sz[1:d]) for d in reg); init = 0)

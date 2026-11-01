@@ -123,7 +123,8 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, S::Int) wher
   # Out of place: the stages alternate between py and pw1 and end in py; px is only read.
   oop = [iseven(K - i) ? :py : :pw1 for i in 1:K]
   # In place: the first stage reads px, the last writes px, the ones between alternate between
-  # the two work buffers. A single stage goes through pw1.
+  # the two work buffers. A single stage (m = 1) loads all R inputs of a butterfly before it
+  # stores, so it works on px directly.
   ip = Any[:px for _ in 1:K]
   for i in K-1:-1:1
     ip[i] = isodd(K - i) ? :pw1 : :pw2
@@ -131,10 +132,7 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, S::Int) wher
   dispatch(dsts) = stride_dispatch(T, (base, single) -> quote
     $(chain_body(T, Rs, σ, :px, dsts, base, single, FM, LM)...)
   end)
-  inplace = K == 1 ? quote
-    $(dispatch([:pw1]))
-    unsafe_copyto!(px, pw1, 2 * S * P.n)
-  end : dispatch(ip)
+  inplace = dispatch(ip)
   quote
     GC.@preserve P begin
       if py != px
@@ -273,12 +271,9 @@ run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, Sx::In
     ex
   end
   if K == 1
-    # a single stage cannot run in place: go through pw1
+    # a single stage loads all R inputs of a butterfly before it stores: py may equal px
     r = Rs[1]
-    single(V) = quote
-      stage_last_lanes!(pw1, px, 1, Sx, B, B, Val($r), Val($σ), $V)
-      lane_copy!(py, pw1, Sy, B, B, P.n)
-    end
+    single(V) = :(stage_last_lanes!(py, px, 1, Sx, Sy, B, Val($r), Val($σ), $V))
     return quote
       GC.@preserve P $(by_width(single))
       nothing

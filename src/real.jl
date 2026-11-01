@@ -5,7 +5,11 @@
 # layout as is) gets a complex DFT of length M, Z, and
 #   r2c:  X_k = E_k + w^k·O_k,  E_k = (Z_k + conj Z_(M-k))/2,  O_k = (Z_k - conj Z_(M-k))/(2i),
 #   c2r:  Z_k = (X_k + conj X_(M-k)) + i·w^k·(X_k - conj X_(M-k)),  then z = DFT_M(Z),
-# with w = exp(σ·2πi/n) and Z_M = Z_0. Odd lengths use a complex DFT of length n.
+# with w = exp(σ·2πi/n) and Z_M = Z_0. Since w^(M-k) = -conj(w^k), the pair k, M-k shares its
+# products: with s = Z_k + conj Z_(M-k), d = Z_k - conj Z_(M-k), t = u_k·d and u_k = -i·w^k/2
+# (c2r: u_k = i·w^k, s and d of X) the outputs are
+#   r2c:  X_k = s/2 + t,  X_(M-k) = conj(s/2 - t),    c2r:  Z_k = s + t,  Z_(M-k) = conj(s - t).
+# Odd lengths use a complex DFT of length n.
 
 """
     RealLine{T}
@@ -17,12 +21,13 @@ struct RealLine{T,K<:Kernel{T}}
   n::Int
   σ::Int
   inner::K                     # length n ÷ 2 (even n) or n (odd n)
-  w::Vector{Complex{T}}        # w^k, k = 0…n÷2 (even n)
+  w::Vector{Complex{T}}        # u_k, k = 0…n÷2 (even n), see above
 end
 
 function RealLine{T}(n::Int, σ::Int) where {T}
   inner = kernel(T, iseven(n) ? n ÷ 2 : n, σ)
-  w = iseven(n) ? [Complex{T}(cispi(2σ * k / n)) for k in 0:n÷2] : Complex{T}[]
+  u = σ == -1 ? Complex{T}(0, -T(0.5)) : Complex{T}(0, 1)
+  w = iseven(n) ? [u * Complex{T}(cispi(2σ * k / n)) for k in 0:n÷2] : Complex{T}[]
   RealLine{T,typeof(inner)}(n, σ, inner, w)
 end
 
@@ -42,12 +47,10 @@ function r2c_line!(py::Ptr{Complex{T}}, px::Ptr{T}, b1::Ptr{T}, b2::Ptr{T}, b3::
       half = V((T(0.5), T(0.5)))
       GC.@preserve K for k in 1:M÷2
         zk = vload(V, Ptr{T}(py + k * CB)); czm = cconj(vload(V, Ptr{T}(py + (M - k) * CB)))
-        e = (zk + czm) * half
-        ok = fcadd270(zero(V), (zk - czm) * half)                 # (Z_k - conj Z_(M-k))/(2i)
-        wk = vload(V, Ptr{T}(pointer(K.w) + k * CB)); wm = vload(V, Ptr{T}(pointer(K.w) + (M - k) * CB))
-        # the same pair gives E_(M-k) = conj(e), O_(M-k) = conj(ok)
-        vstore(e + ccmul(wk, ok), Ptr{T}(py + k * CB))
-        vstore(cconj(e) + ccmul(wm, cconj(ok)), Ptr{T}(py + (M - k) * CB))
+        t = ccmul(vload(V, Ptr{T}(pointer(K.w) + k * CB)), zk - czm)
+        h = (zk + czm) * half
+        vstore(h + t, Ptr{T}(py + k * CB))
+        vstore(cconj(h - t), Ptr{T}(py + (M - k) * CB))
       end
     end
   else
@@ -72,10 +75,12 @@ function c2r_line!(py::Ptr{T}, px::Ptr{Complex{T}}, b1::Ptr{T}, b2::Ptr{T}, b3::
       unsafe_store!(cb1, Complex(x0 + xM, x0 - xM), 1)          # k = 0: real parts only
     end
     V = single_vec(T); CB = sizeof(Complex{T})
-    GC.@preserve K for k in 1:M-1
+    GC.@preserve K for k in 1:M÷2
       xk = vload(V, Ptr{T}(px + k * CB)); xm = cconj(vload(V, Ptr{T}(px + (M - k) * CB)))
-      wk = vload(V, Ptr{T}(pointer(K.w) + k * CB))
-      vstore((xk + xm) + ccmul(wk, fcadd90(zero(V), xk - xm)), Ptr{T}(cb1 + k * CB))   # + i·w^k·(xk - xm)
+      s = xk + xm
+      t = ccmul(vload(V, Ptr{T}(pointer(K.w) + k * CB)), xk - xm)
+      vstore(s + t, Ptr{T}(cb1 + k * CB))
+      vstore(cconj(s - t), Ptr{T}(cb1 + (M - k) * CB))
     end
     run!(py, b1, b2, b3, K.inner, 1)
   else
@@ -200,8 +205,14 @@ function Base.show(io::IO, p::BRFFTLPlan{T}) where {T}
 end
 
 # Runs f(c, i) for the lines i = 0…nlines-1 on the plan's tasks.
-function each_line(f, nlines, n, nt)
+function each_line(f::F, nlines, n, nt) where {F}
   ntasks = nt > 1 && nlines * n >= THREAD_MIN_WORK ? nt : 1
+  if ntasks == 1
+    for i in 0:nlines-1
+      f(1, i)
+    end
+    return nothing
+  end
   ng = min(nlines, BLOCKS_PER_THREAD * ntasks)
   parallel_items(ng, ntasks) do c, g
     for i in chunk_range(g + 1, ng, nlines)
@@ -213,60 +224,82 @@ end
 function LinearAlgebra.mul!(y::Array{Complex{T},N}, p::RFFTLPlan{T,N}, x::Array{T,N}) where {T,N}
   size(x) == p.sz || throw(DimensionMismatch("r2c plan for size $(p.sz) applied to size $(size(x))"))
   size(y) == AbstractFFTs.output_size(p) || throw(DimensionMismatch("output of size $(size(y)), expected $(AbstractFFTs.output_size(p))"))
-  n = p.line.n; h = nhalf(n); S = p.S
   GC.@preserve x y p begin
-    px = pointer(x); py = pointer(y)
-    each_line(length(p.offs_r), n, p.nthreads) do c, i
-      local b = p.bufs
-      local pb1 = cptr(b[5c-4]); local pb2 = cptr(b[5c-3]); local pb3 = cptr(b[5c-2])
-      if S == 1
-        r2c_line!(py + p.offs_c[i+1] * sizeof(Complex{T}), px + p.offs_r[i+1] * sizeof(T), pb1, pb2, pb3, p.line)
-      else
-        # strided line: gather into a contiguous buffer, transform, scatter
-        local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))
-        for j in 0:n-1
-          unsafe_store!(lr, unsafe_load(px, p.offs_r[i+1] + S * j + 1), j + 1)
-        end
-        r2c_line!(lc, lr, pb1, pb2, pb3, p.line)
-        for k in 0:h-1
-          unsafe_store!(py, unsafe_load(lc, k + 1), p.offs_c[i+1] + S * k + 1)
-        end
-      end
-    end
+    p.S == 1 ? r2c_contiguous!(pointer(y), pointer(x), p) : r2c_strided!(pointer(y), pointer(x), p)
   end
   p.cplan === nothing || mul!(y, p.cplan, y)
   y
 end
 
+# Separate functions for contiguous and strided lines: a shared closure body is 30–70 ns slower
+# on short lines.
+function r2c_contiguous!(py::Ptr{Complex{T}}, px::Ptr{T}, p::RFFTLPlan{T}) where {T}
+  b = p.bufs
+  if length(p.offs_r) == 1
+    return r2c_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
+  end
+  each_line(length(p.offs_r), p.line.n, p.nthreads) do c, i
+    local b = p.bufs
+    r2c_line!(py + p.offs_c[i+1] * sizeof(Complex{T}), px + p.offs_r[i+1] * sizeof(T),
+              cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
+  end
+end
+
+# strided line: gather into a contiguous buffer, transform, scatter
+function r2c_strided!(py::Ptr{Complex{T}}, px::Ptr{T}, p::RFFTLPlan{T}) where {T}
+  n = p.line.n; h = nhalf(n); S = p.S
+  each_line(length(p.offs_r), n, p.nthreads) do c, i
+    local b = p.bufs
+    local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))
+    for j in 0:n-1
+      unsafe_store!(lr, unsafe_load(px, p.offs_r[i+1] + S * j + 1), j + 1)
+    end
+    r2c_line!(lc, lr, cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
+    for k in 0:h-1
+      unsafe_store!(py, unsafe_load(lc, k + 1), p.offs_c[i+1] + S * k + 1)
+    end
+  end
+end
+
 function LinearAlgebra.mul!(y::Array{T,N}, p::BRFFTLPlan{T,N}, x::Array{Complex{T},N}) where {T,N}
   size(x) == p.sz || throw(DimensionMismatch("c2r plan for size $(p.sz) applied to size $(size(x))"))
   size(y) == AbstractFFTs.output_size(p) || throw(DimensionMismatch("output of size $(size(y)), expected $(AbstractFFTs.output_size(p))"))
-  n = p.d; h = nhalf(n); S = p.S
   xc = x
   if p.cplan !== nothing
     xc = reshape(p.copy, p.sz)
     mul!(xc, p.cplan, x)
   end
   GC.@preserve xc y p begin
-    px = pointer(xc); py = pointer(y)
-    each_line(length(p.offs_r), n, p.nthreads) do c, i
-      local b = p.bufs
-      local pb1 = cptr(b[5c-4]); local pb2 = cptr(b[5c-3]); local pb3 = cptr(b[5c-2])
-      if S == 1
-        c2r_line!(py + p.offs_r[i+1] * sizeof(T), px + p.offs_c[i+1] * sizeof(Complex{T}), pb1, pb2, pb3, p.line)
-      else
-        local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))
-        for k in 0:h-1
-          unsafe_store!(lc, unsafe_load(px, p.offs_c[i+1] + S * k + 1), k + 1)
-        end
-        c2r_line!(lr, lc, pb1, pb2, pb3, p.line)
-        for j in 0:n-1
-          unsafe_store!(py, unsafe_load(lr, j + 1), p.offs_r[i+1] + S * j + 1)
-        end
-      end
-    end
+    p.S == 1 ? c2r_contiguous!(pointer(y), pointer(xc), p) : c2r_strided!(pointer(y), pointer(xc), p)
   end
   y
+end
+
+function c2r_contiguous!(py::Ptr{T}, px::Ptr{Complex{T}}, p::BRFFTLPlan{T}) where {T}
+  b = p.bufs
+  if length(p.offs_r) == 1
+    return c2r_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
+  end
+  each_line(length(p.offs_r), p.d, p.nthreads) do c, i
+    local b = p.bufs
+    c2r_line!(py + p.offs_r[i+1] * sizeof(T), px + p.offs_c[i+1] * sizeof(Complex{T}),
+              cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
+  end
+end
+
+function c2r_strided!(py::Ptr{T}, px::Ptr{Complex{T}}, p::BRFFTLPlan{T}) where {T}
+  n = p.d; h = nhalf(n); S = p.S
+  each_line(length(p.offs_r), n, p.nthreads) do c, i
+    local b = p.bufs
+    local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))
+    for k in 0:h-1
+      unsafe_store!(lc, unsafe_load(px, p.offs_c[i+1] + S * k + 1), k + 1)
+    end
+    c2r_line!(lr, lc, cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
+    for j in 0:n-1
+      unsafe_store!(py, unsafe_load(lr, j + 1), p.offs_r[i+1] + S * j + 1)
+    end
+  end
 end
 
 Base.:*(p::RFFTLPlan{T,N}, x::AbstractArray{<:Real,N}) where {T,N} =
