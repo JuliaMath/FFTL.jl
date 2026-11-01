@@ -225,7 +225,11 @@ function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Chain{T}, k2::Chain{T}, n1::
       local off = base + j * n1 * CT
       run!(py + off, px + off, pw1, pw2, k1, 1)
     end
-    run!(py + base, py + base, pw1, pw2, k2, n1)
+    # dimension 2 of the plane in lane blocks that stay in L2
+    local B = lane_block(n1, n2, 1)
+    for i0 in 0:B:n1-1
+      run_lanes!(py + base + i0 * CT, py + base + i0 * CT, pw1, pw2, k2, n1, n1, min(B, n1 - i0))
+    end
   end
   nothing
 end
