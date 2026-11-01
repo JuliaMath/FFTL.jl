@@ -1,0 +1,49 @@
+name: libfftl
+# The C library (juliac --trim=safe): keeps FFTL's plan and execution path trimmable. The build
+# fails on any trim verifier error. Experimental, so a failure does not fail the pull request.
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  libfftl:
+    name: libfftl - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - name: Boundary tests in Julia (no build)
+        working-directory: libfftl
+        run: |
+          julia --project=. -e 'using Pkg; Pkg.instantiate()'
+          julia -t 4 --project=. test/jltest.jl
+      - name: Build the trimmed library and the C test
+        run: libfftl/build.sh
+      - name: C test
+        run: libfftl/test/test
+      - name: Bundle size
+        run: |
+          {
+            echo "### libfftl bundle (${{ matrix.os }})"
+            echo '```'
+            du -sh libfftl/build libfftl/build/lib/libfftl.* libfftl/build/lib/julia
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
