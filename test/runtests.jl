@@ -226,6 +226,11 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
         (-1)^k * x[n] + 2sum((x[j+1] * sinpi((j + 1) * (k + 0.5) / n) for j in 0:n-2); init = 0.0)
       elseif kind == FFTL.RODFT11
         2sum(x[j+1] * sinpi((j + 0.5) * (k + 0.5) / n) for j in 0:n-1)
+      elseif kind == FFTL.R2HC   # Re F_k, then Im F_(n-k) of F = DFT(x)
+        2k <= n ? sum(x[j+1] * cospi(2j * k / n) for j in 0:n-1) : -sum(x[j+1] * sinpi(2j * (n - k) / n) for j in 0:n-1)
+      elseif kind == FFTL.HC2R   # Σ_m F_m e^(2πimk/n), F from halfcomplex x
+        F(m) = m == 0 || 2m == n ? complex(x[m+1]) : 2m < n ? complex(x[m+1], x[n-m+1]) : conj(F(n - m))
+        real(sum(F(m) * cispi(2m * k / n) for m in 0:n-1))
       else
         sum(x[j+1] * (cospi(2j * k / n) + sinpi(2j * k / n)) for j in 0:n-1)
       end
@@ -233,7 +238,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     y
   end
   r2rkinds = (FFTL.REDFT00, FFTL.REDFT10, FFTL.REDFT01, FFTL.REDFT11, FFTL.RODFT00, FFTL.RODFT10,
-              FFTL.RODFT01, FFTL.RODFT11, FFTL.DHT)
+              FFTL.RODFT01, FFTL.RODFT11, FFTL.DHT, FFTL.R2HC, FFTL.HC2R)
 
   @testset "real-to-real, $T" for T in (Float64, Float32)
     for kind in r2rkinds, n in pick([1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 15, 16, 31, 32, 33, 100, 101, 128], thin(T, [1, 2, 3, 5, 16, 33]))
@@ -255,6 +260,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       @test relerr(p * x, ref) < 10tol(T)
       @test relerr(inv(p) * (p * x), x) < 10tol(T)
     end
+    hc = mapslices(u -> r2r_ref(u, FFTL.R2HC), mapslices(u -> r2r_ref(u, FFTL.HC2R), Float64.(x); dims = 1); dims = 3)
+    @test relerr(FFTL.r2r(x, (FFTL.HC2R, FFTL.R2HC), (1, 3)), hc) < 10tol(T)
     @test relerr(FFTL.r2r(x, FFTL.REDFT00, (2,)), mapslices(u -> r2r_ref(u, FFTL.REDFT00), Float64.(x); dims = 2)) < 10tol(T)
     # pass plans on views of a padded array, all kinds, every dimension, in place and out of place
     G0 = randn(T, 26, 21, 13)

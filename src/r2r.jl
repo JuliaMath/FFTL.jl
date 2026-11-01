@@ -8,6 +8,9 @@
 #   RODFT01  Y_k = (-1)^k X_(n-1) + 2 Σ_(j≤n-2) X_j sin(π(j+1)(k+½)/n)              (DST-III)
 #   RODFT11  Y_k = 2 Σ X_j sin(π(j+½)(k+½)/n)                                      (DST-IV)
 #   DHT      Y_k = Σ X_j (cos(2πjk/n) + sin(2πjk/n))                               (Hartley)
+#   R2HC     the DFT F_k = Σ X_j e^(-2πijk/n) of real data in halfcomplex order:
+#            Y_k = Re F_k (0 ≤ k ≤ n/2), Y_(n-k) = Im F_k (0 < k < n/2)
+#   HC2R     the inverse: Y_j = Σ_k F_k e^(2πijk/n), F given in halfcomplex order   (unnormalised)
 #
 # Each kind is computed from a real or complex DFT:
 # - DCT-II: v = (x_0, x_2, x_4, …, x_5, x_3, x_1) (even indices forward, odd backward), V = DFT(v)
@@ -24,8 +27,10 @@
 # - DST-I, N = n + 1 (points 1…N-1, x_0 = x_N = 0): y_j = sin(πj/N)·a_j + b_j/2, F = r2c(y):
 #   Y_2k = -2 Im F_k, Y_1 = Re F_0, Y_(2k+1) = Y_(2k-1) + 2 Re F_k.
 # - DHT: F = r2c(x); Y_k = Re F_k - Im F_k, Y_(n-k) = Re F_k + Im F_k.
+# - R2HC: F = r2c(x) stored in halfcomplex order. HC2R: F_k = X_k + i X_(n-k) (imaginary part
+#   zero for k = 0 and k = n/2), Y = c2r(F).
 
-@enum R2RKind REDFT00 REDFT10 REDFT01 REDFT11 RODFT00 RODFT10 RODFT01 RODFT11 DHT
+@enum R2RKind REDFT00 REDFT10 REDFT01 REDFT11 RODFT00 RODFT10 RODFT01 RODFT11 DHT R2HC HC2R
 
 """
     R2RLine{T}
@@ -69,7 +74,9 @@ function R2RLine{T}(kind::R2RKind, n::Int) where {T}
     N = n + 1
     inner = RealLine{T}(N, -1)
     tw = [Complex{T}(cospi(j / N), sinpi(j / N)) for j in 0:N-1]
-  else # DHT
+  elseif base == HC2R
+    inner = RealLine{T}(n, 1)
+  else # DHT, R2HC
     inner = RealLine{T}(n, -1)
   end
   R2RLine{T,typeof(inner)}(kind, n, inner, tw, tw2)
@@ -110,6 +117,10 @@ function r2r_line!(y::AbstractVector{T}, x::AbstractVector{T}, K::R2RLine{T}, B:
     dct1!(y, x, K, B)
   elseif kind == RODFT00
     dst1!(y, x, K, B)
+  elseif kind == R2HC
+    r2hc!(y, x, K, B)
+  elseif kind == HC2R
+    hc2r!(y, x, K, B)
   else
     dht!(y, x, K, B)
   end
@@ -246,6 +257,32 @@ function dst1!(y, x, K::R2RLine{T}, B) where {T}
   y
 end
 
+function r2hc!(y, x, K::R2RLine{T}, B) where {T}
+  n = K.n; r = B.r; c = B.c
+  @inbounds for j in 1:n
+    r[j] = x[j]
+  end
+  r2c!(c, r, K.inner, B)
+  @inbounds for k in 0:n÷2
+    f = c[k+1]
+    y[k+1] = real(f)
+    0 < k < n - k && (y[n-k+1] = imag(f))
+  end
+  y
+end
+
+function hc2r!(y, x, K::R2RLine{T}, B) where {T}
+  n = K.n; r = B.r; c = B.c
+  @inbounds for k in 0:n÷2
+    c[k+1] = Complex{T}(x[k+1], 0 < k < n - k ? x[n-k+1] : zero(T))
+  end
+  c2r!(r, c, K.inner, B)
+  @inbounds for j in 1:n
+    y[j] = r[j]
+  end
+  y
+end
+
 function dht!(y, x, K::R2RLine{T}, B) where {T}
   n = K.n; r = B.r; c = B.c
   @inbounds for j in 1:n
@@ -345,8 +382,9 @@ Base.:*(p::R2RPlan{T,N}, x::AbstractArray{<:Real,N}) where {T,N} =
 
 # inverse kinds and the scaling of the unnormalised pair
 inverse_kind(k::R2RKind) = k == REDFT10 ? REDFT01 : k == REDFT01 ? REDFT10 :
-                           k == RODFT10 ? RODFT01 : k == RODFT01 ? RODFT10 : k
-r2r_scale(k::R2RKind, n) = k == REDFT00 ? 2(n - 1) : k == RODFT00 ? 2(n + 1) : k == DHT ? n : 2n
+                           k == RODFT10 ? RODFT01 : k == RODFT01 ? RODFT10 :
+                           k == R2HC ? HC2R : k == HC2R ? R2HC : k
+r2r_scale(k::R2RKind, n) = k == REDFT00 ? 2(n - 1) : k == RODFT00 ? 2(n + 1) : k in (DHT, R2HC, HC2R) ? n : 2n
 
 function AbstractFFTs.plan_inv(p::R2RPlan{T}) where {T}
   s = prod(r2r_scale(k, p.sz[d]) for (k, d) in zip(p.kinds, p.region); init = 1)
@@ -357,7 +395,7 @@ end
     plan_r2r(x::AbstractArray{<:Real}, kinds, region = 1:ndims(x); threads)
     r2r(x, kinds, region = 1:ndims(x))
 
-Unnormalised real-to-real transforms; `kinds` is one `R2RKind` (REDFT00 … RODFT11, DHT) for all
+Unnormalised real-to-real transforms; `kinds` is one `R2RKind` (REDFT00 … RODFT11, DHT, R2HC, HC2R) for all
 dimensions of `region` or one per dimension.
 """
 plan_r2r(x::AbstractArray, kinds, region = 1:ndims(x); kw...) = R2RPlan{realtype(x)}(size(x), kinds, region; kw...)
@@ -407,7 +445,7 @@ end
 """
     plan_r2r_pass(v::StridedArray{<:Real}, d, kind; threads = 1)
 
-Plan for the real-to-real transform `kind` (REDFT00 … RODFT11, DHT; unnormalised) along
+Plan for the real-to-real transform `kind` (REDFT00 … RODFT11, DHT, R2HC, HC2R; unnormalised) along
 dimension `d` of all lines of arrays with the size and strides of `v`. Apply in place with
 `apply!(p, v)` or into an array of the same layout with `mul!(w, p, v)`.
 """
