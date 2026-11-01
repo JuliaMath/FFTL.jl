@@ -48,6 +48,22 @@ dimension. Pass and workgroup sizes are tuned on an Apple M1 Max, where Float32 
 faster than Metal.jl's FFT in nearly all measured cases; other GPUs work but are not tuned for
 yet.
 
+### Precompilation
+
+FFTL ships a precompile workload that removes the compilation cost of the first plan and
+the first transform. The default (`"lean"`) covers the common radices (4, 5, 8, 9, 10 and
+16, plus Bluestein) and the compile-time and run-time plan paths for both element types. A
+broader workload (`"broad"`) additionally covers the lengths 10^5, 2^20, 128, 360, 243,
+the sizes 256×256 and 64×64×64, and a four-step case, at the cost of a larger package image.
+Select it with a preference; the next load recompiles FFTL:
+
+```julia
+using Preferences, FFTL
+Preferences.set_preferences!(FFTL, "precompile_workload" => "broad"; force = true)
+```
+
+`"none"` disables the workload. See `PRECOMPILE-REPORT.md` for the measured costs.
+
 ## How it works
 
 - **Generated codelets.** A small symbolic generator writes straight-line code for DFTs of
