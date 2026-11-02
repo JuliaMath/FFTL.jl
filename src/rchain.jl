@@ -21,16 +21,9 @@ RChain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
   cached(() -> build_rchain(T, n, σ, rs), CacheKey(:rchain, T, n, σ, collect(Int, rs)))::RChain{T}
 
 function build_rchain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
-  prod(rs; init = 1) == n || throw(ArgumentError("radices do not multiply to the length"))
   all(in(RADICES), rs) || throw(ArgumentError("radix without a codelet in RADICES"))
-  W = unit_roots(σ, n)
-  tw = Vector{Complex{T}}[]
-  L = n
-  for r in rs
-    push!(tw, stage_twiddles(T, W, r, L))
-    L ÷= r
-  end
-  RChain{T}(n, σ, collect(Int, rs), tw, first_twiddles(T, W, isempty(rs) ? 1 : rs[1]))
+  tw, tw1 = chain_tables(T, n, σ, rs)
+  RChain{T}(n, σ, collect(Int, rs), tw, tw1)
 end
 
 """

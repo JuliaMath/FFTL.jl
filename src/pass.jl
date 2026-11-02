@@ -70,7 +70,7 @@ function plan_pass(v::StridedArray{Complex{T},N}, d::Integer; sign::Integer = -1
   nw = d == 1 ? n : B * n
   pr = k isa Chain ? pruning(k, nonzero, needed; lanes = d > 1) : NOPRUNE
   PassPlan{T,N,typeof(k),typeof(pr)}(sz, st, d, sign, k, lanes, Sd, offs, B, nt,
-                                     [Vector{Complex{T}}(undef, nw) for _ in 1:2nt], pr)
+                                     thread_buffers(T, nw, 2nt), pr)
 end
 
 # Segments of constant mask over units of `cu` consecutive indices 0…len-1; mask(range) gives the

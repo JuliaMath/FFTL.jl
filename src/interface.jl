@@ -52,7 +52,7 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Thre
   if length(reg) >= 2 && reg[1] == 1 && reg[2] == 2 && fuse_planes(sz[1], sz[2], dim_extent(sz, 2)[2], nt)
     ntwork = max(ntwork, sz[1] * sz[2])
   end
-  tbuf = [Vector{Complex{T}}(undef, ntwork) for _ in 1:2nt]
+  tbuf = thread_buffers(T, ntwork, 2nt)
   FFTLPlan{T,N,length(reg),typeof(kernels)}(sz, reg, σ, kernels, Vector{Complex{T}}(undef, nwork),
                                             Vector{Complex{T}}(undef, nwork), nt, tbuf)
 end

@@ -1,7 +1,7 @@
 # Transforms for element types beyond the hardware floats (BigFloat, Double64, Float128, …):
 # plain Julia on arrays, no SIMD and no pointers (BigFloat is not an isbits type), single-threaded.
 # Accuracy over speed: twiddles are computed in T, smooth lengths go through a recursive
-# mixed-radix FFT, lengths with a prime factor above GENERIC_MAX_RADIX through Bluestein's
+# mixed-radix FFT, lengths with a prime factor above MAX_RADIX_PRIME through Bluestein's
 # algorithm. Real transforms reduce to complex DFTs: r2c/c2r through the full complex line, the
 # real-to-real kinds through a complex DFT of length 2n (2(n-1) for DCT-I, 2(n+1) for DST-I)
 # with pre- and post-twiddles:
@@ -24,8 +24,6 @@ types Float32 and Float64 (the SIMD path).
 """
 generic_float(::Type{T}) where {T} = T <: AbstractFloat && !(T <: Union{Float16,Float32,Float64})
 
-const GENERIC_MAX_RADIX = 31
-
 # exp(σ 2πi e / n) for e = 0…n-1, from angles at most π
 function generic_roots(::Type{T}, n::Int, σ::Int) where {T}
   w = Vector{Complex{T}}(undef, n)
@@ -42,7 +40,7 @@ end
     GLine{T}
 
 One-dimensional DFT of length `n`, sign `σ`, for a generic float type: mixed radix, or Bluestein
-(`blue`) when a prime factor exceeds GENERIC_MAX_RADIX.
+when a prime factor exceeds MAX_RADIX_PRIME.
 """
 struct GLine{T}
   n::Int
@@ -53,20 +51,21 @@ struct GLine{T}
   chirp::Vector{Complex{T}}         # Bluestein: c_j = exp(σ iπ j² / n)
   bhat::Vector{Complex{T}}          # Bluestein: FFT_M of the conjugate chirp, divided by M
   inner::Vector{GLine{T}}           # Bluestein: forward and backward DFT of length M
-  buf::Vector{Complex{T}}
+  buf::Vector{Complex{T}}           # Bluestein: work vectors of length M
+  buf2::Vector{Complex{T}}
 end
 
 function GLine{T}(n::Int, σ::Int) where {T}
   n >= 1 || throw(ArgumentError("length must be positive"))
   f, rest = factorize(n)
-  if rest == 1 && all(p -> p <= GENERIC_MAX_RADIX, keys(f))
+  if rest == 1
     rs = Int[]
     for p in reverse!(sort!(collect(keys(f)))), _ in 1:f[p]
       push!(rs, p)
     end
     pmax = maximum(rs; init = 1)
     return GLine{T}(n, σ, rs, generic_roots(T, n, σ), Vector{Complex{T}}(undef, pmax),
-                    Complex{T}[], Complex{T}[], GLine{T}[], Vector{Complex{T}}(undef, n))
+                    Complex{T}[], Complex{T}[], GLine{T}[], Complex{T}[], Complex{T}[])
   end
   M = nextpow(2, 2n - 1)
   w2 = generic_roots(T, 2n, σ)
@@ -80,7 +79,7 @@ function GLine{T}(n::Int, σ::Int) where {T}
   bhat = similar(b)
   dft!(bhat, b, fwd)
   bhat ./= M
-  GLine{T}(n, σ, Int[], Complex{T}[], Complex{T}[], c, bhat, [fwd, bwd], Vector{Complex{T}}(undef, M))
+  GLine{T}(n, σ, Int[], Complex{T}[], Complex{T}[], c, bhat, [fwd, bwd], Vector{Complex{T}}(undef, M), Vector{Complex{T}}(undef, M))
 end
 
 # y[yo+k] = Σ_j x[xo + j xs] w_n^(σ j k), k = 0…n-1 (y and x distinct); n = L.n / step
@@ -115,7 +114,7 @@ function dft!(y::AbstractVector, x::AbstractVector, L::GLine{T}) where {T}
     fft_rec!(y, 1, x, 1, 1, L.n, L, 1)
   else
     n = L.n; b = L.buf; M = length(b); c = L.chirp
-    z = similar(b)
+    z = L.buf2
     for j in 1:n
       b[j] = x[j] * c[j]
     end

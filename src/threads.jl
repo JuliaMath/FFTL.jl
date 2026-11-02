@@ -37,6 +37,9 @@ end
 use_lanes(S, n, outer, nt) = S >= 2LANE_ALIGN && (S * n > BLOCK_BUDGET || (nt > 1 && outer < nt))
 threaded(S, n, outer, nt) = nt > 1 && S * n * outer >= THREAD_MIN_WORK
 
+# k work buffers of n complex values (one or more per task)
+thread_buffers(::Type{T}, n::Int, k::Int) where {T} = Vector{Complex{T}}[Vector{Complex{T}}(undef, n) for _ in 1:k]
+
 function dim_extent(sz, d)
   S = 1; outer = 1
   for i in 1:d-1
@@ -175,7 +178,7 @@ function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C}
   tw = cached(() -> fourstep_twiddles(T, n, σ, n1), CacheKey(:fourstep, T, n, σ, [n1]))::Vector{Complex{T}}
   nw = max(lane_block(n1, n2, nt) * n2, lane_block(n2, n1, nt) * n1)
   FourStep{T,typeof(k1),typeof(k2)}(n, n1, n2, k1, k2, tw, Vector{Complex{T}}(undef, n1 * (n2 + ROW_PAD)),
-                                    [Vector{Complex{T}}(undef, nw) for _ in 1:3nt])
+                                    thread_buffers(T, nw, 3nt))
 end
 
 function fourstep_twiddles(::Type{T}, n::Int, σ::Int, n1::Int) where {T}

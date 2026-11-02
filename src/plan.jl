@@ -33,7 +33,7 @@ Base.:(==)(a::CacheKey, b::CacheKey) = a.kind === b.kind && a.T === b.T && a.n =
 
 const KCACHE = Dict{CacheKey,Any}()
 const KCACHE_LOCK = ReentrantLock()
-const KCACHE_MAX = 64
+const KCACHE_MAX = 128   # a chain and its tables are two entries
 
 function cached(f::F, key::CacheKey) where {F}
   @lock KCACHE_LOCK begin
@@ -57,6 +57,15 @@ Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
   cached(() -> build_chain(T, n, σ, rs), CacheKey(:chain, T, n, σ, collect(Int, rs)))
 
 function build_chain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
+  tw, tw1 = chain_tables(T, n, σ, rs)
+  Chain{T,Tuple(rs),σ,length(rs)}(n, Tuple(tw), tw1)
+end
+
+# Stage twiddles and first-stage table of a radix sequence, shared by Chain and RChain.
+chain_tables(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T} =
+  cached(() -> build_tables(T, n, σ, rs), CacheKey(:tables, T, n, σ, collect(Int, rs)))::Tuple{Vector{Vector{Complex{T}}},Vector{Complex{T}}}
+
+function build_tables(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
   prod(rs; init = 1) == n || throw(ArgumentError("radices do not multiply to the length"))
   W = unit_roots(σ, n)
   tw = Vector{Complex{T}}[]
@@ -65,8 +74,7 @@ function build_chain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where 
     push!(tw, stage_twiddles(T, W, r, L))
     L ÷= r
   end
-  r1 = isempty(rs) ? 1 : rs[1]
-  Chain{T,Tuple(rs),σ,length(rs)}(n, Tuple(tw), first_twiddles(T, W, r1))
+  (tw, first_twiddles(T, W, isempty(rs) ? 1 : rs[1]))
 end
 
 """

@@ -34,12 +34,13 @@ ckernel(::Type{T}, n::Int, σ::Int, ::Type{RChain}) where {T} = rkernel(T, n, σ
 # C: Chain (kernel type in the line's type) or RChain (RKern{T}, for run-time plans)
 function RealLine{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
   inner = ckernel(T, iseven(n) ? n ÷ 2 : n, σ, C)
-  u = σ == -1 ? Complex{T}(0, -T(0.5)) : Complex{T}(0, 1)
+  u = σ == -1 ? ComplexF64(0, -0.5) : ComplexF64(0, 1)
   w = Complex{T}[]
   if iseven(n)
+    W = unit_roots(σ, n)
     w = Vector{Complex{T}}(undef, n ÷ 2 + 1)
     for k in 0:n÷2
-      w[k+1] = u * Complex{T}(cispi(2σ * k / n))
+      w[k+1] = Complex{T}(u * W[k+1])
     end
   end
   RealLine{T,C === RChain ? RKern{T} : typeof(inner)}(n, σ, inner, w)
@@ -182,7 +183,7 @@ function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthr
   cplan = length(reg) > 1 ? FFTLPlan{T}(csz, reg[2:end], -1; threads) : nothing
   S, offs_r, offs_c = line_layout(sz, d1)
   nt = max(1, Int(threads))
-  bufs = [Vector{Complex{T}}(undef, n) for _ in 1:5nt]
+  bufs = thread_buffers(T, n, 5nt)
   RFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg)}(sz, reg, line, cplan, S, offs_r, offs_c, nt, bufs)
 end
 
@@ -197,7 +198,7 @@ function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Thr
   rsz = Base.setindex(sz, d, d1)
   S, offs_r, offs_c = line_layout(rsz, d1)
   nt = max(1, Int(threads))
-  bufs = [Vector{Complex{T}}(undef, d) for _ in 1:5nt]
+  bufs = thread_buffers(T, d, 5nt)
   BRFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg)}(sz, d, reg, line, cplan, S, offs_r, offs_c, nt, bufs,
                                               Vector{Complex{T}}(undef, prod(sz)))
 end
