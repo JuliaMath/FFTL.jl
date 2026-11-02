@@ -19,7 +19,7 @@
     generic_float(T)
 
 Whether FFTL transforms arrays of element type `T` (or `Complex{T}`) in `T` itself through the
-generic path: every `AbstractFloat` except Float16 (converted, as before) and the hardware
+generic path: every `AbstractFloat` except Float16 (converted to Float64) and the hardware
 types Float32 and Float64 (the SIMD path).
 """
 generic_float(::Type{T}) where {T} = T <: AbstractFloat && !(T <: Union{Float16,Float32,Float64})
@@ -167,13 +167,13 @@ end
 
 function GPlan{T}(sz::NTuple{N,Int}, region, σ::Int) where {T,N}
   (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
-  reg = sort!(unique(collect(Int, region isa Integer ? (region,) : region)))
-  all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
+  reg = normregion(region, N)
   GPlan{T,N}(sz, reg, σ, [GLine{T}(sz[d], σ) for d in reg])
 end
 
 Base.size(p::GPlan) = p.sz
 Base.ndims(::GPlan{T,N}) where {T,N} = N
+AbstractFFTs.AdjointStyle(::GPlan) = AbstractFFTs.FFTAdjointStyle()
 AbstractFFTs.fftdims(p::GPlan) = Tuple(p.region)
 Base.show(io::IO, p::GPlan{T}) where {T} =
   print(io, "FFTL generic plan: ", p.σ < 0 ? "forward" : "backward", " Complex{", T, "} ", join(p.sz, "×"), ", dims ", Tuple(p.region))
@@ -194,7 +194,10 @@ function LinearAlgebra.mul!(y::AbstractArray{Complex{T},N}, p::GPlan{T,N}, x::Ab
   copyto!(y, apply_generic!(Array{Complex{T},N}(x), p))
 end
 
-Base.:*(p::GPlan{T,N}, x::AbstractArray{<:Number,N}) where {T,N} = apply_generic!(Array{Complex{T},N}(x), p)
+function Base.:*(p::GPlan{T,N}, x::AbstractArray{<:Number,N}) where {T,N}
+  size(x) == p.sz || throw(DimensionMismatch("plan for size $(p.sz)"))
+  apply_generic!(Array{Complex{T},N}(x), p)
+end
 
 AbstractFFTs.plan_inv(p::GPlan{T}) where {T} =
   AbstractFFTs.ScaledPlan(GPlan{T}(p.sz, p.region, -p.σ), AbstractFFTs.normalization(T, p.sz, p.region))
@@ -219,9 +222,8 @@ mutable struct GRPlan{T,N} <: AbstractFFTs.Plan{T}
 end
 
 function GRPlan{T}(sz::NTuple{N,Int}, d::Int, region, σ::Int) where {T,N}
-  reg = sort!(unique(collect(Int, region isa Integer ? (region,) : region)))
+  reg = normregion(region, N)
   isempty(reg) && throw(ArgumentError("a real transform needs at least one dimension"))
-  all(r -> 1 <= r <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
   hsz = σ < 0 ? Base.setindex(sz, nhalf(sz[reg[1]]), reg[1]) : sz
   σ > 0 && nhalf(d) != sz[reg[1]] && throw(DimensionMismatch("half spectrum of length $(sz[reg[1]]) does not fit length $d"))
   rest = length(reg) > 1 ? GPlan{T}(hsz, reg[2:end], σ) : nothing
@@ -229,6 +231,8 @@ function GRPlan{T}(sz::NTuple{N,Int}, d::Int, region, σ::Int) where {T,N}
 end
 
 Base.size(p::GRPlan) = p.sz
+Base.ndims(::GRPlan{T,N}) where {T,N} = N
+LinearAlgebra.mul!(y::AbstractArray, p::GRPlan, x::AbstractArray) = copyto!(y, p * x)
 AbstractFFTs.fftdims(p::GRPlan) = Tuple(p.region)
 AbstractFFTs.output_size(p::GRPlan) =
   Base.setindex(p.sz, p.σ < 0 ? nhalf(p.sz[p.region[1]]) : p.d, p.region[1])
@@ -362,13 +366,15 @@ end
 
 function GR2RPlan{T}(sz::NTuple{N,Int}, kinds, region) where {T,N}
   reg = collect(Int, region isa Integer ? (region,) : region)
-  allunique(reg) && all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
+  check_r2r_region(reg, N)
   ks = kinds isa R2RKind ? fill(kinds, length(reg)) : collect(R2RKind, kinds)
   length(ks) == length(reg) || throw(ArgumentError("one kind per transformed dimension"))
   GR2RPlan{T,N}(sz, reg, ks, [GR2RLine{T}(k, sz[d]) for (k, d) in zip(ks, reg)])
 end
 
 Base.size(p::GR2RPlan) = p.sz
+Base.ndims(::GR2RPlan{T,N}) where {T,N} = N
+LinearAlgebra.mul!(y::AbstractArray, p::GR2RPlan, x::AbstractArray) = copyto!(y, p * x)
 AbstractFFTs.fftdims(p::GR2RPlan) = Tuple(p.region)
 
 function Base.:*(p::GR2RPlan{T,N}, x::AbstractArray{<:Real,N}) where {T,N}

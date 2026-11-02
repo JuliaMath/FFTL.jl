@@ -91,6 +91,11 @@ end
 
 inranges(ranges, n) = (b = falses(n); foreach(r -> (b[r] .= true), ranges); b)
 
+# Pruning only touches the first or last of K stages, so it saves at most about (1 - f)/K of a
+# pass for a nonzero (needed) fraction f; below PRUNE_MIN_ZERO zeros the segment overhead
+# outweighs that (M1: σ = 1.25 lines gained 0–3 %, short Float32 lines lost up to 13 %).
+const PRUNE_MIN_ZERO = 1 / 3
+
 """
     pruning(chain, nonzero, needed; lanes)
 
@@ -99,11 +104,6 @@ Segments and masks of the first and last stage of `chain` for lines that are zer
 pruning). `lanes`: the chain runs in lane blocks (units of one butterfly); otherwise units follow
 the vectorisation over butterflies of the single-line kernels.
 """
-# Pruning only touches the first or last of K stages, so it saves at most about (1 - f)/K of a
-# pass for a nonzero (needed) fraction f; below PRUNE_MIN_ZERO zeros the segment overhead
-# outweighs that (M1: σ = 1.25 lines gained 0–3 %, short Float32 lines lost up to 13 %).
-const PRUNE_MIN_ZERO = 1 / 3
-
 function pruning(c::Chain{T,Rs}, nonzero, needed; lanes::Bool) where {T,Rs}
   n = c.n; K = length(Rs)
   K >= 2 || return NOPRUNE

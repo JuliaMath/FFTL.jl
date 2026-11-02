@@ -12,16 +12,15 @@
 # - fftl_plan_r2r builds FFTL.RR2RPlan{T}, one R2RKind per transformed dimension.
 # - fftl_plan_execute calls execute!, execute_r2c!, execute_c2r! or execute_r2r!.
 #
-# Trim rules established in phase 0 (notes/libfftl.md, findings 2-5) that the boundary itself
-# still follows: no closures capturing types (dispatch is a straight-line comparison on Ints),
+# Rules for code compiled ahead of time that the boundary follows: no closures capturing types (dispatch is a straight-line comparison on Ints),
 # error messages are literal strings or the package's (set_last_error guards the message type,
 # ArgumentError.msg is AbstractString), and every call from the @ccallable interface is
 # monomorphic: per-precision registries with concrete element type and one typed function per
 # operation and precision.
 #
-# The Julia runtime of a trimmed library starts with a fixed number of threads (baked at build
-# time or set through JULIA_NUM_THREADS before load; see include/fftl.h). Plans may ask for
-# more; execution then queues their tasks on fewer worker threads, which gives no speedup.
+# The Julia runtime of the library has a fixed number of threads, baked in at build time
+# (include/fftl.h, Threading). Plans may ask for more; their tasks then queue on fewer worker
+# threads, which gives no speedup.
 
 using FFTL
 using FFTL: RPlan, execute!, RRFFTPlan, RR2RPlan, execute_r2c!, execute_c2r!, execute_r2r!

@@ -83,14 +83,13 @@ cpu_caches() = CACHES[]
     FFTL.set_cpu_caches!(; l1, l2, llc)
 
 Override the cache sizes (bytes) that plans are sized from, e.g. when the query at load time
-fails or a machine reports misleading values. Clears the plan cache; affects plans made
+fails or a machine reports misleading values. Affects plans made
 afterwards. `FFTL.set_cpu_caches!()` restores the queried values.
 """
 function set_cpu_caches!(; kw...)
   q = query_caches()
   CACHES[] = isempty(kw) ? q :
     CPUCaches(get(kw, :l1, q.l1), get(kw, :l2, q.l2), get(kw, :llc, q.llc), :user)
-  clear_cache!()
   CACHES[]
 end
 

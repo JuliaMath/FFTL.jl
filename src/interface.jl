@@ -4,6 +4,14 @@
 
 const FFTLFloat = Union{Float32,Float64}
 
+# The transformed dimensions: sorted, without duplicates, each within 1:N (an integer is one
+# dimension). The message is a literal: the run-time plans are compiled ahead of time.
+function normregion(region, N::Int)
+  reg = sort!(unique!(collect(Int, region isa Integer ? (region,) : region)))
+  all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region is not within the array dimensions"))
+  reg
+end
+
 """
     FFTLPlan{T,N}
 
@@ -26,9 +34,8 @@ mutable struct FFTLPlan{T<:FFTLFloat,N,D,Ks<:Tuple} <: AbstractFFTs.Plan{Complex
 end
 
 function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
-  reg = Tuple(sort(unique(collect(Int, region))))
-  all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
-  all(>=(1), sz) || throw(ArgumentError("array size must be positive, got $sz"))
+  reg = Tuple(normregion(region, N))
+  all(>=(1), sz) || throw(ArgumentError("array size must be positive"))
   (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
   nt = max(1, Int(threads))
   # dimensions with the same length and stride class share the kernel; a single long contiguous
@@ -58,6 +65,10 @@ AbstractFFTs.AdjointStyle(::FFTLPlan) = AbstractFFTs.FFTAdjointStyle()
 function Base.show(io::IO, p::FFTLPlan{T}) where {T}
   dir = p.σ == -1 ? "forward" : "backward"
   print(io, "FFTL $dir plan for $(join(p.sz, "×")) Complex{$T}, dims $(p.region)")
+end
+
+function Base.show(io::IO, ::MIME"text/plain", p::FFTLPlan{T}) where {T}
+  show(io, p)
   for (d, k) in zip(p.region, p.kernels)
     print(io, "\n  dim $d: ")
     k isa Chain && print(io, "radices ", radix_tuple(k))

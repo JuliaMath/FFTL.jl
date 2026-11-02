@@ -4,7 +4,7 @@
  * and real-to-real transforms (DCT, DST, Hartley, halfcomplex): any rank, any lengths, both
  * precisions, single- or multi-threaded execution. The plan is built, applied
  * and freed through the four calls below; everything else about it is run-time data inside the
- * library (FFT sorts radices, chooses algorithms, owns its work buffers).
+ * library (radix sequence, algorithm and work buffers are chosen and owned by FFTL).
  *
  * Data layout: complex values are interleaved pairs (re, im), stored contiguously in
  * column-major order: in a dims[0] x ... x dims[rank-1] array the first index varies fastest,
@@ -177,15 +177,12 @@ size_t fftl_last_error(char *buf, size_t buf_len);
  *
  * libfftl embeds the Julia runtime, whose worker pool is fixed when the library is BUILT and
  * cannot change afterwards: build.sh bakes the number through juliac's --jl-option threads
- * (its FFTL_THREADS variable: a number, or "auto" - the default except on macOS, where it is
- * the number of performance cores of the build machine -, which bakes one
- * worker per CPU of the machine the library is LOADED on, counted at load time from the
- * process's CPU affinity). The option is applied by the generated loader before the runtime
- * starts; setting JULIA_NUM_THREADS in the environment of the loading process has NO effect
- * on a libfftl built this way (measured both against the baked number and "auto"; the baked
- * option takes precedence, as with the julia command line's -t flag). Rebuild with a
- * different FFTL_THREADS to change it; calling fftl_init-style run-time configuration does
- * not exist because the Julia runtime cannot grow its pool after it starts.
+ * (its FFTL_THREADS variable: a number, or "auto" for one worker per CPU of the machine the
+ * library is LOADED on, counted at load time from the process's CPU affinity; the default is
+ * "auto", on macOS the number of performance cores of the build machine). JULIA_NUM_THREADS
+ * in the environment of the loading process has no effect: the baked option takes precedence.
+ * The Julia runtime cannot grow its pool after it starts, so changing the count needs a
+ * rebuild.
  *
  * A plan's threads value above the baked worker count is allowed and correct: execution
  * queues that plan's tasks on the available workers, which gives no speedup - and neither
@@ -202,24 +199,6 @@ size_t fftl_last_error(char *buf, size_t buf_len);
  * becomes invalid).
  * ------------------------------------------------------------------------- */
 
-/* ---------------------------------------------------------------------------
- * Planned extensions (not implemented yet; the signatures below are sketches
- * for the C interface of the package features named in each section). These
- * exist so that the entry points above stay free of the parameters the
- * extensions need.
- *
- * Pass plans along one dimension with pruning, for callers that transform
- * strided boxes with zero inputs outside given ranges or need only given
- * output ranges (maps FFTL.plan_pass: dimension, in and out strides, nonzero
- * and needed index ranges). Planned shapes:
- *
- *   fftl_plan fftl_plan_pass_dft(int32_t rank, const int64_t *dims,
- *                                const int64_t *in_strides, const int64_t *out_strides,
- *                                int32_t dim, int32_t precision, int32_t sign,
- *                                int32_t threads,
- *                                int32_t n_nonzero, const int64_t *nonzero,
- *                                int32_t n_needed, const int64_t *needed);
- * ------------------------------------------------------------------------- */
 
 #ifdef __cplusplus
 }

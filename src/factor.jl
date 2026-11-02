@@ -14,7 +14,8 @@
 # The first stage takes a power-of-two radix when there is one.
 # - Batched transforms with a large stride S (a dimension ≥ 2 of a big array): a radix-R stage
 #   reads R streams S·m elements apart, which share cache sets when R ≥ 16 (64³, dimension 3:
-#   (4, 16) 1123 µs, (4, 4, 4) 408 µs). Above LARGE_STRIDE no radix is larger than 8.
+#   (4, 16) 1123 µs, (4, 4, 4) 408 µs). Above LARGE_STRIDE powers of two use radices ≤ 8, and a
+#   choice whose streams fall into the same L1 sets is replaced by packed radices ≤ 8.
 
 """
     MAX_RADIX_PRIME

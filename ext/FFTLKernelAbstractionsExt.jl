@@ -537,8 +537,7 @@ end
 function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64,
                 lim = device_limits(backend, T),   # override: hardware limits (rule tuning)
                 pad = default_pad(dims, region, T, device_profile(backend), lim)) where {T,D}
-  region = sort!(unique(collect(Int, region isa Integer ? (region,) : region)))
-  all(d -> 1 <= d <= D, region) || throw(ArgumentError("region is not within 1:$D"))
+  region = FFTL.normregion(region, D)
   all(>=(1), dims) || throw(ArgumentError("array size must be positive"))
   filter!(d -> dims[d] > 1, region)          # a DFT of length 1 is the identity
   isempty(region) && return KAPlan{T,D,typeof(backend)}(dims, region, σ, Vector{Int}[], Any[], Dict{Symbol,Any}(), backend, gmax)
@@ -637,6 +636,7 @@ FFTL.plan_ka(backend, ::Type{T}, dims::Tuple, σ::Integer; region = 1:length(dim
 
 Base.size(p::KAPlan) = p.sz
 Base.ndims(::KAPlan{T,N}) where {T,N} = N
+AbstractFFTs.AdjointStyle(::KAPlan) = AbstractFFTs.FFTAdjointStyle()
 AbstractFFTs.fftdims(p::KAPlan) = Tuple(p.region)
 
 function Base.show(io::IO, p::KAPlan{T}) where {T}

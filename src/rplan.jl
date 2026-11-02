@@ -34,9 +34,8 @@ end
 function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Integer}, σ::Integer;
                   threads::Integer = Threads.nthreads()) where {T<:FFTLFloat}
   dims = collect(Int, sz)
-  reg = sort!(unique(collect(Int, region)))
   N = length(dims)
-  all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region is not within the array dimensions"))
+  reg = normregion(region, N)
   all(>=(1), dims) || throw(ArgumentError("array size must be positive"))
   (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
   nt = max(1, Int(threads))
@@ -122,12 +121,20 @@ Base.size(p::RPlan) = Tuple(p.sz)
 AbstractFFTs.fftdims(p::RPlan) = Tuple(p.region)
 AbstractFFTs.AdjointStyle(::RPlan) = AbstractFFTs.FFTAdjointStyle()
 
+Base.ndims(p::RPlan) = length(p.sz)
+Base.show(io::IO, p::RPlan{T}) where {T} =
+  print(io, "FFTL run-time ", p.σ < 0 ? "forward" : "backward", " plan for ", join(p.sz, "×"), " Complex{", T, "}, dims ", Tuple(p.region))
+
 function LinearAlgebra.mul!(y::Array{Complex{T}}, p::RPlan{T}, x::Array{Complex{T}}) where {T}
   (collect(size(x)) == p.sz && collect(size(y)) == p.sz) ||
     throw(DimensionMismatch("plan size does not match the arrays"))
   GC.@preserve x y execute!(p, pointer(y), pointer(x))
   y
 end
+
+# other arrays (views, ...) through contiguous copies
+LinearAlgebra.mul!(y::AbstractArray{Complex{T}}, p::RPlan{T}, x::AbstractArray{Complex{T}}) where {T} =
+  copyto!(y, mul!(Array{Complex{T}}(undef, size(x)), p, Array{Complex{T}}(x)))
 
 Base.:*(p::RPlan{T}, x::AbstractArray{<:Number}) where {T} =
   mul!(Array{Complex{T}}(undef, size(x)), p, convert(Array{Complex{T}}, x))

@@ -170,8 +170,7 @@ mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C,D} <: AbstractFFTs.Plan{Complex{T}}
     new{T,N,K,C,D}(sz, d, region, line, cplan, S, offs_r, offs_c, nt, bufs, copy)
 end
 
-sortregion(region, N) = (reg = Tuple(sort(unique(collect(Int, region)))); all(d -> 1 <= d <= N, reg) ||
-  throw(ArgumentError("region $region is not within 1:$N")); reg)
+sortregion(region, N) = Tuple(normregion(region, N))
 
 function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = sortregion(region, N)

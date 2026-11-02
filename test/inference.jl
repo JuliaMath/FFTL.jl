@@ -1,13 +1,9 @@
-# Inference and allocation requirements that phase 2 must guarantee (T1 in notes/coordination.md):
-# with one warm-up call, the execution of a concrete plan is inferable and allocation-free, and
-# plan construction becomes inferable through the runtime plan type. Execution is wrapped as
-# `@test (@inferred ...) === result` so that it is counted (a bare @inferred is silent on pass
-# in this Julia). Plan construction carries the radix sequence in its type today; these cases
-# are @test_broken and flip when inference succeeds with the runtime plan — recorded as an
-# error ("unexpected pass"), the signal to turn them into @test. Threaded execution must stay
-# inferable; allocation freedom is deliberately not required there (task spawning). All cases
-# go through public types and the small sizes of the suites above, so the file survives the
-# rework unchanged.
+# Inference and allocations: after one warm-up call the execution of a plan is inferable and
+# allocation-free. Execution is wrapped as `@test (@inferred ...) === result` so that it is
+# counted (a bare @inferred is silent on pass). The JIT plans carry their radix sequence in the
+# type, so their construction is not inferable (@test_broken: an unexpected pass is reported);
+# the run-time plans (RPlan, RRFFTPlan, RR2RPlan) are inferable in construction and execution.
+# Threaded execution must be inferable; allocation freedom is not required there (tasks).
 
 @testset "inference and allocations, $T" for T in (Float64, Float32)
   # 1D chain, out of place and in place; construction of the same plan is broken

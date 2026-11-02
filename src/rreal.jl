@@ -32,10 +32,9 @@ end
 function RRFFTPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Integer}, σ::Integer;
                       threads::Integer = Threads.nthreads()) where {T<:FFTLFloat}
   dims = collect(Int, sz)
-  reg = sort!(unique(collect(Int, region)))
   N = length(dims)
+  reg = normregion(region, N)
   isempty(reg) && throw(ArgumentError("a real transform needs at least one dimension"))
-  all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region is not within the array dimensions"))
   all(>=(1), dims) || throw(ArgumentError("array size must be positive"))
   (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
   nt = max(1, Int(threads))
@@ -47,6 +46,9 @@ function RRFFTPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:In
   copybuf = Vector{Complex{T}}(undef, σ == 1 && cplan !== nothing ? prod(csz) : 0)
   RRFFTPlan{T}(dims, reg, Int(σ), line, cplan, S, offs_r, offs_c, nt, thread_buffers(T, n, 5nt), copybuf, T[])
 end
+
+Base.show(io::IO, p::RRFFTPlan{T}) where {T} =
+  print(io, "FFTL run-time ", p.σ < 0 ? "r2c" : "c2r", " plan for ", join(p.sz, "×"), " ", T, ", dims ", Tuple(p.region))
 
 # r2c: px real array of size p.sz, py half spectrum
 function execute_r2c!(p::RRFFTPlan{T}, py::Ptr{Complex{T}}, px::Ptr{T}) where {T}
@@ -146,7 +148,7 @@ function RR2RPlan{T}(sz::AbstractVector{<:Integer}, kinds::AbstractVector{R2RKin
   dims = collect(Int, sz)
   reg = collect(Int, region)
   N = length(dims)
-  allunique(reg) && all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region is not within the array dimensions"))
+  check_r2r_region(reg, N)
   all(>=(1), dims) || throw(ArgumentError("array size must be positive"))
   length(kinds) == length(reg) || throw(ArgumentError("one kind per transformed dimension"))
   lines = Vector{R2RLine{T,RInner{T}}}(undef, length(reg))
@@ -162,6 +164,9 @@ function RR2RPlan{T}(sz::AbstractVector{<:Integer}, kinds::AbstractVector{R2RKin
   end
   RR2RPlan{T}(dims, reg, collect(R2RKind, kinds), lines, nt, bufs)
 end
+
+Base.show(io::IO, p::RR2RPlan{T}) where {T} =
+  print(io, "FFTL run-time r2r plan for ", join(p.sz, "×"), " ", T, ", ", join(("dim $d: $k" for (d, k) in zip(p.region, p.kinds)), ", "))
 
 function execute_r2r!(p::RR2RPlan{T}, py::Ptr{T}, px::Ptr{T}) where {T}
   if isempty(p.region)

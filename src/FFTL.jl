@@ -34,4 +34,16 @@ include("generic.jl")
 include("ka.jl")
 include("precompile.jl")
 
+# The API (not exported: FFTL is used qualified next to FFTW.jl). `public` exists from Julia 1.11.
+@static if VERSION >= v"1.11"
+  eval(Expr(:public, :fft, :bfft, :ifft, :rfft, :brfft, :irfft, :r2r, :dct, :idct,
+            :plan_fft, :plan_bfft, :plan_ifft, :plan_rfft, :plan_brfft, :plan_irfft, :plan_r2r,
+            :R2RKind, :REDFT00, :REDFT10, :REDFT01, :REDFT11, :RODFT00, :RODFT10, :RODFT01, :RODFT11,
+            :DHT, :R2HC, :HC2R,
+            :plan_pass, :plan_r2r_pass, :apply!,
+            :RPlan, :RRFFTPlan, :RR2RPlan, :execute!, :execute_r2c!, :execute_c2r!, :execute_r2r!,
+            :plan_ka, :plan_ka_rfft, :plan_ka_brfft, :plan_ka_r2r,
+            :cpu_caches, :set_cpu_caches!, :clear_cache!, :PRECOMPILE_WORKLOAD))
+end
+
 end

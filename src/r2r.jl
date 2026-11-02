@@ -44,6 +44,13 @@ struct R2RLine{T,K}
   tw2::Vector{Complex{T}}
 end
 
+# real-to-real regions keep their order (one kind per dimension), so duplicates are errors
+function check_r2r_region(reg, N::Int)
+  allunique(reg) || throw(ArgumentError("region contains a dimension twice"))
+  all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region is not within the array dimensions"))
+  nothing
+end
+
 own_buffers(K::R2RLine) = (i = K.inner; i isa RealLine ? i.inner isa Bluestein : i isa Bluestein)
 
 # exp(iπ(a j + b)/d) for j = 0…m-1
@@ -301,7 +308,7 @@ end
 
 function R2RPlan{T}(sz::NTuple{N,Int}, kinds, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = Tuple(collect(Int, region isa Integer ? (region,) : region))
-  allunique(reg) && all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
+  check_r2r_region(reg, N)
   ks = kinds isa R2RKind ? ntuple(_ -> kinds, length(reg)) : Tuple(kinds)
   length(ks) == length(reg) || throw(ArgumentError("one kind per transformed dimension"))
   lines = Tuple(R2RLine{T}(k, sz[d]) for (k, d) in zip(ks, reg))
@@ -405,7 +412,7 @@ function dct(x::AbstractArray, region = 1:ndims(x))
 end
 
 function idct(x::AbstractArray, region = 1:ndims(x))
-  y = convert(Array{generic_float(elreal(x)) ? elreal(x) : realtype(x)}, copy(x))
+  y = copyto!(similar(x, generic_float(elreal(x)) ? elreal(x) : realtype(x)), x)   # stays on its device
   for d in (region isa Integer ? (region,) : region)
     n = size(y, d)
     selectdim(y, d, 1) .*= sqrt(eltype(y)(2))

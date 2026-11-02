@@ -176,9 +176,8 @@ mutable struct KARealPlan{T,N,B} <: AbstractFFTs.Plan{T}
 end
 
 function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N) where {T,N}
-  reg = sort!(unique(collect(Int, region isa Integer ? (region,) : region)))
+  reg = FFTL.normregion(region, N)
   isempty(reg) && throw(ArgumentError("a real transform needs at least one dimension"))
-  all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
   d1 = reg[1]; n = sz[d1]; h = n ÷ 2 + 1
   hsz = setdim(sz, d1, h)
   even = iseven(n) && n > 2
@@ -249,10 +248,9 @@ mutable struct KAR2RPlan{T,N,B} <: AbstractFFTs.Plan{T}
   region::Vector{Int}
   kinds::Vector{FFTL.R2RKind}
   dims::Vector{Any}                  # per dimension: (kind, L, KAPlan, pre, post, z, Z)
-  bufs::Vector{Any}
   backend::B
   pinv::AbstractFFTs.Plan
-  KAR2RPlan{T,N,B}(sz, region, kinds, dims, bufs, backend) where {T,N,B} = new{T,N,B}(sz, region, kinds, dims, bufs, backend)
+  KAR2RPlan{T,N,B}(sz, region, kinds, dims, backend) where {T,N,B} = new{T,N,B}(sz, region, kinds, dims, backend)
 end
 
 function r2r_twiddles(::Type{T}, kind::FFTL.R2RKind, n::Int) where {T}
@@ -280,7 +278,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
     push!(dims, (Int(k), L, KAPlan(backend, T, lsz, -1; region = d:d), todevice(backend, pre), todevice(backend, post),
                  devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, lsz)))
   end
-  KAR2RPlan{T,N,typeof(backend)}(sz, reg, ks, dims, Any[devzeros(backend, T, sz)], backend)
+  KAR2RPlan{T,N,typeof(backend)}(sz, reg, ks, dims, backend)
 end
 
 Base.size(p::KAR2RPlan) = p.sz

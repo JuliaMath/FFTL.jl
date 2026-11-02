@@ -13,11 +13,11 @@ static double now(void) {
 }
 
 int main(void) {
-  const long long cases[][2] = {{1, 1024}, {1, 1000}, {1, 65536}, {1, 1048576}, {1, 101}, {2, 512}, {3, 64}};
+  const int64_t cases[][2] = {{1, 1024}, {1, 1000}, {1, 65536}, {1, 1048576}, {1, 101}, {2, 512}, {3, 64}};
   for (int c = 0; c < 7; c++)
     for (int nt = 1; nt <= 8; nt *= 8) {
       int rank = (int)cases[c][0];
-      long long d[3] = {cases[c][1], cases[c][1], cases[c][1]}, n = 1;
+      int64_t d[3] = {cases[c][1], cases[c][1], cases[c][1]}, n = 1;
       for (int i = 0; i < rank; i++) n *= d[i];
       int reg[3] = {0, 1, 2};
       double t0 = now();
@@ -39,7 +39,7 @@ int main(void) {
         }
         if (t / r < best) best = t / r;
       }
-      printf("C rank %d n %lld threads %d plan_ms %.3f exec_us %.2f\n", rank, cases[c][1], nt, 1e3 * tp, 1e6 * best);
+      printf("C rank %d n %lld threads %d plan_ms %.3f exec_us %.2f\n", rank, (long long) cases[c][1], nt, 1e3 * tp, 1e6 * best);
       fftl_plan_destroy(p);
       free(x);
       free(y);

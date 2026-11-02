@@ -1,7 +1,8 @@
 # Stockham stages. A stage of radix R with stride s and m = L/R (L the current length, s·L = n):
 #   a_j = x[q + s(p + jm)],   y[q + s(Rp + k)] = (DFT_R a)_k · w^(kp),   w = exp(σ·2πi/L),
 # for p = 0…m-1, q = 0…s-1. Twiddle tables are stored per stage, either indexed (R-1)p + k
-# (broadcast over q) or, for the first stage of a Float32 plan, (k-1)m + p (contiguous in p).
+# (broadcast over q) or, for a grouped first stage (2 or 4 complex values per vector), (k-1)m + p
+# (contiguous in p).
 # Kernels take raw pointers (to the real part of the first complex value); callers keep the
 # arrays alive. Indices are zero-based offsets in units of complex values.
 #
@@ -117,7 +118,8 @@ stage_first_group!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, ::Val{R}, ::Val{�
   end
 end
 
-# Stages on a block of B lanes (used to split one dimension among threads): element j of lane i
+# Stages on a block of B lanes (cache blocking of a dimension pass, and its unit of work among
+# threads): element j of lane i
 # is at i + Sx·j in the input and at i + Sy·j in the output, so a block can be read from the array
 # (Sx = S) into a compact buffer (Sy = B) and back. The index q of the formulas above is
 # i + S·q0 with i = 0…B-1, q0 = 0…s0-1. B must be a multiple of the complex lanes of VT.

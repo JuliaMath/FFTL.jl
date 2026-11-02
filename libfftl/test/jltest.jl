@@ -1,4 +1,4 @@
-# Boundary tests in Julia, mirroring test/test.c (same matrix) but without a juliac build: the
+# Boundary tests in Julia, along the lines of test/test.c but without a juliac build: the
 # @ccallable entry points of src/libfftl.jl are plain methods, so this runs in any Julia with
 # the libfftl project (julia --project=. -t 4 test/jltest.jl from libfftl/). In-place and
 # out-of-place, both precisions, partial regions, empty regions, threads, error paths.
