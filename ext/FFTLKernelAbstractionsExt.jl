@@ -361,8 +361,9 @@ function pass_G_cap(R, s, m, E, B, gmax, N, cap, wmax)
 end
 
 # G for a pass of the plan. The CUDA dynamic shared memory flavor (lim.nmax > lim.nstat) only
-# adopts the larger G for power-of-two pass lengths, and only when the workgroup runs with
-# (nearly) the maximum of threads: a >48 KB shared block is one workgroup per SM, so G growth that leaves W = 512 halves
+# adopts the larger G for power-of-two pass lengths of at least 1024 (passes of 512 lose with it:
+# 2^17 [512, 256] 16.2 µs vs 10.0 µs static, 2^18 [512, 512] 19.2 vs 14.3 µs on the A6000), and only
+# when the workgroup runs with (nearly) the maximum of threads: a >48 KB shared block is one workgroup per SM, so G growth that leaves W = 512 halves
 # the occupancy of the static plan (2^22 [256] G32 dyn 1.39× cuFFT vs G16 static 1.24×), and
 # the longer register chains of odd-radix stages do not pay either (10^6 [1000] G8 dyn 0.89×
 # vs G4 static 0.80×); the measured wins are 2^20 [1024] G8, 2^21 [2048] G4 + [1024] G8,
@@ -372,7 +373,7 @@ function pass_G(R, s, m, E, B, gmax, lim = LIM0)
   G = pass_G_cap(R, s, m, E, B, gmax, N, lim.nstat, lim.wmax)
   lim.nmax <= lim.nstat && return G
   Gd = pass_G_cap(R, s, m, E, B, gmax, N, lim.nmax, lim.wmax)
-  Gd > G && ispow2(R) && 8 * cld(Gd * R, maximum(local_radices(R); init = 1)) >= 7 * lim.wmax ? Gd : G
+  Gd > G && ispow2(R) && R >= 1024 && 8 * cld(Gd * R, maximum(local_radices(R); init = 1)) >= 7 * lim.wmax ? Gd : G
 end
 
 # Pass lengths (powers of two). A last pass of radix ≤ 16 needs no exchange in threadgroup
