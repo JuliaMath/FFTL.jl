@@ -59,6 +59,32 @@ function thread_work(sz, d, nt)
   threaded(S, n, outer, nt) && outer >= nt ? S * n : 0
 end
 
+# Checks shared by the complex plans (FFTLPlan, RPlan); the number of threads.
+function check_plan(sz, σ::Integer, threads::Integer)
+  all(>=(1), sz) || throw(ArgumentError("array size must be positive"))
+  (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
+  max(1, Int(threads))
+end
+
+# Lengths of the serial work buffers and of each task's buffers for transforms along `reg`
+# (plane fusion of dimensions 1 and 2 included).
+function work_sizes(sz, reg, nt::Int)
+  nwork = 0; ntwork = 0
+  for d in reg
+    S, _ = dim_extent(sz, d)
+    nwork = max(nwork, S * sz[d])
+    ntwork = max(ntwork, thread_work(sz, d, nt))
+  end
+  if length(reg) >= 2 && reg[1] == 1 && reg[2] == 2 && fuse_planes(sz[1], sz[2], dim_extent(sz, 2)[2], nt)
+    ntwork = max(ntwork, sz[1] * sz[2])
+  end
+  nwork, ntwork
+end
+
+# Whether dimension d is one long contiguous line (all other dimensions of length 1) for the
+# four-step algorithm on nt threads.
+fourstep_dim(sz, d::Int, nt::Int) = (so = dim_extent(sz, d); so[1] == 1 && so[2] == 1 && use_fourstep(sz[d], nt))
+
 chunk_range(c, nchunks, n) = (div((c - 1) * n, nchunks)):(div(c * n, nchunks) - 1)
 
 # f(c, item) for item = 0…nitems-1 on ntasks tasks; task c owns buffer set c and takes items

@@ -25,6 +25,12 @@ struct PassPlan{T<:FFTLFloat,N,K<:Kernel{T},Pr<:Pruning}
   prune::Pr
 end
 
+# Memory offsets (in elements) of the lines of an array with size sz and strides st, one per
+# index of the dimensions `outer`.
+line_offsets(sz, st, outer) =
+  vec([sum(((I[j] - 1) * st[outer[j]] for j in eachindex(outer)); init = 0)
+       for I in CartesianIndices(ntuple(j -> sz[outer[j]], length(outer)))])
+
 """
     plan_pass(v::StridedArray{<:Complex}, d; sign = -1, threads = 1, nonzero = nothing, needed = nothing)
 
@@ -60,8 +66,7 @@ function plan_pass(v::StridedArray{Complex{T},N}, d::Integer; sign::Integer = -1
     lanes = L; Sd = st[d]
     outer = Tuple(i for i in m+1:N if i != d)
   end
-  offs = [sum(((I[j] - 1) * st[outer[j]] for j in eachindex(outer)); init = 0)
-          for I in CartesianIndices(ntuple(j -> sz[outer[j]], length(outer)))] |> vec
+  offs = line_offsets(sz, st, outer)
   # a single long line on several threads: four-step
   σ = Int(sign)
   k = d == 1 && length(offs) == 1 && use_fourstep(n, nt) ? FourStep{T}(n, σ, nt) :
@@ -166,13 +171,10 @@ function run_pass!(py::Ptr{T}, px::Ptr{T}, p::PassPlan{T}) where {T}
     off = p.offs[1] * CT
     run_fourstep!(py + off, px + off, k, p.nthreads)
   elseif p.d == 1
-    ntasks = (k isa Chain && p.nthreads > 1 && length(p.offs) * p.sz[1] >= THREAD_MIN_WORK) ? p.nthreads : 1
-    ng = min(length(p.offs), BLOCKS_PER_THREAD * ntasks)
-    parallel_items(ng, ntasks) do c, g
-      for i in chunk_range(g + 1, ng, length(p.offs))
-        local off = p.offs[i + 1] * CT
-        run!(py + off, px + off, cptr(p.bufs[2c-1]), cptr(p.bufs[2c]), k, 1, p.prune)
-      end
+    # lines in groups on the tasks (kernels with buffers of their own on one task)
+    each_line(length(p.offs), p.sz[1], k isa Chain ? p.nthreads : 1) do c, i
+      local off = p.offs[i + 1] * CT
+      run!(py + off, px + off, cptr(p.bufs[2c-1]), cptr(p.bufs[2c]), k, 1, p.prune)
     end
   else
     B = p.B; nb = cld(p.lanes, B)

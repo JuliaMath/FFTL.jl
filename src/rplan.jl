@@ -36,13 +36,12 @@ function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Intege
   dims = collect(Int, sz)
   N = length(dims)
   reg = normregion(region, N)
-  all(>=(1), dims) || throw(ArgumentError("array size must be positive"))
-  (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
-  nt = max(1, Int(threads))
+  nt = check_plan(dims, σ, threads)
   chains = RChain{T}[]
   blue = Union{Nothing,RBluestein{T}}[]
-  nwork = 0; ntwork = 0
-  four = length(dims) == 1 && reg == [1] && use_fourstep(dims[1], nt) ? FourStep{T}(dims[1], Int(σ), nt, RChain) : nothing
+  # one long line (the other transformed dimensions have length 1): the four-step algorithm
+  long = filter(d -> dims[d] > 1, reg)
+  four = length(long) == 1 && fourstep_dim(dims, long[1], nt) ? FourStep{T}(dims[long[1]], Int(σ), nt, RChain) : nothing
   for d in reg
     n = dims[d]
     S = 1
@@ -56,12 +55,8 @@ function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Intege
       push!(chains, RChain{T}(1, Int(σ), Int[]))
       push!(blue, Bluestein{T}(n, Int(σ), RChain))
     end
-    nwork = max(nwork, S * n)
-    ntwork = max(ntwork, thread_work(dims, d, nt))
   end
-  if length(reg) >= 2 && reg[1] == 1 && reg[2] == 2 && fuse_planes(dims[1], dims[2], dim_extent(dims, 2)[2], nt)
-    ntwork = max(ntwork, dims[1] * dims[2])
-  end
+  nwork, ntwork = work_sizes(dims, reg, nt)
   RPlan{T}(dims, reg, Int(σ), chains, blue, four, Vector{Complex{T}}(undef, nwork), Vector{Complex{T}}(undef, nwork),
            nt, thread_buffers(T, ntwork, 2nt))
 end

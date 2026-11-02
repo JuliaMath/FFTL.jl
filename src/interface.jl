@@ -35,23 +35,17 @@ end
 
 function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = Tuple(normregion(region, N))
-  all(>=(1), sz) || throw(ArgumentError("array size must be positive"))
-  (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
-  nt = max(1, Int(threads))
+  nt = check_plan(sz, σ, threads)
   # dimensions with the same length and stride class share the kernel; a single long contiguous
   # transform on several threads uses the four-step algorithm
   cache = Dict{Tuple{Int,Int},Kernel{T}}()
   function dim_kernel(d)
-    S, outer = dim_extent(sz, d)
-    S == 1 && outer == 1 && use_fourstep(sz[d], nt) && return FourStep{T}(sz[d], σ, nt)
+    fourstep_dim(sz, d, nt) && return FourStep{T}(sz[d], σ, nt)
+    S, _ = dim_extent(sz, d)
     get!(() -> kernel(T, sz[d], σ, S), cache, (sz[d], S > LARGE_STRIDE ? S : 0))
   end
   kernels = Tuple(dim_kernel(d) for d in reg)
-  nwork = maximum((prod(sz[1:d]) for d in reg); init = 0)
-  ntwork = maximum((thread_work(sz, d, nt) for d in reg); init = 0)
-  if length(reg) >= 2 && reg[1] == 1 && reg[2] == 2 && fuse_planes(sz[1], sz[2], dim_extent(sz, 2)[2], nt)
-    ntwork = max(ntwork, sz[1] * sz[2])
-  end
+  nwork, ntwork = work_sizes(sz, reg, nt)
   tbuf = thread_buffers(T, ntwork, 2nt)
   FFTLPlan{T,N,length(reg),typeof(kernels)}(sz, reg, σ, kernels, Vector{Complex{T}}(undef, nwork),
                                             Vector{Complex{T}}(undef, nwork), nt, tbuf)

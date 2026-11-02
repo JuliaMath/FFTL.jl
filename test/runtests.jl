@@ -338,6 +338,11 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       @test relerr(z, ref) < 10tol(T)
       @test relerr(inv(p) * (p * x), x) < 10tol(T)
     end
+    # one long line with a trailing dimension of length 1: four-step, as in FFTLPlan
+    x = randn(Complex{T}, 2^14, 1)
+    p = FFTL.RPlan{T}([2^14, 1], [1, 2], -1; threads = 2)
+    @test p.four !== nothing
+    @test relerr(p * x, FFTL.plan_fft(x; threads = 1) * x) < 10tol(T)
   end
 
   @testset "run-time real plans, $T" for T in pick((Float64, Float32), (Float64,))
