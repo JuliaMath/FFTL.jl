@@ -408,6 +408,17 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "real transforms of one long line on several threads" begin
+    for T in (Float64, Float32), n in (2^17, 3 * 2^16)
+      x = randn(T, n)
+      p = FFTL.plan_rfft(x; threads = 3)
+      @test p.four !== nothing
+      X = p * x
+      @test relerr(X, FFTL.plan_rfft(x; threads = 1) * x) < 10tol(T)
+      @test relerr(FFTL.plan_brfft(X, n; threads = 3) * X, n .* x) < 10tol(T)
+    end
+  end
+
   @testset "argument checks and fixed bugs" begin
     # Bluestein lines in threaded real and r2r plans (the kernel's own buffers, one task at a time)
     x = rand(1031, 40)
