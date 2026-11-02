@@ -282,6 +282,14 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       mul!(w, FFTL.plan_r2r_pass(v, 1, kind), v)
       @test relerr(w, mapslices(u -> r2r_ref(u, kind), Float64.(Array(v)); dims = 1)) < 10tol(T)
     end
+    # DCT-I and DST-I as accurate as the other kinds (rounding errors must not grow with n);
+    # Float32 against the Float64 reference, which is exact at this scale
+    if T == Float32
+      for (kind, n) in ((FFTL.REDFT00, 2049), (FFTL.RODFT00, 2047), (FFTL.REDFT10, 2048))
+        u = randn(T, n)
+        @test relerr(FFTL.r2r(u, kind), r2r_ref(Float64.(u), kind)) < 4eps(T)
+      end
+    end
     # orthonormal DCT
     y = FFTL.dct(x)
     @test sum(abs2, y) ≈ sum(abs2, x) rtol = 10tol(T)
