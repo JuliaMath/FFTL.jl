@@ -21,11 +21,10 @@
 #   W_m = e^(iπ(4m+1)/(4n))·V_m; Y_(2m) = 2 Re W_m, Y_(n-1-2m) = 2 Im W_m.
 #   n odd: Y_k = 2 Re[e^(-iπ(2k+1)/(4n)) DFT_(2n)(x_j e^(-iπj/(2n)), zero padded)_k].
 # - DST-II/IV: DCT-II/IV of ((-1)^j x_j), output reversed. DST-III: (-1)^k DCT-III(reversed x)_k.
-# - DCT-I, N = n - 1 (points 0…N): with a_j = x_j + x_(N-j), b_j = x_j - x_(N-j),
-#   y_j = a_j/2 - sin(πj/N)·b_j (j < N) and F = r2c(y) of length N:
-#   Y_2k = 2 Re F_k, Y_1 = Σ_j b_j cos(πj/N), Y_(2k+1) = Y_(2k-1) - 2 Im F_k.
-# - DST-I, N = n + 1 (points 1…N-1, x_0 = x_N = 0): y_j = sin(πj/N)·a_j + b_j/2, F = r2c(y):
-#   Y_2k = -2 Im F_k, Y_1 = Re F_0, Y_(2k+1) = Y_(2k-1) + 2 Re F_k.
+# - DCT-I, N = n - 1: F = r2c of the even extension (x_0, …, x_N, x_(N-1), …, x_1) of length 2N,
+#   Y_k = Re F_k.
+# - DST-I, N = n + 1: F = r2c of the odd extension (0, x_0, …, x_(n-1), 0, -x_(n-1), …, -x_0) of
+#   length 2N, Y_k = -Im F_(k+1).
 # - DHT: F = r2c(x); Y_k = Re F_k - Im F_k, Y_(n-k) = Re F_k + Im F_k.
 # - R2HC: F = r2c(x) stored in halfcomplex order. HC2R: F_k = X_k + i X_(n-k) (imaginary part
 #   zero for k = 0 and k = n/2), Y = c2r(F).
@@ -79,11 +78,9 @@ function R2RLine{T}(kind::R2RKind, n::Int, ::Type{C} = Chain) where {T,C}
       tw2 = cis_table(T, n, -2, -1, 4n)
     end
   elseif base == REDFT00
-    inner = RealLine{T}(n - 1, -1, C)
-    tw = cis_table(T, n - 1, 1, 0, n - 1)
+    inner = RealLine{T}(2(n - 1), -1, C)
   elseif base == RODFT00
-    inner = RealLine{T}(n + 1, -1, C)
-    tw = cis_table(T, n + 1, 1, 0, n + 1)
+    inner = RealLine{T}(2(n + 1), -1, C)
   elseif base == HC2R
     inner = RealLine{T}(n, 1, C)
   else # DHT, R2HC
@@ -207,35 +204,22 @@ function dct4!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
   y
 end
 
-# The pair (j, N-j) gives both r_j and r_(N-j) from x_j, x_(N-j): with a = x_j + x_(N-j),
-# b = x_j - x_(N-j) and s = sin(πj/N): r_j = a/2 - s·b, r_(N-j) = a/2 + s·b (DCT-I), and
-# r_j = s·a + b/2, r_(N-j) = s·a - b/2 (DST-I).
+# DCT-I and DST-I as the r2c of the even / odd extension of length 2N. The r2c of length N
+# with the pairs (j, N-j) folded into one sequence would cost half as much, but recovers the odd
+# outputs as a running sum over the spectrum, whose rounding errors accumulate with N.
 function dct1!(y, x, K::R2RLine{T}, B) where {T}
   N = K.n - 1; r = B.r; c = B.c
-  y1a = zero(T); y1b = zero(T)
   @inbounds begin
-    r[1] = (x[1] + x[N+1]) / 2
-    y1a = x[1] - x[N+1]
-    for j in 1:(N-1)÷2
-      xa = x[j+1]; xb = x[N-j+1]
-      a = (xa + xb) / 2; bj = xa - xb; sj = imag(K.tw[j+1])
-      r[j+1] = a - sj * bj
-      r[N-j+1] = a + sj * bj
-      y1b += 2 * bj * real(K.tw[j+1])      # b_(N-j)·cos(π(N-j)/N) = b_j·cos(πj/N)
+    for j in 0:N
+      r[j+1] = x[j+1]
     end
-    iseven(N) && (r[N÷2+1] = x[N÷2+1])     # j = N/2: b = 0
+    for j in 1:N-1
+      r[2N-j+1] = x[j+1]
+    end
   end
   r2c!(c, r, K.inner::RealLine, B)
-  @inbounds begin
-    for k in 0:N÷2
-      y[2k+1] = 2real(c[k+1])
-    end
-    acc = y1a + y1b
-    y[2] = acc
-    for k in 1:(N-1)÷2
-      acc -= 2imag(c[k+1])
-      y[2k+2] = acc
-    end
+  @inbounds for k in 0:N
+    y[k+1] = real(c[k+1])
   end
   y
 end
@@ -243,26 +227,16 @@ end
 function dst1!(y, x, K::R2RLine{T}, B) where {T}
   n = K.n; N = n + 1; r = B.r; c = B.c
   @inbounds begin
-    r[1] = zero(T)                                        # points 0 and N are zero
-    for j in 1:(N-1)÷2
-      xa = x[j]; xb = x[N-j]                              # points j and N-j are x_(j-1), x_(N-j-1)
-      sa = imag(K.tw[j+1]) * (xa + xb); hb = (xa - xb) / 2
-      r[j+1] = sa + hb
-      r[N-j+1] = sa - hb
+    r[1] = zero(T); r[N+1] = zero(T)
+    for j in 1:n
+      v = x[j]
+      r[j+1] = v
+      r[2N-j+1] = -v
     end
-    iseven(N) && (r[N÷2+1] = 2 * x[N÷2])                 # j = N/2: sin = 1, b = 0
   end
   r2c!(c, r, K.inner::RealLine, B)
-  @inbounds begin
-    acc = real(c[1])
-    y[1] = acc
-    for k in 1:N÷2
-      2k <= n && (y[2k] = -2imag(c[k+1]))
-      if 2k + 1 <= n
-        acc += 2real(c[k+1])
-        y[2k+1] = acc
-      end
-    end
+  @inbounds for k in 1:n
+    y[k] = -imag(c[k+1])
   end
   y
 end
