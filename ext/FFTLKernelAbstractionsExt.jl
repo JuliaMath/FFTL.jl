@@ -156,8 +156,15 @@ local_twcount(n, rs) = sum((R - 1) * (L ÷ R) for (R, L) in zip(rs, accumulate(�
 # Hooks for Bluestein along a dimension (Nx, Ny > 0): the first pass (s = 1) reads element i of
 # an input of length Nx along the dimension times cin[i], zero for i ≥ Nx; the last pass (m = 1)
 # writes element i < Ny of an output of length Ny along the dimension times cout[i].
-function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1, 0), pady = (1, 0), lim = LIM0)
-  @lock PKERNELS_LOCK get!(PKERNELS, (R, G, σ, T, s, N, E, B, Nx, Ny, padx, pady, G * R > lim.nstat)) do
+# Hooks for real transforms along dimension 1 (E = 1, N = n/2, see ka_real.jl):
+#   rhook = +1 (c2r, first pass): element i of the input is Z_i = (X_i + conj X_(N-i)) +
+#     cin[i] (X_i - conj X_(N-i)), X a half spectrum with N + 1 values per line;
+#   rhook = -1 (r2c, last pass): the output is the half spectrum X_K = (Z_K + conj Z_(N-K))/2 +
+#     cout[K] (Z_K - conj Z_(N-K)), K = 0…N, of the pass result Z. With s > 1 a workgroup takes
+#     G/2 lanes q from the front and the G/2 mirrored lanes s - q, so that Z_K and Z_(N-K) meet
+#     in its workgroup memory (q = 0 and q = s/2 are their own mirrors); G must be even.
+function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1, 0), pady = (1, 0), lim = LIM0, rhook = 0)
+  @lock PKERNELS_LOCK get!(PKERNELS, (R, G, σ, T, s, N, E, B, Nx, Ny, padx, pady, G * R > lim.nstat, rhook)) do
     # padded layouts (n1, pad): logical index L at L + pad ⌊L / n1⌋
     PX = Int32.(padx); PY = Int32.(pady)
     rs = local_radices(R)
@@ -176,6 +183,11 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     twiddle = m > 1
     @assert 1 <= W <= lim.wmax && nel <= (dyn ? lim.nmax : lim.nstat)
     @assert (Nx == 0 || s == 1) && (Ny == 0 || (m == 1 && (batchlanes || !transposed)))
+    rpre = rhook > 0; rpost = rhook < 0
+    @assert rhook == 0 || (E == 1 && Nx == 0 && Ny == 0 && padx == (1, 0) && pady == (1, 0) && !crossing)
+    @assert !rpre || s == 1
+    @assert !rpost || (m == 1 && (s == 1 || iseven(G)))
+    bufout = transposed || rpost         # the last stage writes to workgroup memory
     ies = Lp
     ebits = cld(8 * sizeof(Int) - leading_zeros(N - 1), TWLEV)
     offw = local_twcount(R, rs)
@@ -185,6 +197,28 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       :(t = $t; v = ccmul(v, $(foldl((a, b) -> :(ccmul($a, $b)), f))))
     end
     lb(i) = :(buf[$i + one(Int32)])
+    # c2r: element ii of the input Z of line `line`, from the half spectrum X (N + 1 per line)
+    rload(line, ii) = quote
+      rxl = $line * $(I(N + 1)); rii = $ii
+      rxa = @inbounds x[rxl + rii + one(Int32)]; rxb = @inbounds x[rxl + $(I(N)) - rii + one(Int32)]
+      rii == zero(Int32) ? complex(real(rxa) + real(rxb), real(rxa) - real(rxb)) :
+        (rxa + conj(rxb)) + ccmul(@inbounds(cin[rii + one(Int32)]), rxa - conj(rxb))
+    end
+    # r2c, s > 1: lane q of local lane l (front lanes l < G/2, then their mirrors)
+    rlane(l) = :($l < $(I(G ÷ 2)) ? b0 ÷ Int32(2) + $l :
+                 b0 == zero(Int32) && $l == $(I(G ÷ 2)) ? $(I(s ÷ 2)) : $(I(s + G ÷ 2)) - b0 ÷ Int32(2) - $l)
+    # r2c: X_K and X_(N-K) (line offset ryl) from zk = Z_K and zm = Z_(N-K)
+    rpair(K, zk, zm) = quote
+      rK = $K; rzk = $zk; rzm = conj($zm)
+      rh = (rzk + rzm) * $(T(0.5)); rd = ccmul(@inbounds(cout[rK + one(Int32)]), rzk - rzm)
+      @inbounds y[ryl + rK + one(Int32)] = rh + rd
+      @inbounds y[ryl + $(I(N)) - rK + one(Int32)] = conj(rh - rd)
+    end
+    rzero(zk) = quote
+      rz0 = $zk
+      @inbounds y[ryl + one(Int32)] = complex(real(rz0) + imag(rz0), zero($T))
+      @inbounds y[ryl + $(I(N + 1))] = complex(real(rz0) - imag(rz0), zero($T))
+    end
     # lane-major output: y[ybase + l + sp k], twiddle exponent k p s with p = b0 ÷ sp
     lanemajor_store(l, k) = Ny == 0 && crossing ? quote
       bl = b0 + $l; pl = bl ÷ $(I(sp)); ql = bl - pl * $(I(sp))
@@ -208,7 +242,8 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
           idx = tid + $(I(W * i))
           if idx < $(I(nel))
             j = idx % $(I(R)); l = idx ÷ $(I(R))
-            $(Nx == 0 ? :(@inbounds $(lb(:(l + $(I(G)) * j))) = x[padmap(xbase + idx, $(PX[1]), $(PX[2])) + one(Int32)]) :
+            $(rpre ? :($(lb(:(l + $(I(G)) * j))) = $(rload(:(b0 + l), :j))) :
+              Nx == 0 ? :(@inbounds $(lb(:(l + $(I(G)) * j))) = x[padmap(xbase + idx, $(PX[1]), $(PX[2])) + one(Int32)]) :
               :(@inbounds $(lb(:(l + $(I(G)) * j))) = j < $(I(Nx)) ? ccmul(x[padmap((b0 + l) * $(I(Nx)) + j, $(PX[1]), $(PX[2])) + one(Int32)], cin[j + one(Int32)]) : zero(VT)))
           end
         end)
@@ -233,6 +268,8 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         for j in 1:r
           # first local stage: st = G, so local index q + G (p + j mm) is lane q, element p + j mm
           src = !fload ? lb(:($qc + $(I(st)) * ($pc + $(I((j - 1) * mm))))) :
+                rpre ? rload(:ob, :(b0 + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))))) :
+                rpost && s > 1 ? :(x[obase + $(rlane(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))) + one(Int32)]) :
                 Nx == 0 ? :(x[padmap(xbase + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
                 quote   # s = 1: lane b0 + q = e + E p, element p + m jR along the dimension
                   bl = b0 + $qc
@@ -252,7 +289,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         stores = Any[]
         for k in 0:r-1
           v = rename(X[k+1], c)
-          if last && !transposed
+          if last && !bufout
             # mm = 1: local index q + k st = l + G kel
             push!(stores, quote
               v = $v
@@ -266,11 +303,49 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         end
         push!(body, guard(c, Expr(:block, stores...)))
       end
-      last && !transposed || push!(body, :(@synchronize))
+      last && !bufout || push!(body, :(@synchronize))
       off += (r - 1) * mm
       L = mm; st *= r
     end
-    if transposed
+    if rpost
+      # element k of local lane l is at l + G k in workgroup memory
+      H = G ÷ 2
+      cnt = s == 1 ? G * (R ÷ 2 + 1) : H * R
+      for i in 0:cld(cnt, W)-1
+        push!(body, quote
+          idx = tid + $(I(W * i))
+          if idx < $(I(cnt))
+            $(s == 1 ? quote
+              # lanes are whole lines: pairs k, R - k of a lane
+              k = idx % $(I(R ÷ 2 + 1)); l = idx ÷ $(I(R ÷ 2 + 1))
+              ryl = (ob + b0 + l) * $(I(N + 1))
+              if k == zero(Int32)
+                $(rzero(lb(:l)))
+              else
+                $(rpair(:k, lb(:(l + $(I(G)) * k)), lb(:(l + $(I(G)) * ($(I(R)) - k)))))
+              end
+            end : quote
+              # front lane l (q = b0/2 + l) element k pairs with lane H + l element R - 1 - k
+              l = idx % $(I(H)); k = idx ÷ $(I(H))
+              ryl = ob * $(I(N + 1))
+              if b0 == zero(Int32) && l == zero(Int32)
+                # q = 0: elements k, R - k; q = s/2: elements k, R - 1 - k
+                if k == zero(Int32)
+                  $(rzero(lb(:(zero(Int32)))))
+                elseif k <= $(I(R ÷ 2))
+                  $(rpair(:($(I(s)) * k), lb(:($(I(G)) * k)), lb(:($(I(G)) * ($(I(R)) - k)))))
+                end
+                if k < $(I(cld(R, 2)))
+                  $(rpair(:($(I(s ÷ 2)) + $(I(s)) * k), lb(:($(I(H)) + $(I(G)) * k)), lb(:($(I(H)) + $(I(G)) * ($(I(R - 1)) - k)))))
+                end
+              else
+                $(rpair(:(b0 ÷ Int32(2) + l + $(I(s)) * k), lb(:(l + $(I(G)) * k)), lb(:($(I(H)) + l + $(I(G)) * ($(I(R - 1)) - k)))))
+              end
+            end)
+          end
+        end)
+      end
+    elseif transposed
       for i in 0:cld(nel, W)-1
         push!(body, quote
           idx = tid + $(I(W * i))
@@ -287,7 +362,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     gpb = batchlanes ? 1 : Lp ÷ G        # workgroups per batch item
     name = Symbol(crossing ? "ka_passx_" : "ka_pass_", R, "_", join(rs, "x"), "_G", G, "_s", s, "_N", N, "_E", E, "_B", B, "_",
                   σ < 0 ? "f" : "b", "_", T, "_x", Nx, "_y", Ny, padx[2] > 0 ? "_px$(padx[1])x$(padx[2])" : "", pady[2] > 0 ? "_py$(pady[1])x$(pady[2])" : "",
-                  dyn ? "_dyn" : "")
+                  dyn ? "_dyn" : "", rpre ? "_c2r" : rpost ? "_r2c" : "")
     idxpre = quote
       ob = $(batchlanes ? :(zero(Int32)) : :(grp ÷ $(I(gpb))))
       b0 = (grp - ob * $(I(gpb))) * $(I(G))
@@ -527,14 +602,18 @@ mutable struct KAPlan{T,N,B} <: AbstractFFTs.Plan{Complex{T}}
   bufs::Dict{Symbol,Any}        # :a, :b array-shaped; :c, :d Bluestein scratch
   backend::B
   gmax::Int
+  rhook::Int                    # real-transform hook in use (see pass_kernel), 0 for complex plans
   pinv::AbstractFFTs.Plan       # set by AbstractFFTs.inv on first use
-  KAPlan{T,N,B}(sz, region, σ, radices, steps, bufs, backend, gmax) where {T,N,B} =
-    new{T,N,B}(sz, region, σ, radices, steps, bufs, backend, gmax)
+  KAPlan{T,N,B}(sz, region, σ, radices, steps, bufs, backend, gmax, rhook = 0) where {T,N,B} =
+    new{T,N,B}(sz, region, σ, radices, steps, bufs, backend, gmax, rhook)
 end
 
 # DFT along the dimensions `region` of an array of size `dims` (column major). The buffers :a
 # and :b may use a padded layout (`pad` elements after each run of dims[1]).
-function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64,
+# `rhook` = ±1 with the table `rtab` (region 1:1, no Bluestein): the half-length line plan of a
+# real transform, see pass_kernel; the r2c hook is dropped (plan.rhook = 0) when the last pass
+# has an odd G.
+function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64, rhook = 0, rtab = nothing,
                 lim = device_limits(backend, T),   # override: hardware limits (rule tuning)
                 pad = default_pad(dims, region, T, device_profile(backend), lim)) where {T,D}
   region = FFTL.normregion(region, D)
@@ -570,6 +649,16 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     end
   end
   specs[end] = merge(specs[end], (dst = :y,))
+  if rhook != 0
+    @assert collect(region) == [1] && specs[1].Nx == 0 && specs[end].Ny == 0
+    i = rhook > 0 ? 1 : length(specs)
+    G = pass_G(specs[i].R, specs[i].s, specs[i].m, 1, specs[i].B, gmax, lim)
+    if rhook > 0 || specs[i].s == 1 || iseven(G)
+      specs[i] = merge(specs[i], rhook > 0 ? (cin = rtab, rh = 1) : (cout = rtab, rh = -1))
+    else
+      rhook = 0
+    end
+  end
   # Pad an intermediate result when its writer or its reader has a load or store stride ≥ 256 KB
   # and the other one ≥ 32 KB (4096² dim 2 [256, 16]: 512 KB / 32 KB and 8 MB / 8 MB); the
   # index map costs a little in every pass that uses it (1024×1024×32 padded throughout: 1.01×
@@ -585,7 +674,8 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   for (i, sp) in enumerate(specs)
     G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, lim)
     k, W, groups, bytes = pass_kernel(sp.R, G, sp.σ, T, sp.s, sp.M, sp.E, sp.B; Nx = sp.Nx, Ny = sp.Ny,
-                                      padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]), lim = lim)
+                                      padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]), lim = lim,
+                                      rhook = get(sp, :rh, 0))
     t = pass_twiddles(T, sp.R, sp.σ, sp.M)
     tw = KA.allocate(backend, Complex{T}, length(t)); copyto!(tw, t)
     if bytes > 0
@@ -607,7 +697,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   bufs = Dict{Symbol,Any}()
   for b in (:a, :b); b in used && (bufs[b] = KA.allocate(backend, Complex{T}, n + pad * (n ÷ dims[1]))); end
   for b in (:c, :d); b in used && (bufs[b] = KA.allocate(backend, Complex{T}, scratch)); end
-  KAPlan{T,D,typeof(backend)}(dims, region, σ, rsall, steps, bufs, backend, gmax)
+  KAPlan{T,D,typeof(backend)}(dims, region, σ, rsall, steps, bufs, backend, gmax, rhook)
 end
 
 # Padding the intermediate arrays: a pass that reads and writes with a large power-of-two
