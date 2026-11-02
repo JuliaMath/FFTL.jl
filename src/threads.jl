@@ -102,19 +102,23 @@ end
 # Separate function: the task closure in the same body slows the serial path above.
 @noinline function spawn_items(f::F, nitems, ntasks) where {F}
   next = Threads.Atomic{Int}(0)
-  # tasks waited for one by one, not with @sync (its Channel{Any} does not compile ahead of time)
-  ts = Vector{Task}(undef, ntasks)
-  for c in 1:ntasks
-    ts[c] = Threads.@spawn begin
-      local it = Threads.atomic_add!(next, 1)
-      while it < nitems
-        f(c, it)
-        it = Threads.atomic_add!(next, 1)
-      end
-    end
+  # tasks waited for one by one, not with @sync (its Channel{Any} does not compile ahead of time);
+  # the calling task works as task 1 instead of waiting idle
+  ts = Vector{Task}(undef, ntasks - 1)
+  for c in 2:ntasks
+    ts[c-1] = Threads.@spawn take_items(f, next, nitems, c)
   end
+  take_items(f, next, nitems, 1)
   foreach(wait, ts)
   nothing
+end
+
+function take_items(f::F, next, nitems, c) where {F}
+  it = Threads.atomic_add!(next, 1)
+  while it < nitems
+    f(c, it)
+    it = Threads.atomic_add!(next, 1)
+  end
 end
 
 function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer::Int) where {T}
