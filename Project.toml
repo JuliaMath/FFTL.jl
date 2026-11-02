@@ -19,7 +19,7 @@ FFTLGPUArraysExt = ["GPUArraysCore", "KernelAbstractions"]
 FFTLKernelAbstractionsExt = "KernelAbstractions"
 
 [compat]
-AbstractFFTs = "1"
+AbstractFFTs = "1.5"
 Aqua = "0.8"
 GPUArraysCore = "0.1, 0.2"
 KernelAbstractions = "0.10"

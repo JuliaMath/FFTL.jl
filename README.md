@@ -23,6 +23,9 @@ mul!(y, p, x)                   # out of place, or mul!(x, p, x) in place
 x3 = p \ y                      # inverse through the plan
 ```
 
+A plan owns its work buffers: one plan must not run on several tasks at the same time (make one
+plan per task; plans of the same size share their twiddle tables, so this is cheap).
+
 Plans are `AbstractFFTs.Plan`s. FFTL does not add methods to `AbstractFFTs.fft`/`plan_fft` for
 standard arrays, so it can be loaded next to FFTW.jl; call it qualified as `FFTL.fft`,
 `FFTL.plan_fft`, … . The first plan for a new length compiles its kernels (a fraction of a second);

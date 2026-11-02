@@ -91,7 +91,7 @@ end
 
 function r2c_inplace!(p::RRFFTPlan{T}, py::Ptr{Complex{T}}) where {T}
   if p.S == 1
-    each_line(length(p.offs_c), p.line.n, p.nthreads) do c, i
+    each_line(length(p.offs_c), p.line.n, line_tasks(p.line, p.nthreads)) do c, i
       local b = p.bufs
       local q = py + p.offs_c[i+1] * sizeof(Complex{T})
       r2c_line!(q, Ptr{T}(q), cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
@@ -110,7 +110,7 @@ function c2r_inplace!(p::RRFFTPlan{T}, px::Ptr{Complex{T}}) where {T}
   cp = p.cplan
   cp === nothing || execute!(cp, px, px)
   if p.S == 1
-    each_line(length(p.offs_c), p.line.n, p.nthreads) do c, i
+    each_line(length(p.offs_c), p.line.n, line_tasks(p.line, p.nthreads)) do c, i
       local b = p.bufs
       local q = px + p.offs_c[i+1] * sizeof(Complex{T})
       c2r_line!(Ptr{T}(q), q, cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)

@@ -44,6 +44,8 @@ struct R2RLine{T,K}
   tw2::Vector{Complex{T}}
 end
 
+own_buffers(K::R2RLine) = (i = K.inner; i isa RealLine ? i.inner isa Bluestein : i isa Bluestein)
+
 # exp(iπ(a j + b)/d) for j = 0…m-1
 function cis_table(::Type{T}, m::Int, a::Int, b::Int, d::Int) where {T}
   t = Vector{Complex{T}}(undef, m)
@@ -341,7 +343,7 @@ r2r_dim!(y::Array{T}, x::Array{T}, d::Int, K::R2RLine{T}, p::R2RPlan{T}) where {
 function r2r_dim!(py::Ptr{T}, px::Ptr{T}, d::Int, K::R2RLine{T}, p) where {T}
   S, outer = dim_extent(p.sz, d)
   n = p.sz[d]
-  each_line(S * outer, n, p.nthreads) do c, l
+  each_line(S * outer, n, line_tasks(K, p.nthreads)) do c, l
     local o, i
     o, i = divrem(l, S)
     local off = (i + S * n * o) * sizeof(T)
@@ -456,7 +458,7 @@ function LinearAlgebra.mul!(w::StridedArray{T,N}, p::R2RPassPlan{T,N}, v::Stride
   n = p.sz[p.d]; sd = p.st[p.d]
   GC.@preserve v w p begin
     pv = pointer(v); pw = pointer(w)
-    each_line(length(p.offs), n, p.nthreads) do c, l
+    each_line(length(p.offs), n, line_tasks(p.line, p.nthreads)) do c, l
       local off = p.offs[l+1] * sizeof(T)
       r2r_line!(StridedLine{T}(pw + off, sd, n), StridedLine{T}(pv + off, sd, n), p.line, p.bufs[c])
     end

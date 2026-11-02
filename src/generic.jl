@@ -166,6 +166,7 @@ mutable struct GPlan{T,N} <: AbstractFFTs.Plan{Complex{T}}
 end
 
 function GPlan{T}(sz::NTuple{N,Int}, region, σ::Int) where {T,N}
+  (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
   reg = sort!(unique(collect(Int, region isa Integer ? (region,) : region)))
   all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
   GPlan{T,N}(sz, reg, σ, [GLine{T}(sz[d], σ) for d in reg])

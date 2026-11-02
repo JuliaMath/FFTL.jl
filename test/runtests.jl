@@ -403,6 +403,30 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "argument checks and fixed bugs" begin
+    # Bluestein lines in threaded real and r2r plans (the kernel's own buffers, one task at a time)
+    x = rand(1031, 40)
+    @test FFTL.plan_rfft(x; threads = 4) * x == FFTL.plan_rfft(x; threads = 1) * x
+    @test FFTL.plan_r2r(x, FFTL.REDFT10, 1; threads = 4) * x == FFTL.plan_r2r(x, FFTL.REDFT10, 1; threads = 1) * x
+    # cache sizes changed after planning: lane blocks never exceed the plan's buffers
+    z = randn(ComplexF64, 2048, 64)
+    try
+      FFTL.set_cpu_caches!(l2 = 512 << 10)
+      p = FFTL.plan_fft(z; threads = 2); y1 = p * z
+      FFTL.set_cpu_caches!(l2 = 8 << 20)
+      @test p * z == y1
+    finally
+      FFTL.set_cpu_caches!()
+    end
+    # duplicate region entries, integer signs, invalid signs and sizes
+    w = randn(ComplexF64, 16)
+    @test FFTL.ifft(w, [1, 1]) ≈ FFTL.ifft(w)
+    @test FFTL.plan_pass(randn(ComplexF64, 16, 4), 1; sign = Int32(-1)) isa FFTL.PassPlan
+    @test_throws ArgumentError FFTL.FFTLPlan{Float64}((16,), 1:1, 2)
+    @test_throws ArgumentError FFTL.rfft(Float64[])
+    @test_throws ArgumentError FFTL.plan_pass(zeros(ComplexF64, 0, 4), 1)
+  end
+
   @testset "plans: in place, out of place, inv" begin
     for n in [1, 7, 64, 1000, 1009]
       x = randn(ComplexF64, n)

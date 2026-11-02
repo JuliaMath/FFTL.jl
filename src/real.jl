@@ -176,6 +176,7 @@ sortregion(region, N) = (reg = Tuple(sort(unique(collect(Int, region)))); all(d 
 function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = sortregion(region, N)
   isempty(reg) && throw(ArgumentError("rfft needs at least one dimension"))
+  all(>=(1), sz) || throw(ArgumentError("array size must be positive"))
   d1 = reg[1]; n = sz[d1]
   line = RealLine{T}(n, -1)
   csz = Base.setindex(sz, nhalf(n), d1)
@@ -189,6 +190,7 @@ end
 function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = sortregion(region, N)
   isempty(reg) && throw(ArgumentError("brfft needs at least one dimension"))
+  (d >= 1 && all(>=(1), sz)) || throw(ArgumentError("array size must be positive"))
   d1 = reg[1]
   nhalf(d) == sz[d1] || throw(DimensionMismatch("half spectrum of length $(sz[d1]) does not fit length $d"))
   line = RealLine{T}(d, 1)
@@ -217,6 +219,12 @@ end
 function Base.show(io::IO, p::BRFFTLPlan{T}) where {T}
   print(io, "FFTL c2r plan for $(join(p.sz, "×")) Complex{$T} → length $(p.d), dims $(p.region)")
 end
+
+# Whether a line kernel uses work buffers of its own (a Bluestein kernel holds them in the kernel,
+# not in the task's buffer set): such lines run on one task.
+own_buffers(k) = k isa Bluestein
+own_buffers(K::RealLine) = K.inner isa Bluestein
+line_tasks(K, nt) = own_buffers(K) ? 1 : nt
 
 # Runs f(c, i) for the lines i = 0…nlines-1 on the plan's tasks.
 function each_line(f::F, nlines, n, nt) where {F}
@@ -252,7 +260,7 @@ function r2c_contiguous!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T}
   if length(p.offs_r) == 1
     return r2c_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
   end
-  each_line(length(p.offs_r), p.line.n, p.nthreads) do c, i
+  each_line(length(p.offs_r), p.line.n, line_tasks(p.line, p.nthreads)) do c, i
     local b = p.bufs
     r2c_line!(py + p.offs_c[i+1] * sizeof(Complex{T}), px + p.offs_r[i+1] * sizeof(T),
               cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
@@ -262,7 +270,7 @@ end
 # strided line: gather into a contiguous buffer, transform, scatter
 function r2c_strided!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T}
   n = p.line.n; h = nhalf(n); S = p.S
-  each_line(length(p.offs_r), n, p.nthreads) do c, i
+  each_line(length(p.offs_r), n, line_tasks(p.line, p.nthreads)) do c, i
     local b = p.bufs
     local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))
     for j in 0:n-1
@@ -294,7 +302,7 @@ function c2r_contiguous!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T}
   if length(p.offs_r) == 1
     return c2r_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
   end
-  each_line(length(p.offs_r), p.line.n, p.nthreads) do c, i
+  each_line(length(p.offs_r), p.line.n, line_tasks(p.line, p.nthreads)) do c, i
     local b = p.bufs
     c2r_line!(py + p.offs_r[i+1] * sizeof(T), px + p.offs_c[i+1] * sizeof(Complex{T}),
               cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
@@ -303,7 +311,7 @@ end
 
 function c2r_strided!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T}
   n = p.line.n; h = nhalf(n); S = p.S
-  each_line(length(p.offs_r), n, p.nthreads) do c, i
+  each_line(length(p.offs_r), n, line_tasks(p.line, p.nthreads)) do c, i
     local b = p.bufs
     local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))
     for k in 0:h-1

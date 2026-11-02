@@ -76,3 +76,21 @@ end
   @test relerr(y, FFTL.r2r(x, ks, 1:3)) < 10tol(T)
   @test relerr(inv(p) * y, x) < 10tol(T)
 end
+
+@testset "KernelAbstractions plans: regions, singleton and padded dimensions" begin
+  be = KernelAbstractions.CPU()
+  x = rand(ComplexF32, 16, 1, 6)
+  @test relerr(FFTL.plan_ka(be, Float32, size(x), -1) * x, dftn(x, 1:3)) < tol(Float32)    # length-1 dimension
+  @test relerr(FFTL.plan_ka(be, Float32, size(x), -1; region = 3) * x, dftn(x, 3:3)) < tol(Float32)
+  @test FFTL.plan_ka(be, Float32, size(x), -1; region = Int[]) * x == x
+  p = FFTL.plan_ka(be, Float32, size(x), 1; region = [3, 3])
+  @test FFTL.AbstractFFTs.fftdims(p) == (3,)
+  # padded layouts: two plans differing only in dims[1] keep their own kernels
+  a = rand(ComplexF32, 8, 4, 16); b = rand(ComplexF32, 4, 8, 16)
+  pa = FFTL.plan_ka(be, Float32, size(a), -1; pad = 4)
+  ya = pa * a
+  FFTL.plan_ka(be, Float32, size(b), -1; pad = 4) * b
+  @test pa * a == ya
+  @test relerr(ya, dftn(a, 1:3)) < tol(Float32)
+end
+

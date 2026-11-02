@@ -150,8 +150,8 @@ fftl_plan fftl_plan_r2r(int32_t rank, const int64_t *dims, int32_t transform_ran
  * fftl_plan_dft_r2c. The buffers hold the
  * arrays described at the plan's creation (complex or real values in the plan's precision).
  *
- * Returns 0, or -1 if the handle is invalid (then fftl_last_error has the reason; the buffers
- * are untouched).
+ * Returns 0, or -1 if the handle is invalid (the buffers are untouched) or the execution failed
+ * (out of memory; out is then undefined); fftl_last_error has the reason.
  */
 int32_t fftl_plan_execute(fftl_plan p, void *out, const void *in);
 

@@ -43,6 +43,7 @@ function plan_pass(v::StridedArray{Complex{T},N}, d::Integer; sign::Integer = -1
                    nonzero = nothing, needed = nothing) where {T<:FFTLFloat,N}
   1 <= d <= N || throw(ArgumentError("dimension $d is not within 1:$N"))
   sign in (-1, 1) || throw(ArgumentError("sign must be -1 or 1"))
+  all(>=(1), size(v)) || throw(ArgumentError("array size must be positive"))
   sz = size(v); st = strides(v)
   (sz[1] == 1 || st[1] == 1) || throw(ArgumentError("dimension 1 must be contiguous (stride 1)"))
   n = sz[d]
@@ -62,8 +63,9 @@ function plan_pass(v::StridedArray{Complex{T},N}, d::Integer; sign::Integer = -1
   offs = [sum(((I[j] - 1) * st[outer[j]] for j in eachindex(outer)); init = 0)
           for I in CartesianIndices(ntuple(j -> sz[outer[j]], length(outer)))] |> vec
   # a single long line on several threads: four-step
-  k = d == 1 && length(offs) == 1 && use_fourstep(n, nt) ? FourStep{T}(n, sign, nt) :
-      d == 1 ? kernel(T, n, sign) : kernel(T, n, sign, Sd)
+  σ = Int(sign)
+  k = d == 1 && length(offs) == 1 && use_fourstep(n, nt) ? FourStep{T}(n, σ, nt) :
+      d == 1 ? kernel(T, n, σ) : kernel(T, n, σ, Sd)
   B = d == 1 ? 1 : lane_block(lanes, n, k isa Chain ? nt : 1)
   nw = d == 1 ? n : B * n
   pr = k isa Chain ? pruning(k, nonzero, needed; lanes = d > 1) : NOPRUNE

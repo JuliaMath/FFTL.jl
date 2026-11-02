@@ -94,7 +94,8 @@ function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer
   if k isa FourStep
     run_fourstep!(py, px, k, nt)
   elseif (k isa Chain || k isa RChain) && use_lanes(S, n, outer, nt)
-    B = lane_block(S, n, nt)
+    # never wider than the buffers made at plan time (the cache sizes may have changed since)
+    B = min(lane_block(S, n, nt), fld(length(p.tbuf[1]), n))
     nb = cld(S, B)
     ntasks = threaded(S, n, outer, nt) ? nt : 1
     parallel_items(nb * outer, ntasks) do c, it
@@ -208,7 +209,7 @@ function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T
     pa = Ptr{Complex{T}}(cptr(P.buf))
     ptw = Ptr{Complex{T}}(cptr(P.tw))
     # 1. blocks of j1: DFTs of length n2 into a cache buffer, twiddles, transposed into A
-    B = lane_block(n1, n2, nt)
+    B = min(lane_block(n1, n2, nt), fld(length(P.tbuf[1]), n2))
     nb = cld(n1, B)
     parallel_items(nb, nt) do c, b
       local pw3 = cptr(P.tbuf[3c])
@@ -223,7 +224,7 @@ function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T
       end
     end
     # 2. DFTs of length n1 over lane blocks of k2: A[k2 + n2 j1] → y[k2 + n2 k1]
-    B2 = lane_block(n2, n1, nt)
+    B2 = min(lane_block(n2, n1, nt), fld(length(P.tbuf[1]), n1))
     nb2 = cld(n2, B2)
     pa2 = cptr(P.buf)
     parallel_items(nb2, nt) do c, b

@@ -46,11 +46,15 @@ const RR_F64 = Union{Nothing,RR2RPlan{Float64}}[]
 const RR_F32 = Union{Nothing,RR2RPlan{Float32}}[]
 const REGISTRY_LOCK = ReentrantLock()
 
-const LAST_ERROR = Ref("")
+# The message of the last failed call, per calling thread (fftl.h: "of this thread").
+const LAST_ERRORS = Dict{Int,String}()
+const ERROR_LOCK = ReentrantLock()
+set_error!(m::String) = (@lock ERROR_LOCK LAST_ERRORS[Threads.threadid()] = m; nothing)
+last_error() = @lock ERROR_LOCK get(LAST_ERRORS, Threads.threadid(), "")
+
 function set_last_error(e::Union{ArgumentError,DimensionMismatch,ErrorException})
   m = e.msg
-  m isa String ? (LAST_ERROR[] = m) : (LAST_ERROR[] = "operation failed")
-  nothing
+  m isa String ? set_error!(m) : set_error!("operation failed")
 end
 
 # Writes the bytes of m as a zero-terminated string into buf (at most len bytes including the
@@ -166,13 +170,23 @@ function plan_r2r(prec::Int, rank::Int, dims::Ptr{Int64}, trank::Int, region::Pt
               register!(RR_F32, RR2RPlan{Float32}(sz, ks, reg; threads = threads), R2R, prec)
 end
 
-function plan_failed(e, what::String)::Int64
-  if e isa ArgumentError || e isa DimensionMismatch || e isa ErrorException
-    set_last_error(e)
-  else
-    LAST_ERROR[] = what
+# The error message of a failed plan creation from the caught exception `e`, -1. Expanded in the
+# catch block itself: a call with the exception as an argument (type Any) cannot be compiled
+# ahead of time; each branch below has a concrete type.
+macro plan_failed(e, what)
+  e = esc(e)
+  quote
+    if $e isa ArgumentError
+      set_last_error($e)
+    elseif $e isa DimensionMismatch
+      set_last_error($e)
+    elseif $e isa ErrorException
+      set_last_error($e)
+    else
+      set_error!($what)
+    end
+    Int64(-1)
   end
-  Int64(-1)
 end
 
 Base.@ccallable function fftl_plan_dft(rank::Cint, dims::Ptr{Clonglong}, trank::Cint,
@@ -182,7 +196,7 @@ Base.@ccallable function fftl_plan_dft(rank::Cint, dims::Ptr{Clonglong}, trank::
     plan_dft(Int(precision), Int(rank), Ptr{Int64}(dims), Int(trank), Ptr{Int32}(region),
              Int(sign), Int(threads))
   catch e
-    plan_failed(e, "plan creation failed")
+    @plan_failed(e, "plan creation failed")
   end
 end
 
@@ -193,7 +207,7 @@ Base.@ccallable function fftl_plan_dft_r2c(rank::Cint, dims::Ptr{Clonglong}, tra
     plan_real(R2C, Int(precision), Int(rank), Ptr{Int64}(dims), Int(trank), Ptr{Int32}(region),
               Int(threads))
   catch e
-    plan_failed(e, "plan creation failed")
+    @plan_failed(e, "plan creation failed")
   end
 end
 
@@ -204,7 +218,7 @@ Base.@ccallable function fftl_plan_dft_c2r(rank::Cint, dims::Ptr{Clonglong}, tra
     plan_real(C2R, Int(precision), Int(rank), Ptr{Int64}(dims), Int(trank), Ptr{Int32}(region),
               Int(threads))
   catch e
-    plan_failed(e, "plan creation failed")
+    @plan_failed(e, "plan creation failed")
   end
 end
 
@@ -215,13 +229,13 @@ Base.@ccallable function fftl_plan_r2r(rank::Cint, dims::Ptr{Clonglong}, trank::
     plan_r2r(Int(precision), Int(rank), Ptr{Int64}(dims), Int(trank), Ptr{Int32}(region),
              Ptr{Int32}(kinds), Int(threads))
   catch e
-    plan_failed(e, "plan creation failed")
+    @plan_failed(e, "plan creation failed")
   end
 end
 
 # --- plan execution and destruction ------------------------------------------------
 
-invalid_handle() = (LAST_ERROR[] = "invalid plan handle"; Cint(-1))
+invalid_handle() = (set_error!("invalid plan handle"); Cint(-1))
 
 function exec_dft(reg::Vector{Union{Nothing,RPlan{T}}}, idx::Int, out::Ptr{Cvoid}, in_::Ptr{Cvoid})::Cint where {T}
   e = lookup(reg, idx)
@@ -255,7 +269,16 @@ function split_handle(h::Int64)
 end
 
 Base.@ccallable function fftl_plan_execute(h::Clonglong, out::Ptr{Cvoid}, in_::Ptr{Cvoid})::Cint
-  typ, prec, idx = split_handle(Int64(h))
+  try
+    execute_handle(Int64(h), out, in_)
+  catch
+    set_error!("execution failed")
+    Cint(-1)
+  end
+end
+
+function execute_handle(h::Int64, out::Ptr{Cvoid}, in_::Ptr{Cvoid})::Cint
+  typ, prec, idx = split_handle(h)
   if typ == DFT
     prec == 1 ? exec_dft(REGS_F64, idx, out, in_) : exec_dft(REGS_F32, idx, out, in_)
   elseif typ == R2C || typ == C2R
@@ -284,7 +307,7 @@ end
 # --- errors and version -------------------------------------------------------------
 
 Base.@ccallable function fftl_last_error(buf::Ptr{UInt8}, len::Csize_t)::Csize_t
-  copy_cstr(codeunits(LAST_ERROR[]), buf, Int(len))
+  copy_cstr(codeunits(last_error()), buf, Int(len))
 end
 
 Base.@ccallable function fftl_version(buf::Ptr{UInt8}, len::Csize_t)::Csize_t

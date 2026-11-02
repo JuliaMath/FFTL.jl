@@ -286,7 +286,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     end
     gpb = batchlanes ? 1 : Lp ÷ G        # workgroups per batch item
     name = Symbol(crossing ? "ka_passx_" : "ka_pass_", R, "_", join(rs, "x"), "_G", G, "_s", s, "_N", N, "_E", E, "_B", B, "_",
-                  σ < 0 ? "f" : "b", "_", T, "_x", Nx, "_y", Ny, padx[2] > 0 ? "_px$(padx[2])" : "", pady[2] > 0 ? "_py$(pady[2])" : "",
+                  σ < 0 ? "f" : "b", "_", T, "_x", Nx, "_y", Ny, padx[2] > 0 ? "_px$(padx[1])x$(padx[2])" : "", pady[2] > 0 ? "_py$(pady[1])x$(pady[2])" : "",
                   dyn ? "_dyn" : "")
     idxpre = quote
       ob = $(batchlanes ? :(zero(Int32)) : :(grp ÷ $(I(gpb))))
@@ -537,6 +537,11 @@ end
 function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64,
                 lim = device_limits(backend, T),   # override: hardware limits (rule tuning)
                 pad = default_pad(dims, region, T, device_profile(backend), lim)) where {T,D}
+  region = sort!(unique(collect(Int, region isa Integer ? (region,) : region)))
+  all(d -> 1 <= d <= D, region) || throw(ArgumentError("region is not within 1:$D"))
+  all(>=(1), dims) || throw(ArgumentError("array size must be positive"))
+  filter!(d -> dims[d] > 1, region)          # a DFT of length 1 is the identity
+  isempty(region) && return KAPlan{T,D,typeof(backend)}(dims, region, σ, Vector{Int}[], Any[], Dict{Symbol,Any}(), backend, gmax)
   prof = device_profile(backend)
   specs = Any[]; rsall = Vector{Int}[]
   dummy = KA.allocate(backend, Complex{T}, 1)
@@ -603,7 +608,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   bufs = Dict{Symbol,Any}()
   for b in (:a, :b); b in used && (bufs[b] = KA.allocate(backend, Complex{T}, n + pad * (n ÷ dims[1]))); end
   for b in (:c, :d); b in used && (bufs[b] = KA.allocate(backend, Complex{T}, scratch)); end
-  KAPlan{T,D,typeof(backend)}(dims, collect(Int, region), σ, rsall, steps, bufs, backend, gmax)
+  KAPlan{T,D,typeof(backend)}(dims, region, σ, rsall, steps, bufs, backend, gmax)
 end
 
 # Padding the intermediate arrays: a pass that reads and writes with a large power-of-two
@@ -614,6 +619,7 @@ default_pad(dims, region, T, prof = :apple, lim = LIM0) = prof === :apple && len
 
 # y = DFT(x) without synchronization: kernels are queued in order on the backend's stream
 function launch!(y, x, P::KAPlan)
+  isempty(P.steps) && return copyto!(y, x)
   get(b) = b === :x ? x : b === :y ? y : P.bufs[b]
   for (kern, nd, tw, cin, cout, src, dst) in P.steps
     if kern isa Tuple    # CUDA dynamic shared memory pass: raw launch with shmem

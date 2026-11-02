@@ -29,6 +29,7 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Thre
   reg = Tuple(sort(unique(collect(Int, region))))
   all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
   all(>=(1), sz) || throw(ArgumentError("array size must be positive, got $sz"))
+  (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
   nt = max(1, Int(threads))
   # dimensions with the same length and stride class share the kernel; a single long contiguous
   # transform on several threads uses the four-step algorithm
@@ -126,9 +127,11 @@ plan_fft(x::AbstractArray, region = 1:ndims(x); kw...) =
   generic_float(elreal(x)) ? GPlan{elreal(x)}(size(x), region, -1) : FFTLPlan{plan_type(x)}(size(x), region, -1; kw...)
 plan_bfft(x::AbstractArray, region = 1:ndims(x); kw...) =
   generic_float(elreal(x)) ? GPlan{elreal(x)}(size(x), region, 1) : FFTLPlan{plan_type(x)}(size(x), region, 1; kw...)
-plan_ifft(x::AbstractArray, region = 1:ndims(x); kw...) =
-  AbstractFFTs.ScaledPlan(plan_bfft(x, region; kw...),
-                          AbstractFFTs.normalization(generic_float(elreal(x)) ? elreal(x) : plan_type(x), size(x), region))
+# the normalisation over the plan's dimensions (the region without duplicates)
+function plan_ifft(x::AbstractArray, region = 1:ndims(x); kw...)
+  p = plan_bfft(x, region; kw...)
+  AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(generic_float(elreal(x)) ? elreal(x) : plan_type(x), size(x), AbstractFFTs.fftdims(p)))
+end
 
 elreal(x::AbstractArray) = real(eltype(x))
 
