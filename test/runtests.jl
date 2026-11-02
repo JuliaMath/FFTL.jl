@@ -409,7 +409,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "real transforms of one long line on several threads" begin
-    for T in (Float64, Float32), n in (2^14, 3 * 2^13)
+    for T in (Float64, Float32), n in (2^17, 3 * 2^16)
       x = randn(T, n)
       p = FFTL.plan_rfft(x; threads = 3)
       @test p.four !== nothing
