@@ -110,31 +110,37 @@ end
 end
 
 # Run-time plans (the path compiled ahead of time for libfftl): construction and execution are
-# inferable, execution is allocation-free after a warm-up call.
+# inferable, execution is allocation-free after a warm-up call. The pointer calls go through
+# functions: GC.@preserve inside @allocated at testset scope allocates by itself.
+exe!(p, y, x) = GC.@preserve x y FFTL.execute!(p, pointer(y), pointer(x))
+exe_r2c!(p, y, x) = GC.@preserve x y FFTL.execute_r2c!(p, pointer(y), pointer(x))
+exe_c2r!(p, y, x) = GC.@preserve x y FFTL.execute_c2r!(p, pointer(y), pointer(x))
+exe_r2r!(p, y, x) = GC.@preserve x y FFTL.execute_r2r!(p, pointer(y), pointer(x))
+
 @testset "inference and allocations, run-time plans, $T" for T in (Float64, Float32)
   let sz = [16, 12], x = randn(Complex{T}, 16, 12), y = similar(x)
     p = @inferred FFTL.RPlan{T}(sz, [1, 2], -1; threads = 1)
-    GC.@preserve x y FFTL.execute!(p, pointer(y), pointer(x))
-    @test (GC.@preserve x y @inferred FFTL.execute!(p, pointer(y), pointer(x))) === nothing
-    @test (@allocated GC.@preserve x y FFTL.execute!(p, pointer(y), pointer(x))) == 0
+    exe!(p, y, x)
+    @test (@inferred exe!(p, y, x)) === nothing
+    @test (@allocated exe!(p, y, x)) == 0
   end
   let p = (@inferred FFTL.RPlan{T}([37], [1], 1; threads = 1)), x = randn(Complex{T}, 37), y = similar(x)   # Bluestein
-    GC.@preserve x y FFTL.execute!(p, pointer(y), pointer(x))
-    @test (@allocated GC.@preserve x y FFTL.execute!(p, pointer(y), pointer(x))) == 0
+    exe!(p, y, x)
+    @test (@allocated exe!(p, y, x)) == 0
   end
   let x = randn(T, 16, 6), X = Matrix{Complex{T}}(undef, 9, 6), z = similar(x)
     pf = @inferred FFTL.RRFFTPlan{T}([16, 6], [1, 2], -1; threads = 1)
     pb = @inferred FFTL.RRFFTPlan{T}([16, 6], [1, 2], 1; threads = 1)
-    GC.@preserve x X z (FFTL.execute_r2c!(pf, pointer(X), pointer(x)); FFTL.execute_c2r!(pb, pointer(z), pointer(X)))
-    @test (GC.@preserve x X @inferred FFTL.execute_r2c!(pf, pointer(X), pointer(x))) === nothing
-    @test (@allocated GC.@preserve x X FFTL.execute_r2c!(pf, pointer(X), pointer(x))) == 0
-    @test (@allocated GC.@preserve X z FFTL.execute_c2r!(pb, pointer(z), pointer(X))) == 0
+    exe_r2c!(pf, X, x); exe_c2r!(pb, z, X)
+    @test (@inferred exe_r2c!(pf, X, x)) === nothing
+    @test (@allocated exe_r2c!(pf, X, x)) == 0
+    @test (@allocated exe_c2r!(pb, z, X)) == 0
   end
   let x = randn(T, 9, 8), y = similar(x)
     p = @inferred FFTL.RR2RPlan{T}([9, 8], [FFTL.REDFT10, FFTL.HC2R], [1, 2]; threads = 1)
-    GC.@preserve x y FFTL.execute_r2r!(p, pointer(y), pointer(x))
-    @test (GC.@preserve x y @inferred FFTL.execute_r2r!(p, pointer(y), pointer(x))) === nothing
-    @test (@allocated GC.@preserve x y FFTL.execute_r2r!(p, pointer(y), pointer(x))) == 0
+    exe_r2r!(p, y, x)
+    @test (@inferred exe_r2r!(p, y, x)) === nothing
+    @test (@allocated exe_r2r!(p, y, x)) == 0
   end
   # c2r and the inverse of a JIT plan
   let x = randn(T, 16), X = FFTL.plan_rfft(x) * x, z = similar(x)
