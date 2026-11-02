@@ -54,20 +54,8 @@ function r2c_line!(py::Ptr{Complex{T}}, px::Ptr{T}, b1::Ptr{T}, b2::Ptr{T}, b3::
   if iseven(n)
     M = n ÷ 2
     run!(Ptr{T}(py), px, b1, b2, K.inner, 1)
-    @inbounds begin
-      z0 = unsafe_load(py, 1)
-      unsafe_store!(py, Complex(real(z0) + imag(z0), zero(T)), 1)
-      unsafe_store!(py, Complex(real(z0) - imag(z0), zero(T)), M + 1)
-      V = single_vec(T); CB = sizeof(Complex{T})
-      half = V((T(0.5), T(0.5)))
-      GC.@preserve K for k in 1:M÷2
-        zk = vload(V, Ptr{T}(py + k * CB)); czm = cconj(vload(V, Ptr{T}(py + (M - k) * CB)))
-        t = ccmul(vload(V, Ptr{T}(pointer(K.w) + k * CB)), zk - czm)
-        h = (zk + czm) * half
-        vstore(h + t, Ptr{T}(py + k * CB))
-        vstore(cconj(h - t), Ptr{T}(py + (M - k) * CB))
-      end
-    end
+    r2c_ends!(py, M)
+    r2c_pairs!(py, K, M, 1, M ÷ 2)
   else
     cb1 = Ptr{Complex{T}}(b1)
     for j in 1:n
@@ -86,17 +74,8 @@ function c2r_line!(py::Ptr{T}, px::Ptr{Complex{T}}, b1::Ptr{T}, b2::Ptr{T}, b3::
   cb1 = Ptr{Complex{T}}(b1)
   if iseven(n)
     M = n ÷ 2
-    let x0 = real(unsafe_load(px, 1)), xM = real(unsafe_load(px, M + 1))
-      unsafe_store!(cb1, Complex(x0 + xM, x0 - xM), 1)          # k = 0: real parts only
-    end
-    V = single_vec(T); CB = sizeof(Complex{T})
-    GC.@preserve K for k in 1:M÷2
-      xk = vload(V, Ptr{T}(px + k * CB)); xm = cconj(vload(V, Ptr{T}(px + (M - k) * CB)))
-      s = xk + xm
-      t = ccmul(vload(V, Ptr{T}(pointer(K.w) + k * CB)), xk - xm)
-      vstore(s + t, Ptr{T}(cb1 + k * CB))
-      vstore(cconj(s - t), Ptr{T}(cb1 + (M - k) * CB))
-    end
+    c2r_ends!(cb1, px, M)
+    c2r_pairs!(cb1, px, K, M, 1, M ÷ 2)
     run!(py, b1, b2, b3, K.inner, 1)
   else
     h = nhalf(n)
@@ -114,6 +93,76 @@ function c2r_line!(py::Ptr{T}, px::Ptr{Complex{T}}, b1::Ptr{T}, b2::Ptr{T}, b3::
   end
   nothing
 end
+
+# Even lengths: X_0 and X_M from Z_0 (r2c), Z_0 from the real parts of X_0, X_M (c2r), and the
+# pairs k, M-k for k = k1…k2 (1 ≤ k ≤ M÷2); pairs are independent, so ranges of them can run on
+# different tasks.
+function r2c_ends!(py::Ptr{Complex{T}}, M::Int) where {T}
+  z0 = unsafe_load(py, 1)
+  unsafe_store!(py, Complex(real(z0) + imag(z0), zero(T)), 1)
+  unsafe_store!(py, Complex(real(z0) - imag(z0), zero(T)), M + 1)
+  nothing
+end
+
+function r2c_pairs!(py::Ptr{Complex{T}}, K::RealLine{T}, M::Int, k1::Int, k2::Int) where {T}
+  V = single_vec(T); CB = sizeof(Complex{T})
+  half = V((T(0.5), T(0.5)))
+  GC.@preserve K @inbounds for k in k1:k2
+    zk = vload(V, Ptr{T}(py + k * CB)); czm = cconj(vload(V, Ptr{T}(py + (M - k) * CB)))
+    t = ccmul(vload(V, Ptr{T}(pointer(K.w) + k * CB)), zk - czm)
+    h = (zk + czm) * half
+    vstore(h + t, Ptr{T}(py + k * CB))
+    vstore(cconj(h - t), Ptr{T}(py + (M - k) * CB))
+  end
+  nothing
+end
+
+function c2r_ends!(cb1::Ptr{Complex{T}}, px::Ptr{Complex{T}}, M::Int) where {T}
+  x0 = real(unsafe_load(px, 1)); xM = real(unsafe_load(px, M + 1))
+  unsafe_store!(cb1, Complex(x0 + xM, x0 - xM), 1)              # k = 0: real parts only
+  nothing
+end
+
+function c2r_pairs!(cb1::Ptr{Complex{T}}, px::Ptr{Complex{T}}, K::RealLine{T}, M::Int, k1::Int, k2::Int) where {T}
+  V = single_vec(T); CB = sizeof(Complex{T})
+  GC.@preserve K @inbounds for k in k1:k2
+    xk = vload(V, Ptr{T}(px + k * CB)); xm = cconj(vload(V, Ptr{T}(px + (M - k) * CB)))
+    s = xk + xm
+    t = ccmul(vload(V, Ptr{T}(pointer(K.w) + k * CB)), xk - xm)
+    vstore(s + t, Ptr{T}(cb1 + k * CB))
+    vstore(cconj(s - t), Ptr{T}(cb1 + (M - k) * CB))
+  end
+  nothing
+end
+
+# One long even line on several threads: the complex DFT of length n/2 by the four-step
+# algorithm, the pairs in chunks on the tasks.
+function r2c_line_fourstep!(py::Ptr{Complex{T}}, px::Ptr{T}, F::FourStep{T}, K::RealLine{T}, nt::Int) where {T}
+  M = K.n ÷ 2
+  run_fourstep!(Ptr{T}(py), px, F, nt)
+  r2c_ends!(py, M)
+  np = M ÷ 2; nc = min(np, BLOCKS_PER_THREAD * nt)
+  parallel_items(nc, nt) do c, g
+    local r = chunk_range(g + 1, nc, np)
+    isempty(r) || r2c_pairs!(py, K, M, first(r) + 1, last(r) + 1)
+  end
+  nothing
+end
+
+function c2r_line_fourstep!(py::Ptr{T}, px::Ptr{Complex{T}}, cb1::Ptr{Complex{T}}, F::FourStep{T}, K::RealLine{T}, nt::Int) where {T}
+  M = K.n ÷ 2
+  c2r_ends!(cb1, px, M)
+  np = M ÷ 2; nc = min(np, BLOCKS_PER_THREAD * nt)
+  parallel_items(nc, nt) do c, g
+    local r = chunk_range(g + 1, nc, np)
+    isempty(r) || c2r_pairs!(cb1, px, K, M, first(r) + 1, last(r) + 1)
+  end
+  run_fourstep!(py, Ptr{T}(cb1), F, nt)
+  nothing
+end
+
+# the four-step plan of a single long line, or nothing (also for the run-time plans)
+line_fourstep(p) = nothing
 
 # Lines along dimension d of an array of size `sz` (real side), as (lane stride S, line offsets
 # in elements of the real side and of the complex side).
@@ -133,10 +182,11 @@ end
 Plan for the r2c DFT (forward) of real arrays of size `sz` along `region`: real along the first
 dimension of the region (output length n ÷ 2 + 1 there), complex along the others.
 """
-mutable struct RFFTLPlan{T<:FFTLFloat,N,K,C,D} <: AbstractFFTs.Plan{T}
+mutable struct RFFTLPlan{T<:FFTLFloat,N,K,C,D,F} <: AbstractFFTs.Plan{T}
   sz::NTuple{N,Int}
   region::NTuple{D,Int}
   line::K
+  four::F                           # one long even line on several threads: four-step, or nothing
   cplan::C                          # complex passes on the half spectrum, or nothing
   S::Int
   offs_r::Vector{Int}
@@ -144,8 +194,8 @@ mutable struct RFFTLPlan{T<:FFTLFloat,N,K,C,D} <: AbstractFFTs.Plan{T}
   nthreads::Int
   bufs::Vector{Vector{Complex{T}}}  # three per thread, plus line buffers for strided lines
   pinv::AbstractFFTs.Plan
-  RFFTLPlan{T,N,K,C,D}(sz, region, line, cplan, S, offs_r, offs_c, nt, bufs) where {T,N,K,C,D} =
-    new{T,N,K,C,D}(sz, region, line, cplan, S, offs_r, offs_c, nt, bufs)
+  RFFTLPlan{T,N,K,C,D,F}(sz, region, line, four, cplan, S, offs_r, offs_c, nt, bufs) where {T,N,K,C,D,F} =
+    new{T,N,K,C,D,F}(sz, region, line, four, cplan, S, offs_r, offs_c, nt, bufs)
 end
 
 """
@@ -154,11 +204,12 @@ end
 Plan for the unnormalised c2r DFT (backward) from half spectra of size `sz` to real arrays with
 length `d` along the first dimension of `region`.
 """
-mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C,D} <: AbstractFFTs.Plan{Complex{T}}
+mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C,D,F} <: AbstractFFTs.Plan{Complex{T}}
   sz::NTuple{N,Int}
   d::Int
   region::NTuple{D,Int}
   line::K
+  four::F
   cplan::C
   S::Int
   offs_r::Vector{Int}
@@ -167,8 +218,8 @@ mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C,D} <: AbstractFFTs.Plan{Complex{T}}
   bufs::Vector{Vector{Complex{T}}}
   copy::Vector{Complex{T}}          # the input, transformed along the complex dimensions
   pinv::AbstractFFTs.Plan
-  BRFFTLPlan{T,N,K,C,D}(sz, d, region, line, cplan, S, offs_r, offs_c, nt, bufs, copy) where {T,N,K,C,D} =
-    new{T,N,K,C,D}(sz, d, region, line, cplan, S, offs_r, offs_c, nt, bufs, copy)
+  BRFFTLPlan{T,N,K,C,D,F}(sz, d, region, line, four, cplan, S, offs_r, offs_c, nt, bufs, copy) where {T,N,K,C,D,F} =
+    new{T,N,K,C,D,F}(sz, d, region, line, four, cplan, S, offs_r, offs_c, nt, bufs, copy)
 end
 
 sortregion(region, N) = Tuple(normregion(region, N))
@@ -184,7 +235,8 @@ function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthr
   S, offs_r, offs_c = line_layout(sz, d1)
   nt = max(1, Int(threads))
   bufs = thread_buffers(T, n, 5nt)
-  RFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg)}(sz, reg, line, cplan, S, offs_r, offs_c, nt, bufs)
+  four = length(offs_r) == 1 && iseven(n) && use_fourstep(n ÷ 2, nt) ? FourStep{T}(n ÷ 2, -1, nt) : nothing
+  RFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg),typeof(four)}(sz, reg, line, four, cplan, S, offs_r, offs_c, nt, bufs)
 end
 
 function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
@@ -199,9 +251,12 @@ function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Thr
   S, offs_r, offs_c = line_layout(rsz, d1)
   nt = max(1, Int(threads))
   bufs = thread_buffers(T, d, 5nt)
-  BRFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg)}(sz, d, reg, line, cplan, S, offs_r, offs_c, nt, bufs,
+  four = length(offs_r) == 1 && iseven(d) && use_fourstep(d ÷ 2, nt) ? FourStep{T}(d ÷ 2, 1, nt) : nothing
+  BRFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg),typeof(four)}(sz, d, reg, line, four, cplan, S, offs_r, offs_c, nt, bufs,
                                               Vector{Complex{T}}(undef, prod(sz)))
 end
+
+line_fourstep(p::Union{RFFTLPlan,BRFFTLPlan}) = p.four
 
 Base.size(p::RFFTLPlan) = p.sz
 Base.size(p::BRFFTLPlan) = p.sz
@@ -258,6 +313,8 @@ end
 function r2c_contiguous!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T}
   b = p.bufs
   if length(p.offs_r) == 1
+    F = line_fourstep(p)
+    F === nothing || return r2c_line_fourstep!(py, px, F, p.line, p.nthreads)
     return r2c_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
   end
   each_line(length(p.offs_r), p.line.n, line_tasks(p.line, p.nthreads)) do c, i
@@ -300,6 +357,8 @@ end
 function c2r_contiguous!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T}
   b = p.bufs
   if length(p.offs_r) == 1
+    F = line_fourstep(p)
+    F === nothing || return c2r_line_fourstep!(py, px, Ptr{Complex{T}}(cptr(b[1])), F, p.line, p.nthreads)
     return c2r_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
   end
   each_line(length(p.offs_r), p.line.n, line_tasks(p.line, p.nthreads)) do c, i
