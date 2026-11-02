@@ -15,6 +15,10 @@
 #   src/generic.jl (formulas there). Up to 2–4× the arithmetic of a dedicated kernel, any kind
 #   along any dimension.
 # The other dimensions of a real region are complex passes on the half spectrum.
+# Along dimension 1 (S = 1, n even, n/2 without Bluestein) the line plan does it all: the real
+# array is z itself (reinterpreted as complex), the r2c post-processing runs in its last pass,
+# the c2r pre-processing in its first pass (pass_kernel's rhook). Elsewhere the elementwise
+# kernels below run before and after the line plan.
 
 @inline lineidx(t, S, n) = (i = t % S; r = t ÷ S; (i, r % n, r ÷ n))   # 0-based (i, j, o), Int32
 
@@ -183,9 +187,10 @@ function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N
   hsz = setdim(sz, d1, h)
   even = iseven(n) && n > 2
   lsz = even ? setdim(sz, d1, n ÷ 2) : sz
-  line = KAPlan(backend, T, lsz, σ; region = d1:d1)
-  rest = length(reg) > 1 ? KAPlan(backend, T, hsz, σ; region = reg[2:end]) : nothing
   w = todevice(backend, [Complex{T}((σ < 0 ? complex(0, -0.5) : complex(0, 1)) * cispi(2σ * k / n)) for k in 0:h-1])
+  fuse = even && d1 == 1 && FFTL.factorize(n ÷ 2)[2] == 1
+  line = fuse ? KAPlan(backend, T, lsz, σ; region = d1:d1, rhook = σ, rtab = w) : KAPlan(backend, T, lsz, σ; region = d1:d1)
+  rest = length(reg) > 1 ? KAPlan(backend, T, hsz, σ; region = reg[2:end]) : nothing
   bufs = Any[devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, hsz)]
   KARealPlan{T,N,typeof(backend)}(sz, reg, σ, line, rest, w, bufs, backend)
 end
@@ -202,9 +207,15 @@ function LinearAlgebra.mul!(y::AbstractArray, p::KARealPlan{T}, x::AbstractArray
   S = prod(p.sz[1:d1-1]; init = 1); outer = prod(p.sz[d1+1:end]; init = 1)
   even = iseven(n) && n > 2; M = n ÷ 2
   z, Z, hb = p.bufs
+  # z as the real array itself (line plans with rhook)
+  asz(a) = eltype(a) === T && S == 1 ? reinterpret(Complex{T}, a) : nothing
   if p.σ < 0
     out = p.rest === nothing ? y : hb
-    if even
+    if p.line.rhook != 0
+      xz = asz(x)
+      xz === nothing && (run!(ka_pack!, be, S * M * outer, z, x, S, M); xz = z)
+      launch!(out, xz, p.line)
+    elseif even
       run!(ka_pack!, be, S * M * outer, z, x, S, M)
       launch!(Z, z, p.line)
       run!(ka_r2c_post!, be, S * (M ÷ 2 + 1) * outer, out, Z, p.w, S, M)
@@ -219,7 +230,11 @@ function LinearAlgebra.mul!(y::AbstractArray, p::KARealPlan{T}, x::AbstractArray
     if p.rest !== nothing
       launch!(hb, x, p.rest); src = hb
     end
-    if even
+    if p.line.rhook != 0
+      yz = asz(y)
+      launch!(yz === nothing ? z : yz, src, p.line)
+      yz === nothing && run!(ka_unpack!, be, S * M * outer, y, z, S, M)
+    elseif even
       run!(ka_c2r_pre!, be, S * (M ÷ 2 + 1) * outer, Z, src, p.w, S, M)
       launch!(z, Z, p.line)
       run!(ka_unpack!, be, S * M * outer, y, z, S, M)
