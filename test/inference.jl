@@ -118,7 +118,7 @@ end
     @test (GC.@preserve x y @inferred FFTL.execute!(p, pointer(y), pointer(x))) === nothing
     @test (@allocated GC.@preserve x y FFTL.execute!(p, pointer(y), pointer(x))) == 0
   end
-  let p = @inferred FFTL.RPlan{T}([37], [1], 1; threads = 1), x = randn(Complex{T}, 37), y = similar(x)   # Bluestein
+  let p = (@inferred FFTL.RPlan{T}([37], [1], 1; threads = 1)), x = randn(Complex{T}, 37), y = similar(x)   # Bluestein
     GC.@preserve x y FFTL.execute!(p, pointer(y), pointer(x))
     @test (@allocated GC.@preserve x y FFTL.execute!(p, pointer(y), pointer(x))) == 0
   end
