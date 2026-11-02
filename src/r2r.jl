@@ -109,9 +109,15 @@ struct R2RBuffers{T}
   b1::Vector{Complex{T}}
   b2::Vector{Complex{T}}
   b3::Vector{Complex{T}}
+  blk::Vector{T}
 end
 R2RBuffers{T}(n) where {T} = R2RBuffers{T}(Vector{T}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4),
-  Vector{Complex{T}}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4))
+  Vector{Complex{T}}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4), Vector{Complex{T}}(undef, 2n + 4),
+  Vector{T}(undef, r2r_block(T) * n))
+
+# Lines per block along a strided dimension: one cache line of neighbouring values per row.
+r2r_block(::Type{T}) where {T} = R2R_BLOCK_BYTES ÷ sizeof(T)
+const R2R_BLOCK_BYTES = 64
 
 r2c!(c::Vector{Complex{T}}, r::Vector{T}, K::RealLine{T}, B) where {T} =
   GC.@preserve c r B r2c_line!(pointer(c), pointer(r), cptr(B.b1), cptr(B.b2), cptr(B.b3), K)
@@ -295,15 +301,53 @@ end
 
 Plan for real-to-real transforms of arrays of size `sz`, one kind per dimension of `region`.
 """
-mutable struct R2RPlan{T<:FFTLFloat,N,L<:Tuple,D} <: AbstractFFTs.Plan{T}
+mutable struct R2RPlan{T<:FFTLFloat,N,L<:Tuple,D,H<:Tuple} <: AbstractFFTs.Plan{T}
   sz::NTuple{N,Int}
   region::NTuple{D,Int}
   kinds::NTuple{D,R2RKind}
   lines::L
+  halves::H                      # per dimension: HalfDFT or nothing
   nthreads::Int
   bufs::Vector{R2RBuffers{T}}
   pinv::AbstractFFTs.Plan
-  R2RPlan{T,N,L,D}(sz, region, kinds, lines, nt, bufs) where {T,N,L,D} = new{T,N,L,D}(sz, region, kinds, lines, nt, bufs)
+  R2RPlan{T,N,L,D,H}(sz, region, kinds, lines, halves, nt, bufs) where {T,N,L,D,H} =
+    new{T,N,L,D,H}(sz, region, kinds, lines, halves, nt, bufs)
+end
+
+"""
+    HalfDFT{T}
+
+DCT-II or DST-II of even length n along a strided dimension (S > 1 values between neighbours of
+a line) by one complex DFT of length n/2 along the same dimension: rows of the input are packed
+into complex rows z_m = r_2m + i r_2m+1 of the permuted sequence r (r_j = x_2j, r_n-1-j = x_2j+1),
+the DFT runs with the lane kernels of the complex plans, and the half-spectrum split and the DCT
+twiddles combine whole rows. Every step reads and writes rows of S contiguous values.
+"""
+struct HalfDFT{T,P}
+  S::Int
+  outer::Int
+  n::Int
+  dst::Bool
+  cplan::P
+  z::Array{Complex{T},3}
+  w::Vector{Complex{T}}          # -i/2 · exp(-2πik/n), k = 0…n/2
+  t::Vector{Complex{T}}          # exp(-iπk/(2n)), k = 0…n/2
+end
+
+# M1, DCT-II along dim 2 of n×n against the blocked lines: 0.46–0.64 on one thread (n = 32…1024)
+# and on 8 threads up to 128²; from 256² on 8 threads 0.97–1.7, as the half-length DFT needs three
+# parallel steps where the blocked lines need one.
+use_half_dft(S, n, outer, nt) = S >= 4 && iseven(n) && n >= 4 && (nt == 1 || S * n * outer < 1 << 16)
+
+function half_dft(::Type{T}, sz, d, kind, z::Vector{Complex{T}}, nt) where {T}
+  S, outer = dim_extent(sz, d)
+  n = sz[d]
+  (kind == REDFT10 || kind == RODFT10) && use_half_dft(S, n, outer, nt) || return nothing
+  M = n ÷ 2
+  zz = reshape(z, S, M, outer)
+  cplan = FFTLPlan{T}((S, M, outer), (2,), -1; threads = nt)
+  w = Complex{T}[Complex{T}(complex(0, -1 // 2) * cispi(-2k / n)) for k in 0:M]
+  HalfDFT{T,typeof(cplan)}(S, outer, n, kind == RODFT10, cplan, zz, w, cis_table(T, M + 1, -1, 0, 2n))
 end
 
 function R2RPlan{T}(sz::NTuple{N,Int}, kinds, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
@@ -314,7 +358,10 @@ function R2RPlan{T}(sz::NTuple{N,Int}, kinds, region; threads::Integer = Threads
   lines = Tuple(R2RLine{T}(k, sz[d]) for (k, d) in zip(ks, reg))
   nt = max(1, Int(threads))
   nmax = maximum((sz[d] for d in reg); init = 1)
-  R2RPlan{T,N,typeof(lines),length(reg)}(sz, reg, ks, lines, nt, [R2RBuffers{T}(nmax) for _ in 1:nt])
+  z = Vector{Complex{T}}(undef, prod(sz) ÷ 2)
+  halves = Tuple(half_dft(T, sz, d, k, z, nt) for (k, d) in zip(ks, reg))
+  all(isnothing, halves) && (z = Complex{T}[])
+  R2RPlan{T,N,typeof(lines),length(reg),typeof(halves)}(sz, reg, ks, lines, halves, nt, [R2RBuffers{T}(nmax) for _ in 1:nt])
 end
 
 Base.size(p::R2RPlan) = p.sz
@@ -350,6 +397,7 @@ r2r_dim!(y::Array{T}, x::Array{T}, d::Int, K::R2RLine{T}, p::R2RPlan{T}) where {
 function r2r_dim!(py::Ptr{T}, px::Ptr{T}, d::Int, K::R2RLine{T}, p) where {T}
   S, outer = dim_extent(p.sz, d)
   n = p.sz[d]
+  S > 1 && return r2r_dim_blocked!(py, px, S, outer, n, K, p)
   each_line(S * outer, n, line_tasks(K, p.nthreads)) do c, l
     local o, i
     o, i = divrem(l, S)
@@ -359,16 +407,117 @@ function r2r_dim!(py::Ptr{T}, px::Ptr{T}, d::Int, K::R2RLine{T}, p) where {T}
   nothing
 end
 
-function apply_r2r!(y::Array{T}, x::Array{T}, p::R2RPlan{T}, ls::Tuple, ds::Tuple) where {T}
+# Strided lines in blocks of L neighbours: gather the block into a contiguous buffer (one line
+# after the other), transform each line there, scatter back. Reading the lines one by one would
+# use one value per cache line and no SIMD.
+function r2r_dim_blocked!(py::Ptr{T}, px::Ptr{T}, S::Int, outer::Int, n::Int, K::R2RLine{T}, p) where {T}
+  L = r2r_block(T)
+  nb = cld(S, L)
+  each_line(nb * outer, n * L, line_tasks(K, p.nthreads)) do c, l
+    local o, b
+    o, b = divrem(l, nb)
+    local i0 = b * L
+    local w = min(L, S - i0)
+    local B = p.bufs[c]
+    local blk = B.blk
+    local base = i0 + S * n * o
+    GC.@preserve blk begin
+      local pb = pointer(blk)
+      @inbounds for j in 0:n-1
+        local src = px + (base + S * j) * sizeof(T)
+        for q in 0:w-1
+          unsafe_store!(pb, unsafe_load(src, q + 1), q * n + j + 1)
+        end
+      end
+      for q in 0:w-1
+        local line = StridedLine{T}(pb + q * n * sizeof(T), 1, n)
+        r2r_line!(line, line, K, B)
+      end
+      @inbounds for j in 0:n-1
+        local dst = py + (base + S * j) * sizeof(T)
+        for q in 0:w-1
+          unsafe_store!(dst, unsafe_load(pb, q * n + j + 1), q + 1)
+        end
+      end
+    end
+  end
+  nothing
+end
+
+function half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfDFT{T}, nt::Int) where {T}
+  S, n, outer = H.S, H.n, H.outer
+  M = n ÷ 2
+  sgn = H.dst ? -one(T) : one(T)
+  z = H.z
+  GC.@preserve H begin
+    pz = cptr(z)
+    # z_m = r_2m + i r_2m+1 with r_j = x_2j (j < M), r_j = ±x_2(n-1-j)+1 (j >= M, minus for DST-II)
+    each_line(M * outer, S, nt) do c, l
+      local o, m
+      o, m = divrem(l, M)
+      local ja = 2m
+      local jb = 2m + 1
+      local ra = ja < M ? 2ja : 2(n - 1 - ja) + 1
+      local rb = jb < M ? 2jb : 2(n - 1 - jb) + 1
+      local sa = ja < M ? one(T) : sgn
+      local sb = jb < M ? one(T) : sgn
+      local xa = px + S * (ra + n * o) * sizeof(T)
+      local xb = px + S * (rb + n * o) * sizeof(T)
+      local zr = pz + S * (m + M * o) * 2sizeof(T)
+      @inbounds @simd for i in 1:S
+        unsafe_store!(Ptr{Complex{T}}(zr), Complex{T}(sa * unsafe_load(xa, i), sb * unsafe_load(xb, i)), i)
+      end
+    end
+    mul!(z, H.cplan, z)
+    # half-spectrum split R_k = (C_k + C*_(M-k))/2 - i/2 · W_n^k (C_k - C*_(M-k)), then
+    # y_k = 2 Re(t_k R_k), y_(n-k) = -2 Im(t_k R_k); for DST-II both written to n-1-index
+    each_line((M + 1) * outer, S, nt) do c, l
+      local o, k
+      o, k = divrem(l, M + 1)
+      local w = H.w[k+1]
+      local t = H.t[k+1]
+      local c1 = Ptr{Complex{T}}(pz + S * (mod(k, M) + M * o) * 2sizeof(T))
+      local c2 = Ptr{Complex{T}}(pz + S * (mod(M - k, M) + M * o) * 2sizeof(T))
+      local ka = H.dst ? n - 1 - k : k
+      local ya = py + S * (ka + n * o) * sizeof(T)
+      if 0 < k < M
+        local kb = H.dst ? k - 1 : n - k
+        local yb = py + S * (kb + n * o) * sizeof(T)
+        @inbounds @simd for i in 1:S
+          local a = unsafe_load(c1, i)
+          local b = conj(unsafe_load(c2, i))
+          local u = t * ((a + b) / 2 + (a - b) * w)
+          unsafe_store!(ya, 2real(u), i)
+          unsafe_store!(yb, -2imag(u), i)
+        end
+      else
+        @inbounds @simd for i in 1:S
+          local a = unsafe_load(c1, i)
+          local b = conj(unsafe_load(c2, i))
+          local u = t * ((a + b) / 2 + (a - b) * w)
+          unsafe_store!(ya, 2real(u), i)
+        end
+      end
+    end
+  end
+  nothing
+end
+
+function apply_r2r!(y::Array{T}, x::Array{T}, p::R2RPlan{T}, ls::Tuple, ds::Tuple, hs::Tuple) where {T}
   isempty(ls) && return y
-  r2r_dim!(y, x, first(ds), first(ls), p)
-  apply_r2r!(y, y, p, Base.tail(ls), Base.tail(ds))
+  H = first(hs)
+  if H === nothing
+    r2r_dim!(y, x, first(ds), first(ls), p)
+  else
+    GC.@preserve x y half_dft!(pointer(y), pointer(x), H, p.nthreads)
+  end
+  apply_r2r!(y, y, p, Base.tail(ls), Base.tail(ds), Base.tail(hs))
 end
 
 function LinearAlgebra.mul!(y::Array{T,N}, p::R2RPlan{T,N}, x::Array{T,N}) where {T,N}
   size(x) == p.sz && size(y) == p.sz || throw(DimensionMismatch("r2r plan for size $(p.sz)"))
   isempty(p.region) && return copyto!(y, x)
-  apply_r2r!(y, x, p, p.lines, p.region)
+  apply_r2r!(y, x, p, p.lines, p.region, p.halves)
 end
 
 Base.:*(p::R2RPlan{T,N}, x::AbstractArray{<:Real,N}) where {T,N} =

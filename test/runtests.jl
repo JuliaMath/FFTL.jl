@@ -263,6 +263,20 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     hc = mapslices(u -> r2r_ref(u, FFTL.R2HC), mapslices(u -> r2r_ref(u, FFTL.HC2R), Float64.(x); dims = 1); dims = 3)
     @test relerr(FFTL.r2r(x, (FFTL.HC2R, FFTL.R2HC), (1, 3)), hc) < 10tol(T)
     @test relerr(FFTL.r2r(x, FFTL.REDFT00, (2,)), mapslices(u -> r2r_ref(u, FFTL.REDFT00), Float64.(x); dims = 2)) < 10tol(T)
+    # strided dimensions: blocked lines, and DCT-II/DST-II of even length by the half-length DFT
+    x = randn(T, 6, 10, 7, 4)
+    for kind in r2rkinds, reg in ((2,), (3,), (2, 4), (4, 1, 2)), nt in pick((1, 3), (3,))
+      ref = Float64.(x)
+      for d in reg
+        ref = mapslices(u -> r2r_ref(u, kind), ref; dims = d)
+      end
+      p = FFTL.plan_r2r(x, kind, reg; threads = nt)
+      @test relerr(p * x, ref) < 10tol(T)
+      y = copy(x); mul!(y, p, y)
+      @test relerr(y, ref) < 10tol(T)
+    end
+    @test FFTL.plan_r2r(x, FFTL.REDFT10, (2, 3)).halves[1] isa FFTL.HalfDFT
+    @test FFTL.plan_r2r(x, FFTL.RODFT10, 1).halves[1] === nothing
     # pass plans on views of a padded array, all kinds, every dimension, in place and out of place
     G0 = randn(T, 26, 21, 13)
     for kind in thin(T, collect(r2rkinds)), d in pick(1:3, (1, 3)), nt in pick((1, 2), (2,))
