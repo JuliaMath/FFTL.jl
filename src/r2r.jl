@@ -397,13 +397,16 @@ DCT-II or DST-II of even length n along a strided dimension (S > 1 values betwee
 a line) by one complex DFT of length n/2 along the same dimension: rows of the input are packed
 into complex rows z_m = r_2m + i r_2m+1 of the permuted sequence r (r_j = x_2j, r_n-1-j = x_2j+1),
 the DFT runs with the lane kernels of the complex plans, and the half-spectrum split and the DCT
-twiddles combine whole rows. Every step reads and writes rows of S contiguous values.
+twiddles combine whole rows. Every step reads and writes rows of S contiguous values. The DHT
+takes the same path without the permutation (r = x) and with y_k = Re R_k - Im R_k,
+y_(n-k) = Re R_k + Im R_k from the half spectrum R of the real DFT.
 """
 struct HalfDFT{T,P}
   S::Int
   outer::Int
   n::Int
   dst::Bool
+  dht::Bool                      # DHT: no permutation, y_k = Re R_k - Im R_k, y_(n-k) = Re R_k + Im R_k
   cplan::P
   z::Array{Complex{T},3}
   w::Vector{Complex{T}}          # -i/2 · exp(-2πik/n), k = 0…n/2
@@ -418,12 +421,12 @@ use_half_dft(S, n, outer, nt) = S >= 4 && iseven(n) && n >= 4 && (nt == 1 || S *
 function half_dft(::Type{T}, sz, d, kind, z::Vector{Complex{T}}, nt) where {T}
   S, outer = dim_extent(sz, d)
   n = sz[d]
-  (kind == REDFT10 || kind == RODFT10) && use_half_dft(S, n, outer, nt) || return nothing
+  (kind == REDFT10 || kind == RODFT10 || kind == DHT) && use_half_dft(S, n, outer, nt) || return nothing
   M = n ÷ 2
   zz = reshape(z, S, M, outer)
   cplan = FFTLPlan{T}((S, M, outer), (2,), -1; threads = nt)
   w = Complex{T}[Complex{T}(complex(0, -1 // 2) * cispi(-2k / n)) for k in 0:M]
-  HalfDFT{T,typeof(cplan)}(S, outer, n, kind == RODFT10, cplan, zz, w, cis_table(T, M + 1, -1, 0, 2n))
+  HalfDFT{T,typeof(cplan)}(S, outer, n, kind == RODFT10, kind == DHT, cplan, zz, w, cis_table(T, M + 1, -1, 0, 2n))
 end
 
 function R2RPlan{T}(sz::NTuple{N,Int}, kinds, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
@@ -527,14 +530,16 @@ function half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfDFT{T}, nt::Int) where {T}
   z = H.z
   GC.@preserve H begin
     pz = cptr(z)
-    # z_m = r_2m + i r_2m+1 with r_j = x_2j (j < M), r_j = ±x_2(n-1-j)+1 (j >= M, minus for DST-II)
+    # z_m = r_2m + i r_2m+1 with r_j = x_2j (j < M), r_j = ±x_2(n-1-j)+1 (j >= M, minus for DST-II);
+    # DHT: r = x
+    dht = H.dht
     each_line(M * outer, S, nt) do c, l
       local o, m
       o, m = divrem(l, M)
       local ja = 2m
       local jb = 2m + 1
-      local ra = ja < M ? 2ja : 2(n - 1 - ja) + 1
-      local rb = jb < M ? 2jb : 2(n - 1 - jb) + 1
+      local ra = dht ? ja : ja < M ? 2ja : 2(n - 1 - ja) + 1
+      local rb = dht ? jb : jb < M ? 2jb : 2(n - 1 - jb) + 1
       local sa = ja < M ? one(T) : sgn
       local sb = jb < M ? one(T) : sgn
       local xa = px + S * (ra + n * o) * sizeof(T)
@@ -556,7 +561,25 @@ function half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfDFT{T}, nt::Int) where {T}
       local c2 = Ptr{Complex{T}}(pz + S * (mod(M - k, M) + M * o) * 2sizeof(T))
       local ka = H.dst ? n - 1 - k : k
       local ya = py + S * (ka + n * o) * sizeof(T)
-      if 0 < k < M
+      if dht
+        local yb = py + S * (n - k + n * o) * sizeof(T)
+        if 0 < k < M
+          @inbounds @simd for i in 1:S
+            local a = unsafe_load(c1, i)
+            local b = conj(unsafe_load(c2, i))
+            local R = (a + b) / 2 + (a - b) * w
+            unsafe_store!(ya, real(R) - imag(R), i)
+            unsafe_store!(yb, real(R) + imag(R), i)
+          end
+        else
+          @inbounds @simd for i in 1:S
+            local a = unsafe_load(c1, i)
+            local b = conj(unsafe_load(c2, i))
+            local R = (a + b) / 2 + (a - b) * w
+            unsafe_store!(ya, real(R) - imag(R), i)
+          end
+        end
+      elseif 0 < k < M
         local kb = H.dst ? k - 1 : n - k
         local yb = py + S * (kb + n * o) * sizeof(T)
         @inbounds @simd for i in 1:S
