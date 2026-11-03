@@ -387,8 +387,13 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       w = todevice(backend, [Complex{T}(cispi(-2j / n)) for j in 0:M])
       tw = todevice(backend, [Complex{T}(cispi(-j / (2n))) for j in 0:M])
       if σ > 0 && FFTL.factorize(M)[2] == 1
-        # the whole DCT-III/DST-III in the line plan's passes (pass_kernel's rhook 4/5)
-        P = KAPlan(backend, T, hsz, 1; region = d:d, rhook = k == FFTL.REDFT01 ? 4 : 5, rtab = (tw, w))
+        # the whole DCT-III/DST-III in the line plan's passes (pass_kernel's rhook 4/5):
+        # C_K = P_K (y_K - i y_(n-K)) + Q_K (y_(M-K) + i y_(M+K)) with a_k = conj(t_k)/2,
+        # P_K = a_K (2 + 2i conj w_K), Q_K = conj(a_(M-K)) (2 - 2i conj w_K)
+        tk(j) = cispi(-j / (2n)); wk(j) = cispi(-2j / n)
+        Pt = todevice(backend, [Complex{T}(conj(tk(j)) / 2 * (2 + 2im * conj(wk(j)))) for j in 0:M-1])
+        Qt = todevice(backend, [Complex{T}(tk(M - j) / 2 * (2 - 2im * conj(wk(j)))) for j in 0:M-1])
+        P = KAPlan(backend, T, hsz, 1; region = d:d, rhook = k == FFTL.REDFT01 ? 4 : 5, rtab = (Pt, Qt))
         if P.rhook != 0
           push!(dims, (:fused, Int(k), P))
           continue

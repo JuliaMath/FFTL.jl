@@ -169,8 +169,8 @@ local_twcount(n, rs) = sum((R - 1) * (L ÷ R) for (R, L) in zip(rs, accumulate(�
 #     R_K = (Z_K + conj Z_(N-K))/2 + cout[K] (Z_K - conj Z_(N-K)), u_K = cin[K] R_K,
 #     y_K = 2 Re u_K, y_(2N-K) = -2 Im u_K (DST-II: at 2N-1-K and K-1), pairs as for r2c.
 #   rhook = 4 / 5 (DCT-III / DST-III of real lines of length 2N): `pre` computes element K of the
-#     input C from the real line y (reversed for DST-III, y_2N = 0) with t = cin, w = cout:
-#     R_k = conj(t_k) (y_k - i y_(2N-k))/2, C_K = 2 [(R_K + conj R_(N-K)) + i conj(w_K) (R_K - conj R_(N-K))];
+#     input C from the real line y (reversed for DST-III, y_2N = 0) as
+#     C_K = cin[K] (y_K - i y_(2N-K)) + cout[K] (y_(N-K) + i y_(N+K)) (tables in ka_real.jl);
 #     `post` writes element K of the result z as r_2K = Re z_K, r_2K+1 = Im z_K to x_2j = r_j
 #     (j < N), x_2j+1 = r_(2N-1-j), signed (-1)^j for DST-III.
 #   rhook = 6 / 7 (DCT-IV / DST-IV of real lines of length 2N): `pre` reads element K as
@@ -321,10 +321,8 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       complex(@inbounds(x[abase + $(I(E)) * ai + one(Int32)]), @inbounds(x[abase + $(I(E)) * aj + one(Int32)]))
     end : rhook <= 5 ? quote
       $(asplit(A))
-      aKb = $(I(N)) - aK
-      aRa = ccmul(conj(@inbounds cin[aK + one(Int32)]), complex($(ayv(:aK)), -$(ayv(:($(I(2N)) - aK))))) * $(T(0.5))
-      aRb = conj(ccmul(conj(@inbounds cin[aKb + one(Int32)]), complex($(ayv(:aKb)), -$(ayv(:($(I(2N)) - aKb))))) * $(T(0.5)))
-      $(T(2)) * ((aRa + aRb) + ccmul(complex(zero($T), one($T)), ccmul(conj(@inbounds cout[aK + one(Int32)]), aRa - aRb)))
+      ccmul(@inbounds(cin[aK + one(Int32)]), complex($(ayv(:aK)), -$(ayv(:($(I(2N)) - aK))))) +
+        ccmul(@inbounds(cout[aK + one(Int32)]), complex($(ayv(:($(I(N)) - aK))), $(ayv(:($(I(N)) + aK)))))
     end : quote
       $(asplit(A))
       axe = @inbounds x[abase + $(I(E)) * (Int32(2) * aK) + one(Int32)]
