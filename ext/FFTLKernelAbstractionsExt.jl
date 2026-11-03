@@ -110,11 +110,23 @@ end
 function cuda_support!()
   isdefined(Kernels, :CUDA) || Core.eval(Kernels, :(const CUDA = $(cuda_mod())))
   isdefined(Kernels, :cuda_dyn_compile) || Core.eval(Kernels, quote
-    # compile a pass kernel with dynamic shared memory for these argument types, and raise
-    # the function's > 48 KB dynamic shared memory opt-in ceiling before it is ever launched
-    function cuda_dyn_compile(f, y, x, tw, cin, cout, bytes)
-      k = CUDA.@cuda launch=false f(y, x, tw, cin, cout)
-      CUDA.attributes(k.fun)[CUDA.FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES] = bytes
+    # bounds of the thread and block index as KernelAbstractions states them: LLVM then keeps
+    # the index arithmetic in unsigned 32 bit (latency-bound passes with few blocks, 65536: 20 %)
+    @inline assume(c::Bool) = Base.llvmcall(("""
+      declare void @llvm.assume(i1)
+      define void @entry(i8 %c) #0 {
+        %b = trunc i8 %c to i1
+        call void @llvm.assume(i1 %b)
+        ret void
+      }
+      attributes #0 = { alwaysinline }""", "entry"), Cvoid, Tuple{Bool}, c)
+    # compile a raw pass kernel for these argument types; with dynamic shared memory (bytes > 0)
+    # raise the function's > 48 KB opt-in ceiling before it is ever launched, with static shared
+    # memory set the launch bounds (maxthreads) as KernelAbstractions does for a static workgroup
+    function cuda_dyn_compile(f, y, x, tw, cin, cout, bytes, maxthreads = 0)
+      k = maxthreads > 0 ? CUDA.@cuda(launch=false, maxthreads=maxthreads, f(y, x, tw, cin, cout)) :
+                           CUDA.@cuda(launch=false, f(y, x, tw, cin, cout))
+      bytes > 0 && (CUDA.attributes(k.fun)[CUDA.FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES] = bytes)
       return k
     end
   end)
@@ -190,9 +202,9 @@ local_twcount(n, rs) = sum((R - 1) * (L ÷ R) for (R, L) in zip(rs, accumulate(�
 #   needs G | E; with s > 1 the last pass takes G/2 columns at q and the same columns at s - q
 #   (q = 0 with s/2), which needs (G/2) | E.
 function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1, 0), pady = (1, 0), lim = LIM0, rhook = 0,
-                     pre = rhook > 0, post = rhook < 0, xreal = false, blue2 = false)
+                     pre = rhook > 0, post = rhook < 0, xreal = false, blue2 = false, raw = false)
   rhook = abs(rhook)
-  @lock PKERNELS_LOCK get!(PKERNELS, (R, G, σ, T, s, N, E, B, Nx, Ny, padx, pady, G * R > lim.nstat, rhook, pre, post, xreal, blue2)) do
+  @lock PKERNELS_LOCK get!(PKERNELS, (R, G, σ, T, s, N, E, B, Nx, Ny, padx, pady, G * R > lim.nstat, rhook, pre, post, xreal, blue2, raw)) do
     # padded layouts (n1, pad): logical index L at L + pad ⌊L / n1⌋
     PX = Int32.(padx); PY = Int32.(pady)
     rs = local_radices(R)
@@ -582,14 +594,16 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       yob = ob * $(I(E * Ny))
       VT = Complex{$T}
     end
-    if dyn
+    if dyn || raw
       cuda_support!()
       ex = quote
-        function $name(y, x, tw, cin, cout)
+        function $(Symbol(name, raw && !dyn ? "_raw" : ""))(y, x, tw, cin, cout)
           tid = CUDA.threadIdx().x % Int32 - Int32(1)
           grp = CUDA.blockIdx().x % Int32 - Int32(1)
+          assume(Int32(0) <= tid < $(Int32(W))); assume(Int32(0) <= grp < $(Int32(batchlanes ? B ÷ G : B * gpb)))
+          $(dyn ? nothing : :((x, tw, cin, cout) = map(Base.Experimental.Const, (x, tw, cin, cout))))
           $(idxpre.args...)
-          buf = CUDA.CuDynamicSharedArray(Complex{$T}, ($nel,))
+          buf = $(dyn ? :(CUDA.CuDynamicSharedArray(Complex{$T}, ($nel,))) : :(CUDA.CuStaticSharedArray(Complex{$T}, ($nel,))))
           $((unsync(e) for e in body)...)
           return nothing
         end
@@ -607,7 +621,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     end
     Core.eval(Kernels, ex)
     # the kernel exists from the next world age on
-    (Base.invokelatest(getfield, Kernels, name), W, batchlanes ? B ÷ G : B * gpb,
+    (Base.invokelatest(getfield, Kernels, Symbol(name, raw && !dyn ? "_raw" : "")), W, batchlanes ? B ÷ G : B * gpb,
      dyn ? nel * sizeof(Complex{T}) : 0)
   end
 end
@@ -805,7 +819,7 @@ mutable struct KAPlan{T,N,B} <: AbstractFFTs.Plan{Complex{T}}
   region::Vector{Int}
   σ::Int
   radices::Vector{Vector{Int}}  # pass lengths per transformed dimension (of M for Bluestein)
-  steps::Vector{Any}            # (kernel instance | (raw CUDA kernel, W, groups, shmem bytes), ndrange, tw, cin, cout, src, dst)
+  steps::Vector{Any}            # (kernel instance | RawLaunch (CUDA), ndrange, tw, cin, cout, src, dst); src, dst: :x, :y or a scratch array
   bufs::Dict{Symbol,Any}        # :a, :b array-shaped; :c, :d Bluestein scratch
   backend::B
   gmax::Int
@@ -919,6 +933,9 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   padded = [pad > 0 && specs[i].dst in (:a, :b) && (bigstride(specs[i]) || bigstride(specs[i+1])) for i in 1:length(specs)-1]
   push!(padded, false)
   lay(p) = p ? (dims[1], pad) : (1, 0)
+  # CUDA launches every pass as a raw kernel compiled here: a call costs about the bare CUDA.jl
+  # launch, the KernelAbstractions path about 2 µs more per pass (A6000, small transforms)
+  raw = nameof(typeof(backend)) === :CUDABackend
   steps = Any[]
   for (i, sp) in enumerate(specs)
     G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, 4 <= get(sp, :rh, 0) <= 7 ? hook_limits(lim) : lim)
@@ -926,12 +943,12 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
                                       padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]), lim = lim,
                                       rhook = get(sp, :rh, 0), pre = get(sp, :pre, get(sp, :rh, 0) == 1),
                                       post = get(sp, :post, get(sp, :rh, 0) == -1), xreal = get(sp, :xreal, false),
-                                      blue2 = get(sp, :blue2, false))
+                                      blue2 = get(sp, :blue2, false), raw)
     t = pass_twiddles(T, sp.R, sp.σ, sp.M)
     tw = KA.allocate(backend, Complex{T}, length(t)); copyto!(tw, t)
-    if bytes > 0
-      # dynamic shared memory pass: compile the raw CUDA kernel for exactly the argument
-      # types this step launches with (user arrays: the plan's ndims, buffers: vectors)
+    if raw || bytes > 0
+      # CUDA: compile the raw kernel for exactly the argument types this step launches with
+      # (user arrays: the plan's ndims, buffers: vectors)
       cu = cuda_mod()
       d1 = cu.CuArray{Complex{T},1}(undef, (0,))
       dD = cu.CuArray{Complex{T},D}(undef, ntuple(zero, D))
@@ -940,8 +957,8 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
       rD = cu.CuArray{T,D}(undef, ntuple(zero, D))
       ya = sp.dst === :y ? (get(sp, :post, false) && get(sp, :rh, 0) >= 2 ? rD : dD) : d1
       xa = sp.src === :x ? ((get(sp, :pre, false) && get(sp, :rh, 0) >= 2) || get(sp, :xreal, false) ? rD : dD) : d1
-      kk = Base.invokelatest(dcc, k, ya, xa, tw, tw, tw, bytes)
-      push!(steps, ((kk, W, groups, bytes), groups * W, tw, sp.cin, sp.cout, sp.src, sp.dst))
+      kk = Base.invokelatest(dcc, k, ya, xa, tw, tw, tw, bytes, bytes > 0 ? 0 : W)
+      push!(steps, (RawLaunch(kk, W, groups, bytes, (ya, xa, tw, sp.cin, sp.cout), cu), groups * W, tw, sp.cin, sp.cout, sp.src, sp.dst))
     else
       kk = Base.invokelatest(k, backend, W)
       push!(steps, (kk, groups * W, tw, sp.cin, sp.cout, sp.src, sp.dst))
@@ -952,6 +969,9 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   bufs = Dict{Symbol,Any}()
   for b in (:a, :b); b in used && (bufs[b] = KA.allocate(backend, Complex{T}, n + pad * (n ÷ dims[1]))); end
   for b in (:c, :d); b in used && (bufs[b] = KA.allocate(backend, Complex{T}, scratch)); end
+  # the steps hold their scratch arrays themselves (:x and :y stay names of the call's arrays)
+  res(b) = b === :x || b === :y ? b : bufs[b]
+  steps = Any[(st[1:5]..., res(st[6]), res(st[7])) for st in steps]
   KAPlan{T,D,typeof(backend)}(dims, region, σ, rsall, steps, bufs, backend, gmax, rhook)
 end
 
@@ -966,18 +986,69 @@ default_pad(dims, region, T, prof = :apple, lim = LIM0) = prof === :apple && len
 
 
 # y = DFT(x) without synchronization: kernels are queued in order on the backend's stream
-function launch!(y, x, P::KAPlan)
-  isempty(P.steps) && return copyto!(y, x)
-  get(b) = b === :x ? x : b === :y ? y : P.bufs[b]
-  for (kern, nd, tw, cin, cout, src, dst) in P.steps
-    if kern isa Tuple    # CUDA dynamic shared memory pass: raw launch with shmem
-      (kobj, W, groups, bytes) = kern
-      kobj(get(dst), get(src), tw, cin, cout; threads = W, blocks = groups, shmem = bytes)
-    else
-      Base.invokelatest(kern, get(dst), get(src), tw, cin, cout; ndrange = nd)
+# A raw CUDA pass with its parameter block built at plan time: the kernel state and the five
+# arguments, of which each call rewrites y and x only. CUDA.jl's call path converts, boxes and
+# registers every argument and sets launch attributes per launch, about 2 µs on an A6000, as
+# much as the whole kernel of a small transform. Without these CUDA.jl internals, or for
+# arguments of other types than the plan's arrays (views), the pass is launched through the
+# kernel object.
+struct RawLaunch{K,F,A,B,C,L,S}
+  kern::K                      # CUDA.jl HostKernel
+  fun::F                       # its CuFunction
+  W::Int
+  groups::Int
+  bytes::Int
+  ry::Base.RefValue{A}         # device array y of the parameter block
+  rx::Base.RefValue{B}         # device array x
+  refs::Vector{Any}            # all parameter Refs (kernel state, y, x, tw, cin, cout), kept alive
+  ptrs::Vector{Ptr{Cvoid}}
+  fast::Bool                   # CUDA.jl internals found
+  conv::C                      # cudaconvert
+  launch::L                    # cuLaunchKernel
+  stream::S                    # current stream
+end
+
+function RawLaunch(kern, W, groups, bytes, args, cu)
+  lib = parentmodule(typeof(kern))
+  fast = isdefined(lib, :cuLaunchKernel) && hasfield(typeof(kern), :state) && hasfield(typeof(kern), :fun)
+  ry = Ref(cu.cudaconvert(args[1])); rx = Ref(cu.cudaconvert(args[2]))
+  refs = Any[fast ? Ref(kern.state) : Ref(nothing); ry; rx; [Ref(cu.cudaconvert(a)) for a in args[3:end]]]
+  RawLaunch(kern, fast ? kern.fun : nothing, W, groups, bytes, ry, rx, refs,
+            Ptr{Cvoid}[Base.unsafe_convert(Ptr{Cvoid}, r) for r in refs], fast, cu.cudaconvert,
+            fast ? lib.cuLaunchKernel : nothing, cu.stream)
+end
+
+function launch_raw!(r::RawLaunch{K,F,A,B}, y, x, tw, cin, cout) where {K,F,A,B}
+  if r.fast
+    a = r.conv(y); b = r.conv(x)
+    if a isa A && b isa B
+      r.ry[] = a; r.rx[] = b
+      GC.@preserve r y x r.launch(r.fun, r.groups, 1, 1, r.W, 1, 1, r.bytes, r.stream(), r.ptrs, C_NULL)
+      return
     end
   end
+  r.kern(y, x, tw, cin, cout; threads = r.W, blocks = r.groups, shmem = r.bytes)
+  return
+end
+
+function launch!(y, x, P::KAPlan)
+  isempty(P.steps) && return copyto!(y, x)
+  for st in P.steps
+    run_step!(st, y, x)
+  end
   y
+end
+
+# a function barrier per step: the step's tuple type is concrete here
+function run_step!((kern, nd, tw, cin, cout, src, dst), y, x)
+  s = src === :x ? x : src === :y ? y : src
+  d = dst === :x ? x : dst === :y ? y : dst
+  if kern isa RawLaunch
+    launch_raw!(kern, d, s, tw, cin, cout)
+  else
+    Base.invokelatest(kern, d, s, tw, cin, cout; ndrange = nd)
+  end
+  nothing
 end
 
 FFTL.plan_ka(backend, ::Type{T}, dims::Tuple, σ::Integer; region = 1:length(dims), kw...) where {T<:FFTL.FFTLFloat} =
