@@ -248,7 +248,43 @@ end
   end
 end
 
-todevice(backend, v::Vector) = (d = KA.allocate(backend, eltype(v), length(v)); copyto!(d, v); d)
+# DST-I of lines of length N - 1 as the r2c of their odd extension xo (length 2N, xo_0 = xo_N = 0,
+# xo_i = x_(i-1) for 0 < i < N, xo_(2N-i) = -xo_i) by a complex DFT of length N, for any N:
+# z_K = xo_2K + i xo_2K+1, Z = DFT_N(z), y_(K-1) = -Im[(Z_K + conj Z_(N-K))/2 + u_K (Z_K - conj Z_(N-K))]
+# with u_K as for the DCT-I, K = 1…N-1.
+@kernel function ka_dst1_pre!(z, @Const(x), S, N)
+  t = (@index(Global, Linear) - 1) % Int32
+  i, K, o = lineidx(t, S, N)
+  xb = i + S * (N - Int32(1)) * o
+  T = real(eltype(z))
+  a = Int32(2) * K; b = a + Int32(1)
+  va = zero(T); vb = zero(T)
+  if a != zero(Int32) && a != N
+    @inbounds va = a < N ? x[xb+S*(a-Int32(1))+1] : -x[xb+S*(Int32(2)*N-a-Int32(1))+1]
+  end
+  if b != N
+    @inbounds vb = b < N ? x[xb+S*(b-Int32(1))+1] : -x[xb+S*(Int32(2)*N-b-Int32(1))+1]
+  end
+  @inbounds z[t+1] = complex(va, vb)
+end
+
+# one thread per pair K, N - K (K = 1…N÷2)
+@kernel function ka_dst1_post!(y, @Const(Z), @Const(u), S, N)
+  t = (@index(Global, Linear) - 1) % Int32
+  i, K, o = lineidx(t, S, N ÷ Int32(2))
+  K += Int32(1)
+  zb = i + S * N * o; yb = i + S * (N - Int32(1)) * o
+  T = real(eltype(y))
+  @inbounds za = Z[zb+S*K+1]
+  @inbounds zm = Z[zb+S*(N-K)+1]
+  ca = conj(zm); cm = conj(za)
+  @inbounds y[yb+S*(K-Int32(1))+1] = -imag((za + ca) * T(0.5) + u[K+1] * (za - ca))
+  if Int32(2) * K != N
+    @inbounds y[yb+S*(N-K-Int32(1))+1] = -imag((zm + cm) * T(0.5) + u[N-K+1] * (zm - cm))
+  end
+end
+
+todevice(backend, v::Vector) =(d = KA.allocate(backend, eltype(v), length(v)); copyto!(d, v); d)
 devzeros(backend, T, dims) = KA.zeros(backend, T, dims...)
 setdim(sz, d, v) = ntuple(i -> i == d ? v : sz[i], length(sz))
 # Int arguments as Int32: 64-bit division and remainder per element are slow on GPUs (sizes stay
@@ -361,7 +397,8 @@ mutable struct KAR2RPlan{T,N,B} <: AbstractFFTs.Plan{T}
   kinds::Vector{FFTL.R2RKind}
   dims::Vector{Any}                  # per dimension: (kind, L, KAPlan, pre, post, z, Z), or
                                      # (:half, kind, KAPlan, w, t, z, Z) for DCT/DST-II/III of even length,
-                                     # (:fused, kind, KAPlan) for DCT-I and DCT/DST-II, -III, -IV in the DFT's passes
+                                     # (:fused, kind, KAPlan) for DCT-I and DCT/DST-II, -III, -IV in the DFT's passes,
+                                     # (:dct1, xreal, KAPlan, u, z, Z) and (:dst1, KAPlan, u, z, Z)
   backend::B
   pinv::AbstractFFTs.Plan
   KAR2RPlan{T,N,B}(sz, region, kinds, dims, backend) where {T,N,B} = new{T,N,B}(sz, region, kinds, dims, backend)
@@ -405,6 +442,14 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
       xr = FFTL.factorize(n1)[2] > 1
       push!(dims, (:dct1, xr, KAPlan(backend, T, zsz, -1; region = d:d, xreal = xr), u,
+                   devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
+      continue
+    end
+    if k == FFTL.RODFT00 && n >= 2
+      # DST-I: r2c of the odd extension (length 2(n+1)) by one complex DFT of length n + 1
+      n1 = n + 1; zsz = setdim(sz, d, n1)
+      u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
+      push!(dims, (:dst1, KAPlan(backend, T, zsz, -1; region = d:d), u,
                    devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
       continue
     end
@@ -482,6 +527,11 @@ function LinearAlgebra.mul!(y::AbstractArray{T}, p::KAR2RPlan{T}, x::AbstractArr
         launch!(Z, z, P)
       end
       run!(ka_dct1_post!, be, S * ((n - 1) ÷ 2 + 1) * outer, y, Z, u, S, n - 1)
+    elseif dim[1] === :dst1
+      _, P, u, z, Z = dim
+      run!(ka_dst1_pre!, be, S * (n + 1) * outer, z, src, S, n + 1)
+      launch!(Z, z, P)
+      run!(ka_dst1_post!, be, S * ((n + 1) ÷ 2) * outer, y, Z, u, S, n + 1)
     elseif dim[1] === :half
       _, kind, P, w, tw, z, Z = dim
       M = n ÷ 2; dst = Int(kind == Int(FFTL.RODFT10) || kind == Int(FFTL.RODFT01))

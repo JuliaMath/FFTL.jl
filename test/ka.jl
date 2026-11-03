@@ -91,13 +91,15 @@ end
     z = copy(x); mul!(z, p, z); KernelAbstractions.synchronize(be)
     @test relerr(z, y) < 10tol(T)
   end
-  # DCT-I with n - 1 = 37 (Bluestein): complex DFT of n - 1 between kernels of its own
-  for (sz, reg) in (((38,), 1), ((5, 38), 2), ((38, 6), 1:2))
+  # DCT-I with n - 1 = 37 (Bluestein) and DST-I with n + 1 = 37 or 3: complex DFT of n ∓ 1
+  # between kernels of their own
+  for (k, sz, reg) in ((FFTL.REDFT00, (38,), 1), (FFTL.REDFT00, (5, 38), 2), (FFTL.REDFT00, (38, 6), 1:2),
+                       (FFTL.RODFT00, (36,), 1), (FFTL.RODFT00, (5, 36), 2), (FFTL.RODFT00, (36, 2), 1:2))
     x = randn(T, sz)
-    p = FFTL.plan_ka_r2r(be, T, sz, FFTL.REDFT00; region = reg)
-    @test p.dims[1][1] === :dct1
+    p = FFTL.plan_ka_r2r(be, T, sz, k; region = reg)
+    @test p.dims[1][1] === (k == FFTL.REDFT00 ? :dct1 : :dst1)
     y = p * x; KernelAbstractions.synchronize(be)
-    @test relerr(y, FFTL.r2r(x, FFTL.REDFT00, reg)) < 10tol(T)
+    @test relerr(y, FFTL.r2r(x, k, reg)) < 10tol(T)
     z = copy(x); mul!(z, p, z); KernelAbstractions.synchronize(be)
     @test relerr(z, y) < 10tol(T)
   end
