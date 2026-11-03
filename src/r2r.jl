@@ -152,12 +152,18 @@ end
 # DCT-II; with `dst` the DST-II as DCT-II of ((-1)^j x_j), output reversed
 function dct2!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
   n = K.n; r = B.r; c = B.c
+  # from 64 values on (below the extra calls cost more than they save: 16 values 40 → 60 ns)
+  if x isa StridedLine && x.stride == 1 && iseven(n) && n >= 64
+    GC.@preserve r dct2_gather!(pointer(r), x.ptr, n, dst)
+    return dct2_pairs!(y, K, B, dst)
+  end
   @inbounds for j in 0:(n-1)÷2
     r[j+1] = x[2j+1]
   end
   @inbounds for j in 0:n÷2-1
     v = x[2j+2]; r[n-j] = dst ? -v : v
   end
+  iseven(n) && n >= 64 && return dct2_pairs!(y, K, B, dst)
   r2c!(c, r, K.inner::RealLine, B)
   @inbounds for k in 0:n÷2
     u = K.tw[k+1] * c[k+1]
@@ -167,6 +173,76 @@ function dct2!(y, x, K::R2RLine{T}, B, dst::Bool) where {T}
     end
   end
   y
+end
+
+# DCT-II/DST-II of even n = 2M from the permuted line in B.r: the complex DFT C of length M of
+# it (read as M complex values), then per pair k, M-k the half-spectrum values
+# R_k = (C_k + conj C_(M-k))/2 + u_k (C_k - conj C_(M-k)) and R_(M-k) = conj(...) (u_k from the
+# real line, see real.jl) times the DCT twiddles, four outputs at once (no r2c post-processing
+# pass in between).
+function dct2_pairs!(y, K::R2RLine{T}, B, dst::Bool) where {T}
+  n = K.n; M = n ÷ 2; c = B.c; r = B.r
+  L = K.inner::RealLine
+  GC.@preserve r c B run!(cptr(c), pointer(r), cptr(B.b1), cptr(B.b2), L.inner, 1)
+  w = L.w; tw = K.tw
+  idx(j) = (dst ? n - 1 - j : j) + 1
+  @inbounds begin
+    z0 = c[1]
+    y[idx(0)] = 2 * (real(z0) + imag(z0))
+    y[idx(M)] = 2 * real(tw[M+1]) * (real(z0) - imag(z0))
+    if y isa StridedLine
+      GC.@preserve c w tw dct2_pairs_vec!(y.ptr, y.stride, cptr(c), cptr(w), cptr(tw), n, M, dst)
+    else
+      for k in 1:(M-1)÷2
+        zk = c[k+1]; zm = conj(c[M-k+1])
+        h = (zk + zm) / 2; d = w[k+1] * (zk - zm)
+        uk = tw[k+1] * (h + d); um = tw[M-k+1] * conj(h - d)
+        y[idx(k)] = 2real(uk); y[idx(n - k)] = -2imag(uk)
+        y[idx(M - k)] = 2real(um); y[idx(M + k)] = -2imag(um)
+      end
+    end
+    if iseven(M)
+      k = M ÷ 2; zk = c[k+1]; zm = conj(zk)
+      uk = tw[k+1] * ((zk + zm) / 2 + w[k+1] * (zk - zm))
+      y[idx(k)] = 2real(uk); y[idx(n - k)] = -2imag(uk)
+    end
+  end
+  y
+end
+
+# r_j = x_2j, r_(n-1-j) = ±x_2j+1 for a contiguous line of even length n: four values per load,
+# the even ones stored forward, the odd ones backward
+function dct2_gather!(pr::Ptr{T}, px::Ptr{T}, n::Int, dst::Bool) where {T}
+  M = n ÷ 2; S = sizeof(T)
+  sgn = Vec{2,T}(dst ? -one(T) : one(T))
+  j = 0
+  @inbounds while j + 1 < M
+    a = vload(Vec{4,T}, px + 2j * S)
+    vstore(shufflevector(a, Val((0, 2))), pr + j * S)
+    vstore(shufflevector(a, Val((3, 1))) * sgn, pr + (n - 2 - j) * S)
+    j += 2
+  end
+  @inbounds if j < M
+    unsafe_store!(pr, unsafe_load(px, 2j + 1), j + 1)
+    v = unsafe_load(px, 2j + 2); unsafe_store!(pr, dst ? -v : v, n - j)
+  end
+  nothing
+end
+
+# The pairs k = 1…(M-1)÷2 of dct2_pairs! with one complex value per vector; outputs `ys` apart
+function dct2_pairs_vec!(py::Ptr{T}, ys::Int, pc::Ptr{T}, pw::Ptr{T}, ptw::Ptr{T}, n::Int, M::Int, dst::Bool) where {T}
+  V = single_vec(T); CB = 2 * sizeof(T)
+  half = V((T(0.5), T(0.5)))
+  o(j) = (dst ? n - 1 - j : j) * ys + 1
+  @inbounds for k in 1:(M-1)÷2
+    zk = vload(V, pc + k * CB); czm = cconj(vload(V, pc + (M - k) * CB))
+    h = (zk + czm) * half; d = ccmul(vload(V, pw + k * CB), zk - czm)
+    uk = ccmul(vload(V, ptw + k * CB), h + d)
+    um = ccmul(vload(V, ptw + (M - k) * CB), cconj(h - d))
+    unsafe_store!(py, 2 * uk[1], o(k)); unsafe_store!(py, -2 * uk[2], o(n - k))
+    unsafe_store!(py, 2 * um[1], o(M - k)); unsafe_store!(py, -2 * um[2], o(M + k))
+  end
+  nothing
 end
 
 # DCT-III; with `dst` the DST-III as (-1)^k DCT-III(reversed x)_k
