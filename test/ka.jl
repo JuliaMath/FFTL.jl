@@ -18,6 +18,9 @@ using KernelAbstractions
     zi = inv(p) * y; KernelAbstractions.synchronize(be)
     @test relerr(zi, x) < tol(T)
   end
+  # Bluestein in one kernel (8 lines of M = 80 per workgroup) and in two launches (one line)
+  @test length(FFTL.plan_ka(be, T, (8, 37), -1; region = 2:2).steps) == 1
+  @test length(FFTL.plan_ka(be, T, (37,), -1).steps) == 2
   p = FFTL.plan_ka(be, T, (8,), -1)
   @test_throws DimensionMismatch mul!(zeros(Complex{T}, 8), p, zeros(Complex{T}, 4))
   x = rand(Complex{T}, 8)
