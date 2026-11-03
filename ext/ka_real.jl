@@ -13,7 +13,8 @@
 # - r2r: a complex DFT (sign -1) of length L = 2n (2(n-1) for DCT-I, 2(n+1) for DST-I, n for DHT
 #   and the halfcomplex pair) of a pre-twiddled, zero-padded line and a post-twiddle, as in
 #   src/generic.jl (formulas there). Up to 2–4× the arithmetic of a dedicated kernel, any kind
-#   along any dimension.
+#   along any dimension. DCT-II/III and DST-II/III of even length instead use one complex DFT of
+#   half the length (ka_dct2_pre! and the kernels after it).
 # The other dimensions of a real region are complex passes on the half spectrum.
 # Along dimension 1 (S = 1, n even, n/2 without Bluestein) the line plan does it all: the real
 # array is z itself (reinterpreted as complex), the r2c post-processing runs in its last pass,
@@ -151,6 +152,71 @@ end
   end
 end
 
+# DCT-II / DST-II (dst = 1) of even length n = 2M along a dimension by one complex DFT of length
+# M: z_m = r_2m + i r_2m+1 of the permuted line r_j = x_2j (j < M), r_j = ±x_2(n-1-j)+1 (j >= M,
+# minus for DST-II, the DCT-II of ((-1)^j x_j)); then with C = DFT_M(z)
+#   R_k = (C_k + conj C_(M-k))/2 - i/2 W_n^k (C_k - conj C_(M-k)),  u_k = exp(-iπk/(2n)) R_k,
+#   y_k = 2 Re u_k, y_(n-k) = -2 Im u_k (k = 0…M); DST-II writes them to n-1-k and k-1.
+# DCT-III / DST-III reverse the steps: R_k = conj(t_k) (y_k - i y_(n-k))/2 (y_n = 0),
+#   C_k = 4 [(R_k + conj R_(M-k))/2 + i conj(W_n^k) (R_k - conj R_(M-k))/2], z = backward DFT_M(C),
+#   x_2j = r_j, x_2j+1 = r_(n-1-j); DST-III reads the input reversed and signs the output (-1)^j.
+# w[k] = W_n^k = exp(-2πik/n), t[k] = exp(-iπk/(2n)), k = 0…M.
+@kernel function ka_dct2_pre!(z, @Const(x), S, n, M, dst)
+  t = (@index(Global, Linear) - 1) % Int32
+  i, m, o = lineidx(t, S, M)
+  xb = i + S * n * o
+  ja = Int32(2) * m; jb = ja + Int32(1)
+  ra = ja < M ? Int32(2) * ja : Int32(2) * (n - Int32(1) - ja) + Int32(1)
+  rb = jb < M ? Int32(2) * jb : Int32(2) * (n - Int32(1) - jb) + Int32(1)
+  @inbounds va = x[xb+S*ra+1]; @inbounds vb = x[xb+S*rb+1]
+  if dst != 0
+    ja >= M && (va = -va)
+    jb >= M && (vb = -vb)
+  end
+  @inbounds z[t+1] = complex(va, vb)
+end
+
+@kernel function ka_dct2_post!(y, @Const(Z), @Const(w), @Const(tw), S, n, M, dst)
+  t = (@index(Global, Linear) - 1) % Int32
+  i, k, o = lineidx(t, S, M + Int32(1))
+  zb = i + S * M * o; yb = i + S * n * o
+  T = real(eltype(y))
+  k1 = k == M ? zero(Int32) : k
+  k2 = k == zero(Int32) ? zero(Int32) : M - k
+  @inbounds c1 = Z[zb+S*k1+1]
+  @inbounds c2 = conj(Z[zb+S*k2+1])
+  @inbounds u = tw[k+1] * ((c1 + c2) * T(0.5) + complex(zero(T), T(-0.5)) * w[k+1] * (c1 - c2))
+  ka = dst != 0 ? n - Int32(1) - k : k
+  @inbounds y[yb+S*ka+1] = 2real(u)
+  if zero(Int32) < k < M
+    kb = dst != 0 ? k - Int32(1) : n - k
+    @inbounds y[yb+S*kb+1] = -2imag(u)
+  end
+end
+
+@kernel function ka_dct3_pre!(Z, @Const(y), @Const(w), @Const(tw), S, n, M, dst)
+  t = (@index(Global, Linear) - 1) % Int32
+  i, k, o = lineidx(t, S, M)
+  yb = i + S * n * o
+  T = real(eltype(Z))
+  # input element j (reversed for DST-III); y_n = 0
+  @inline yv(j) = j >= n ? zero(T) : (@inbounds y[yb+S*(dst != 0 ? n - Int32(1) - j : j)+1])
+  ka = k; kb = M - k
+  Ra = conj(tw[ka+1]) * complex(yv(ka), -yv(n - ka)) * T(0.5)
+  Rb = conj(tw[kb+1]) * complex(yv(kb), -yv(n - kb)) * T(0.5)
+  Rb = conj(Rb)
+  @inbounds Z[i+S*(k+M*o)+1] = T(2) * ((Ra + Rb) + complex(zero(T), one(T)) * conj(w[k+1]) * (Ra - Rb))
+end
+
+@kernel function ka_dct3_post!(x, @Const(z), S, n, M, dst)
+  t = (@index(Global, Linear) - 1) % Int32
+  i, j, o = lineidx(t, S, n)
+  q = iseven(j) ? j ÷ Int32(2) : n - Int32(1) - (j - Int32(1)) ÷ Int32(2)
+  @inbounds v = z[i+S*(q÷Int32(2)+M*o)+1]
+  r = iseven(q) ? real(v) : imag(v)
+  @inbounds x[t+1] = dst != 0 && isodd(j) ? -r : r
+end
+
 todevice(backend, v::Vector) = (d = KA.allocate(backend, eltype(v), length(v)); copyto!(d, v); d)
 devzeros(backend, T, dims) = KA.zeros(backend, T, dims...)
 setdim(sz, d, v) = ntuple(i -> i == d ? v : sz[i], length(sz))
@@ -262,7 +328,8 @@ mutable struct KAR2RPlan{T,N,B} <: AbstractFFTs.Plan{T}
   sz::NTuple{N,Int}
   region::Vector{Int}
   kinds::Vector{FFTL.R2RKind}
-  dims::Vector{Any}                  # per dimension: (kind, L, KAPlan, pre, post, z, Z)
+  dims::Vector{Any}                  # per dimension: (kind, L, KAPlan, pre, post, z, Z), or
+                                     # (:half, kind, KAPlan, w, t, z, Z) for DCT/DST-II/III of even length
   backend::B
   pinv::AbstractFFTs.Plan
   KAR2RPlan{T,N,B}(sz, region, kinds, dims, backend) where {T,N,B} = new{T,N,B}(sz, region, kinds, dims, backend)
@@ -287,6 +354,15 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
   for (k, d) in zip(ks, reg)
     n = sz[d]
     k == FFTL.REDFT00 && n < 2 && throw(ArgumentError("REDFT00 needs length ≥ 2"))
+    if k in (FFTL.REDFT10, FFTL.RODFT10, FFTL.REDFT01, FFTL.RODFT01) && iseven(n) && n >= 4
+      M = n ÷ 2; hsz = setdim(sz, d, M)
+      σ = k in (FFTL.REDFT10, FFTL.RODFT10) ? -1 : 1
+      w = todevice(backend, [Complex{T}(cispi(-2j / n)) for j in 0:M])
+      tw = todevice(backend, [Complex{T}(cispi(-j / (2n))) for j in 0:M])
+      push!(dims, (:half, Int(k), KAPlan(backend, T, hsz, σ; region = d:d), w, tw,
+                   devzeros(backend, Complex{T}, hsz), devzeros(backend, Complex{T}, hsz)))
+      continue
+    end
     L = k == FFTL.REDFT00 ? 2(n - 1) : k == FFTL.RODFT00 ? 2(n + 1) : k in (FFTL.DHT, FFTL.R2HC, FFTL.HC2R) ? n : 2n
     lsz = setdim(sz, d, L)
     pre, post = r2r_twiddles(T, k, n)
@@ -305,11 +381,26 @@ function LinearAlgebra.mul!(y::AbstractArray{T}, p::KAR2RPlan{T}, x::AbstractArr
   size(x) == p.sz && size(y) == p.sz || throw(DimensionMismatch("r2r plan for size $(p.sz)"))
   isempty(p.region) && return copyto!(y, x)
   be = p.backend; src = x
-  for (d, (kind, L, P, pre, post, z, Z)) in zip(p.region, p.dims)
+  for (d, dim) in zip(p.region, p.dims)
     n = p.sz[d]; S = prod(p.sz[1:d-1]; init = 1); outer = prod(p.sz[d+1:end]; init = 1)
-    run!(ka_r2r_pre!, be, S * L * outer, z, src, pre, S, n, L, kind)
-    launch!(Z, z, P)
-    run!(ka_r2r_post!, be, S * n * outer, y, Z, post, S, n, L, kind)
+    if dim[1] === :half
+      _, kind, P, w, tw, z, Z = dim
+      M = n ÷ 2; dst = Int(kind == Int(FFTL.RODFT10) || kind == Int(FFTL.RODFT01))
+      if kind == Int(FFTL.REDFT10) || kind == Int(FFTL.RODFT10)
+        run!(ka_dct2_pre!, be, S * M * outer, z, src, S, n, M, dst)
+        launch!(Z, z, P)
+        run!(ka_dct2_post!, be, S * (M + 1) * outer, y, Z, w, tw, S, n, M, dst)
+      else
+        run!(ka_dct3_pre!, be, S * M * outer, Z, src, w, tw, S, n, M, dst)
+        launch!(z, Z, P)
+        run!(ka_dct3_post!, be, S * n * outer, y, z, S, n, M, dst)
+      end
+    else
+      kind, L, P, pre, post, z, Z = dim
+      run!(ka_r2r_pre!, be, S * L * outer, z, src, pre, S, n, L, kind)
+      launch!(Z, z, P)
+      run!(ka_r2r_post!, be, S * n * outer, y, Z, post, S, n, L, kind)
+    end
     src = y
   end
   y
