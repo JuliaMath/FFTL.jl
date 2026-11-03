@@ -88,6 +88,16 @@ end
     z = copy(x); mul!(z, p, z); KernelAbstractions.synchronize(be)
     @test relerr(z, y) < 10tol(T)
   end
+  # DCT-I with n - 1 = 37 (Bluestein): complex DFT of n - 1 between kernels of its own
+  for (sz, reg) in (((38,), 1), ((5, 38), 2), ((38, 6), 1:2))
+    x = randn(T, sz)
+    p = FFTL.plan_ka_r2r(be, T, sz, FFTL.REDFT00; region = reg)
+    @test p.dims[1][1] === :dct1
+    y = p * x; KernelAbstractions.synchronize(be)
+    @test relerr(y, FFTL.r2r(x, FFTL.REDFT00, reg)) < 10tol(T)
+    z = copy(x); mul!(z, p, z); KernelAbstractions.synchronize(be)
+    @test relerr(z, y) < 10tol(T)
+  end
 end
 
 @testset "KernelAbstractions plans: regions, singleton and padded dimensions" begin

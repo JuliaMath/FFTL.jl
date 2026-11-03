@@ -220,6 +220,31 @@ end
   @inbounds x[t+1] = dst != 0 && isodd(j) ? -r : r
 end
 
+# DCT-I of lines of length N + 1 as the r2c of their even extension xe (length 2N, xe_i = x_i for
+# i ≤ N, x_(2N-i) above) by a complex DFT of length N, for any N (Bluestein included):
+# z_K = xe_2K + i xe_2K+1, Z = DFT_N(z), y_K = Re[(Z_K + conj Z_(N-K))/2 + u_K (Z_K - conj Z_(N-K))]
+# with u_K = -i/2 exp(-iπK/N), K = 0…N (Z_N = Z_0).
+@kernel function ka_dct1_pre!(z, @Const(x), S, N)
+  t = (@index(Global, Linear) - 1) % Int32
+  i, K, o = lineidx(t, S, N)
+  xb = i + S * (N + Int32(1)) * o
+  a = Int32(2) * K; b = a + Int32(1)
+  a = a <= N ? a : Int32(2) * N - a; b = b <= N ? b : Int32(2) * N - b
+  @inbounds z[t+1] = complex(x[xb+S*a+1], x[xb+S*b+1])
+end
+
+@kernel function ka_dct1_post!(y, @Const(Z), @Const(u), S, N)
+  t = (@index(Global, Linear) - 1) % Int32
+  i, K, o = lineidx(t, S, N + Int32(1))
+  zb = i + S * N * o
+  T = real(eltype(y))
+  k1 = K == N ? zero(Int32) : K
+  k2 = K == zero(Int32) ? zero(Int32) : N - K
+  @inbounds c1 = Z[zb+S*k1+1]
+  @inbounds c2 = conj(Z[zb+S*k2+1])
+  @inbounds y[t+1] = real((c1 + c2) * T(0.5) + u[K+1] * (c1 - c2))
+end
+
 todevice(backend, v::Vector) = (d = KA.allocate(backend, eltype(v), length(v)); copyto!(d, v); d)
 devzeros(backend, T, dims) = KA.zeros(backend, T, dims...)
 setdim(sz, d, v) = ntuple(i -> i == d ? v : sz[i], length(sz))
@@ -369,6 +394,15 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
         continue
       end
     end
+    if k == FFTL.REDFT00 && n >= 3
+      # the same with the steps before and after the DFT as kernels of their own: n - 1 not
+      # smooth (Bluestein), or the pass layout does not take the hooks
+      n1 = n - 1; zsz = setdim(sz, d, n1)
+      u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
+      push!(dims, (:dct1, Int(k), KAPlan(backend, T, zsz, -1; region = d:d), u,
+                   devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
+      continue
+    end
     if k in (FFTL.REDFT11, FFTL.RODFT11) && iseven(n) && n >= 4 && FFTL.factorize(n ÷ 2)[2] == 1
       # DCT-IV/DST-IV of even length: complex backward DFT of n/2 between element-wise twiddles,
       # all in the DFT's passes (pass_kernel's rhook 6/7)
@@ -434,6 +468,11 @@ function LinearAlgebra.mul!(y::AbstractArray{T}, p::KAR2RPlan{T}, x::AbstractArr
     n = p.sz[d]; S = prod(p.sz[1:d-1]; init = 1); outer = prod(p.sz[d+1:end]; init = 1)
     if dim[1] === :fused
       launch!(y, src, dim[3])
+    elseif dim[1] === :dct1
+      _, _, P, u, z, Z = dim
+      run!(ka_dct1_pre!, be, S * (n - 1) * outer, z, src, S, n - 1)
+      launch!(Z, z, P)
+      run!(ka_dct1_post!, be, S * n * outer, y, Z, u, S, n - 1)
     elseif dim[1] === :half
       _, kind, P, w, tw, z, Z = dim
       M = n ÷ 2; dst = Int(kind == Int(FFTL.RODFT10) || kind == Int(FFTL.RODFT01))
