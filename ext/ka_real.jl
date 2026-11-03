@@ -14,7 +14,8 @@
 #   and the halfcomplex pair) of a pre-twiddled, zero-padded line and a post-twiddle, as in
 #   src/generic.jl (formulas there). Up to 2–4× the arithmetic of a dedicated kernel, any kind
 #   along any dimension. DCT-II/III and DST-II/III of even length instead use one complex DFT of
-#   half the length (ka_dct2_pre! and the kernels after it).
+#   half the length (ka_dct2_pre! and the kernels after it); along dimension 1 the DCT-II/DST-II
+#   steps before and after it run inside the DFT's first and last pass.
 # The other dimensions of a real region are complex passes on the half spectrum.
 # Along dimension 1 (S = 1, n even, n/2 without Bluestein) the line plan does it all: the real
 # array is z itself (reinterpreted as complex), the r2c post-processing runs in its last pass,
@@ -329,7 +330,8 @@ mutable struct KAR2RPlan{T,N,B} <: AbstractFFTs.Plan{T}
   region::Vector{Int}
   kinds::Vector{FFTL.R2RKind}
   dims::Vector{Any}                  # per dimension: (kind, L, KAPlan, pre, post, z, Z), or
-                                     # (:half, kind, KAPlan, w, t, z, Z) for DCT/DST-II/III of even length
+                                     # (:half, kind, KAPlan, w, t, z, Z) for DCT/DST-II/III of even length,
+                                     # (:fused, kind, KAPlan) for DCT/DST-II along dimension 1
   backend::B
   pinv::AbstractFFTs.Plan
   KAR2RPlan{T,N,B}(sz, region, kinds, dims, backend) where {T,N,B} = new{T,N,B}(sz, region, kinds, dims, backend)
@@ -359,6 +361,15 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       σ = k in (FFTL.REDFT10, FFTL.RODFT10) ? -1 : 1
       w = todevice(backend, [Complex{T}(cispi(-2j / n)) for j in 0:M])
       tw = todevice(backend, [Complex{T}(cispi(-j / (2n))) for j in 0:M])
+      if d == 1 && σ < 0 && FFTL.factorize(M)[2] == 1
+        # the whole DCT-II/DST-II in the line plan's passes (pass_kernel's rhook 2/3)
+        u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-2j / n)) for j in 0:M])
+        P = KAPlan(backend, T, hsz, -1; region = 1:1, rhook = k == FFTL.REDFT10 ? 2 : 3, rtab = (u, tw))
+        if P.rhook != 0
+          push!(dims, (:fused, Int(k), P))
+          continue
+        end
+      end
       push!(dims, (:half, Int(k), KAPlan(backend, T, hsz, σ; region = d:d), w, tw,
                    devzeros(backend, Complex{T}, hsz), devzeros(backend, Complex{T}, hsz)))
       continue
@@ -383,7 +394,9 @@ function LinearAlgebra.mul!(y::AbstractArray{T}, p::KAR2RPlan{T}, x::AbstractArr
   be = p.backend; src = x
   for (d, dim) in zip(p.region, p.dims)
     n = p.sz[d]; S = prod(p.sz[1:d-1]; init = 1); outer = prod(p.sz[d+1:end]; init = 1)
-    if dim[1] === :half
+    if dim[1] === :fused
+      launch!(y, src, dim[3])
+    elseif dim[1] === :half
       _, kind, P, w, tw, z, Z = dim
       M = n ÷ 2; dst = Int(kind == Int(FFTL.RODFT10) || kind == Int(FFTL.RODFT01))
       if kind == Int(FFTL.REDFT10) || kind == Int(FFTL.RODFT10)
