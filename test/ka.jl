@@ -75,13 +75,14 @@ end
   y = p * x; KernelAbstractions.synchronize(be)
   @test relerr(y, FFTL.r2r(x, ks, 1:3)) < 10tol(T)
   @test relerr(inv(p) * y, x) < 10tol(T)
-  # DCT/DST-II and III of even length: half-length DFT, II inside the DFT's passes (contiguous and
-  # strided dimensions, one and two passes, mirrored lanes), in place
-  for k in (FFTL.REDFT10, FFTL.RODFT10, FFTL.REDFT01, FFTL.RODFT01),
-      (sz, reg) in pick((((64,), 1), ((32, 4096), 2), ((64, 256), 2), ((16, 64, 32), 1:3), ((6, 10), 1:2)), (((64,), 1), ((32, 4096), 2), ((6, 10), 1:2)))
+  # DCT/DST-II, -III, -IV of even length and DCT-I inside the DFT's passes (contiguous and strided
+  # dimensions, one and two passes, mirrored lanes), in place; DCT-I of 4096 (odd s in the last
+  # pass) falls back
+  for k in (FFTL.REDFT10, FFTL.RODFT10, FFTL.REDFT01, FFTL.RODFT01, FFTL.REDFT11, FFTL.RODFT11, FFTL.REDFT00),
+      (sz, reg) in pick((((64,), 1), ((32, 4096), 2), ((64, 256), 2), ((16, 64, 32), 1:3), ((6, 10), 1:2), ((17, 4096), 2)), (((64,), 1), ((32, 4096), 2), ((6, 10), 1:2)))
     x = randn(T, sz)
     p = FFTL.plan_ka_r2r(be, T, sz, k; region = reg)
-    k in (FFTL.REDFT10, FFTL.RODFT10) && @test all(d -> d[1] === :fused, p.dims)
+    k == FFTL.REDFT00 || @test all(d -> d[1] === :fused, p.dims)
     y = p * x; KernelAbstractions.synchronize(be)
     @test relerr(y, FFTL.r2r(x, k, reg)) < 10tol(T)
     z = copy(x); mul!(z, p, z); KernelAbstractions.synchronize(be)

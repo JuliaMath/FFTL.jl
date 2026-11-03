@@ -14,8 +14,10 @@
 #   and the halfcomplex pair) of a pre-twiddled, zero-padded line and a post-twiddle, as in
 #   src/generic.jl (formulas there). Up to 2–4× the arithmetic of a dedicated kernel, any kind
 #   along any dimension. DCT-II/III and DST-II/III of even length instead use one complex DFT of
-#   half the length (ka_dct2_pre! and the kernels after it); for DCT-II/DST-II the steps before
-#   and after it run inside the DFT's first and last pass where the pass layout allows.
+#   half the length (ka_dct2_pre! and the kernels after it); the steps before and after it run
+#   inside the DFT's first and last pass where the pass layout allows, and so do those of
+#   DCT-IV/DST-IV of even length (complex DFT of n/2 between twiddles, see src/r2r.jl) and of
+#   DCT-I (r2c of the even extension of length 2(n-1), a complex DFT of n - 1).
 # The other dimensions of a real region are complex passes on the half spectrum.
 # Along dimension 1 (S = 1, n even, n/2 without Bluestein) the line plan does it all: the real
 # array is z itself (reinterpreted as complex), the r2c post-processing runs in its last pass,
@@ -331,7 +333,7 @@ mutable struct KAR2RPlan{T,N,B} <: AbstractFFTs.Plan{T}
   kinds::Vector{FFTL.R2RKind}
   dims::Vector{Any}                  # per dimension: (kind, L, KAPlan, pre, post, z, Z), or
                                      # (:half, kind, KAPlan, w, t, z, Z) for DCT/DST-II/III of even length,
-                                     # (:fused, kind, KAPlan) for DCT/DST-II in the DFT's passes
+                                     # (:fused, kind, KAPlan) for DCT-I and DCT/DST-II, -III, -IV in the DFT's passes
   backend::B
   pinv::AbstractFFTs.Plan
   KAR2RPlan{T,N,B}(sz, region, kinds, dims, backend) where {T,N,B} = new{T,N,B}(sz, region, kinds, dims, backend)
@@ -356,11 +358,42 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
   for (k, d) in zip(ks, reg)
     n = sz[d]
     k == FFTL.REDFT00 && n < 2 && throw(ArgumentError("REDFT00 needs length ≥ 2"))
+    if k == FFTL.REDFT00 && n >= 3 && FFTL.factorize(n - 1)[2] == 1
+      # DCT-I: r2c of the even extension (length 2(n-1)) by one complex DFT of length n - 1, the
+      # extension built at the first pass's loads, real parts at the last pass (rhook 8)
+      n1 = n - 1
+      u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
+      P = KAPlan(backend, T, setdim(sz, d, n1), -1; region = d:d, rhook = 8, rtab = (u, u))
+      if P.rhook != 0
+        push!(dims, (:fused, Int(k), P))
+        continue
+      end
+    end
+    if k in (FFTL.REDFT11, FFTL.RODFT11) && iseven(n) && n >= 4 && FFTL.factorize(n ÷ 2)[2] == 1
+      # DCT-IV/DST-IV of even length: complex backward DFT of n/2 between element-wise twiddles,
+      # all in the DFT's passes (pass_kernel's rhook 6/7)
+      M = n ÷ 2
+      pre = todevice(backend, [Complex{T}(cispi(j / n)) for j in 0:M-1])
+      post = todevice(backend, [Complex{T}(cispi((4j + 1) / (4n))) for j in 0:M-1])
+      P = KAPlan(backend, T, setdim(sz, d, M), 1; region = d:d, rhook = k == FFTL.REDFT11 ? 6 : 7, rtab = (pre, post))
+      if P.rhook != 0
+        push!(dims, (:fused, Int(k), P))
+        continue
+      end
+    end
     if k in (FFTL.REDFT10, FFTL.RODFT10, FFTL.REDFT01, FFTL.RODFT01) && iseven(n) && n >= 4
       M = n ÷ 2; hsz = setdim(sz, d, M)
       σ = k in (FFTL.REDFT10, FFTL.RODFT10) ? -1 : 1
       w = todevice(backend, [Complex{T}(cispi(-2j / n)) for j in 0:M])
       tw = todevice(backend, [Complex{T}(cispi(-j / (2n))) for j in 0:M])
+      if σ > 0 && FFTL.factorize(M)[2] == 1
+        # the whole DCT-III/DST-III in the line plan's passes (pass_kernel's rhook 4/5)
+        P = KAPlan(backend, T, hsz, 1; region = d:d, rhook = k == FFTL.REDFT01 ? 4 : 5, rtab = (tw, w))
+        if P.rhook != 0
+          push!(dims, (:fused, Int(k), P))
+          continue
+        end
+      end
       if σ < 0 && FFTL.factorize(M)[2] == 1
         # the whole DCT-II/DST-II in the line plan's passes (pass_kernel's rhook 2/3)
         u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-2j / n)) for j in 0:M])
