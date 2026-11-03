@@ -212,6 +212,9 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     ahook = rhook >= 4                   # element-wise load hooks (by address)
     apost = rpost && 4 <= rhook <= 7     # element-wise store hooks
     ppost = rpost && !apost              # pair post hooks (r2c, DCT-II/DST-II, DCT-I)
+    # DCT-III/DST-III in a one-pass plan (lanes are whole lines): stage the real lines in workgroup
+    # memory first, so that the four inputs of C_K are read from global memory once, not twice
+    spre = rpre && 4 <= rhook <= 5 && R == N
     Lout = dct && !dct1 ? 2N : N + 1     # output line length of the post hook
     # the hooks read the user's input (first pass) and write the user's output (last pass): both
     # unpadded; padded intermediates in between are fine
@@ -329,6 +332,21 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       axo = @inbounds x[abase + $(I(E)) * ($(I(2N - 1)) - Int32(2) * aK) + one(Int32)]
       ccmul(complex(axe, $(dst ? :axo : :(-axo))), @inbounds cin[aK + one(Int32)])
     end
+    # staged DCT-III/DST-III: element K of lane l is C_K from the lane's real line y, held as
+    # buf[l + G k] = y_2k + i y_2k+1 (y reversed for DST-III, y_2N = 0)
+    sy(l, j) = quote
+      syj = $j
+      syj >= $(I(2N)) ? zero($T) : begin
+        syr = $(dst ? :($(I(2N - 1)) - syj) : :syj)
+        syv = $(lb(:($l + $(I(G)) * (syr >> one(Int32)))))
+        iseven(syr) ? real(syv) : imag(syv)
+      end
+    end
+    sload(l, K) = quote
+      sK = $K; sl = $l
+      ccmul(@inbounds(cin[sK + one(Int32)]), complex($(sy(:sl, :sK)), -$(sy(:sl, :($(I(2N)) - sK))))) +
+        ccmul(@inbounds(cout[sK + one(Int32)]), complex($(sy(:sl, :($(I(N)) - sK))), $(sy(:sl, :($(I(N)) + sK)))))
+    end
     # DCT-III/DST-III: r_q to x_j, j = 2q (q < N) or 2(2N-1-q)+1
     rput(q, val) = quote
       aq = $q; ar = $val
@@ -363,7 +381,22 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       end
     end
     body = Any[]
-    if batchlanes
+    if spre
+      # lane l, real pair k at logical complex address xbase + l R + k (batch lanes) or
+      # xbase + l + Lp k; neighbouring threads take neighbouring addresses
+      for i in 0:cld(nel, W)-1
+        push!(body, quote
+          idx = tid + $(I(W * i))
+          if idx < $(I(nel))
+            $(E == 1 ? :((k, l) = (idx % $(I(R)), idx ÷ $(I(R)))) : :((l, k) = (idx % $(I(G)), idx ÷ $(I(G)))))
+            $(asplit(batchlanes ? :(xbase + l * $(I(R)) + k) : :(xbase + l + $(I(ies)) * k)))
+            @inbounds $(lb(:(l + $(I(G)) * k))) = complex(x[abase + $(I(E)) * (Int32(2) * k) + one(Int32)],
+                                                         x[abase + $(I(E)) * (Int32(2) * k + one(Int32)) + one(Int32)])
+          end
+        end)
+      end
+      push!(body, :(@synchronize))
+    elseif batchlanes
       # G transforms stored one after another: contiguous load, element j of lane l to l + G j
       for i in 0:cld(nel, W)-1
         push!(body, quote
@@ -383,7 +416,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     for (si, r) in enumerate(rs)
       mm = L ÷ r
       first = si == 1; last = si == length(rs)
-      fload = first && !batchlanes
+      fload = first && !batchlanes && !spre
       nb = nel ÷ r                       # butterflies of this stage
       cnt = cld(nb, W)
       # the last round may run past nb: compute a clamped butterfly, skip its stores
@@ -396,7 +429,8 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         push!(body, :(g = $gc), :($pc = g ÷ $(I(st))), :($qc = g - $pc * $(I(st))))
         for j in 1:r
           # first local stage: st = G, so local index q + G (p + j mm) is lane q, element p + j mm
-          src = !fload ? lb(:($qc + $(I(st)) * ($pc + $(I((j - 1) * mm))))) :
+          src = first && spre ? sload(qc, :($pc + $(I((j - 1) * mm)))) :
+                !fload ? lb(:($qc + $(I(st)) * ($pc + $(I((j - 1) * mm))))) :
                 rpre && ahook ? aload(:(xbase + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))))) :
                 rpre && E > 1 ? quote   # lane b0 + q = e + E p: column e, element p + m t
                   dgl = b0 + $qc; dgt = $pc + $(I((j - 1) * mm)); dgp = dgl ÷ $(I(E))
