@@ -169,6 +169,9 @@ local_twcount(n, rs) = sum((R - 1) * (L ÷ R) for (R, L) in zip(rs, accumulate(�
 #     R_K = (Z_K + conj Z_(N-K))/2 + cout[K] (Z_K - conj Z_(N-K)), u_K = cin[K] R_K,
 #     y_K = 2 Re u_K, y_(2N-K) = -2 Im u_K (DST-II: at 2N-1-K and K-1), pairs as for r2c.
 #   `pre` and `post` select the hook in the first and the last pass (both in a one-pass plan).
+#   Along a strided dimension (E > 1, DCT hooks only) lane e + E q is column e: the first pass
+#   needs G | E; with s > 1 the last pass takes G/2 columns at q and the same columns at s - q
+#   (q = 0 with s/2), which needs (G/2) | E.
 function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1, 0), pady = (1, 0), lim = LIM0, rhook = 0,
                      pre = rhook > 0, post = rhook < 0)
   rhook = abs(rhook)
@@ -194,7 +197,12 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     rpre = rhook > 0 && pre; rpost = rhook > 0 && post
     dct = rhook >= 2; dst = rhook == 3
     Lout = dct ? 2N : N + 1              # output line length of the post hook
-    @assert rhook == 0 || (E == 1 && Nx == 0 && Ny == 0 && padx == (1, 0) && pady == (1, 0) && !crossing)
+    # the hooks read the user's input (first pass) and write the user's output (last pass): both
+    # unpadded; padded intermediates in between are fine
+    @assert rhook == 0 || ((E == 1 || dct) && Nx == 0 && Ny == 0 && !crossing)
+    @assert !rpre || padx == (1, 0)
+    @assert !rpost || pady == (1, 0)
+    @assert !(rpost && E > 1 && s > 1) || E % (G ÷ 2) == 0
     @assert !rpre || s == 1
     @assert !rpost || (m == 1 && (s == 1 || iseven(G)))
     bufout = transposed || rpost         # the last stage writes to workgroup memory
@@ -215,11 +223,13 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         (rxa + conj(rxb)) + ccmul(@inbounds(cin[rii + one(Int32)]), rxa - conj(rxb))
     end
     # DCT-II/DST-II: element ii of z of line `line` from the real line (length 2N)
-    dload(line, ii) = quote
-      dxl = $line * $(I(2N)); dja = Int32(2) * $ii; djb = dja + one(Int32)
+    dload(line, ii) = dloadb(:($line * $(I(2N))), ii)
+    # the same from the offset `base` of the line, elements E apart
+    dloadb(base, ii) = quote
+      dxl = $base; dja = Int32(2) * $ii; djb = dja + one(Int32)
       dra = dja < $(I(N)) ? Int32(2) * dja : Int32(2) * ($(I(2N - 1)) - dja) + one(Int32)
       drb = djb < $(I(N)) ? Int32(2) * djb : Int32(2) * ($(I(2N - 1)) - djb) + one(Int32)
-      dva = @inbounds x[dxl + dra + one(Int32)]; dvb = @inbounds x[dxl + drb + one(Int32)]
+      dva = @inbounds x[dxl + $(I(E)) * dra + one(Int32)]; dvb = @inbounds x[dxl + $(I(E)) * drb + one(Int32)]
       $(dst ? :(complex(dja < $(I(N)) ? dva : -dva, djb < $(I(N)) ? dvb : -dvb)) : :(complex(dva, dvb)))
     end
     xload(line, ii) = dct ? dload(line, ii) : rload(line, ii)
@@ -228,6 +238,14 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     # r2c, s > 1: lane q of local lane l (front lanes l < G/2, then their mirrors)
     rlane(l) = :($l < $(I(G ÷ 2)) ? b0 ÷ Int32(2) + $l :
                  b0 == zero(Int32) && $l == $(I(G ÷ 2)) ? $(I(s ÷ 2)) : $(I(s + G ÷ 2)) - b0 ÷ Int32(2) - $l)
+    # E > 1: workgroup g = b0/G of its batch item has columns eb H … eb H + H - 1 at q = qf and
+    # at s - qf (s/2 for qf = 0), g = qf (E/H) + eb; lane in memory e + E q
+    HE = max(1, G ÷ 2); EB = max(1, E ÷ HE)
+    rlaneE(l) = quote
+      dg = b0 ÷ $(I(G)); dqf = dg ÷ $(I(EB)); deb = dg - dqf * $(I(EB))
+      $l < $(I(HE)) ? deb * $(I(HE)) + $l + $(I(E)) * dqf :
+        deb * $(I(HE)) + $l - $(I(HE)) + $(I(E)) * (dqf == zero(Int32) ? $(I(s ÷ 2)) : $(I(s)) - dqf)
+    end
     # r2c: X_K and X_(N-K) (line offset ryl) from zk = Z_K and zm = Z_(N-K)
     rpair(K, zk, zm) = dct ? dpair(K, zk, zm) : quote
       rK = $K; rzk = $zk; rzm = conj($zm)
@@ -247,15 +265,15 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       rh = (rzk + rzm) * $(T(0.5)); rd = ccmul(@inbounds(cout[rK + one(Int32)]), rzk - rzm)
       du = ccmul(@inbounds(cin[rK + one(Int32)]), rh + rd)
       dv = ccmul(@inbounds(cin[$(I(N)) - rK + one(Int32)]), conj(rh - rd))
-      @inbounds y[ryl + $(didx(:rK)) + one(Int32)] = 2real(du)
-      @inbounds y[ryl + $(didx(:($(I(2N)) - rK))) + one(Int32)] = -2imag(du)
-      @inbounds y[ryl + $(didx(:($(I(N)) - rK))) + one(Int32)] = 2real(dv)
-      @inbounds y[ryl + $(didx(:($(I(N)) + rK))) + one(Int32)] = -2imag(dv)
+      @inbounds y[ryl + $(I(E)) * $(didx(:rK)) + one(Int32)] = 2real(du)
+      @inbounds y[ryl + $(I(E)) * $(didx(:($(I(2N)) - rK))) + one(Int32)] = -2imag(du)
+      @inbounds y[ryl + $(I(E)) * $(didx(:($(I(N)) - rK))) + one(Int32)] = 2real(dv)
+      @inbounds y[ryl + $(I(E)) * $(didx(:($(I(N)) + rK))) + one(Int32)] = -2imag(dv)
     end
     dzero(zk) = quote
       rz0 = $zk
-      @inbounds y[ryl + $(didx(:(zero(Int32)))) + one(Int32)] = 2 * (real(rz0) + imag(rz0))
-      @inbounds y[ryl + $(didx(I(N))) + one(Int32)] = 2 * real(@inbounds cin[$(I(N + 1))]) * (real(rz0) - imag(rz0))
+      @inbounds y[ryl + $(I(E)) * $(didx(:(zero(Int32)))) + one(Int32)] = 2 * (real(rz0) + imag(rz0))
+      @inbounds y[ryl + $(I(E)) * $(didx(I(N))) + one(Int32)] = 2 * real(@inbounds cin[$(I(N + 1))]) * (real(rz0) - imag(rz0))
     end
     # lane-major output: y[ybase + l + sp k], twiddle exponent k p s with p = b0 ÷ sp
     lanemajor_store(l, k) = Ny == 0 && crossing ? quote
@@ -306,8 +324,13 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         for j in 1:r
           # first local stage: st = G, so local index q + G (p + j mm) is lane q, element p + j mm
           src = !fload ? lb(:($qc + $(I(st)) * ($pc + $(I((j - 1) * mm))))) :
+                rpre && E > 1 ? quote   # lane b0 + q = e + E p: column e, element p + m t
+                  dgl = b0 + $qc; dgt = $pc + $(I((j - 1) * mm)); dgp = dgl ÷ $(I(E))
+                  $(dloadb(:(ob * $(I(E * 2N)) + dgl - dgp * $(I(E))), :(dgp + $(I(m)) * dgt)))
+                end :
                 rpre ? xload(:ob, :(b0 + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))))) :
-                rpost && s > 1 ? :(x[obase + $(rlane(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))) + one(Int32)]) :
+                rpost && s > 1 && E > 1 ? :(x[padmap(obase + $(rlaneE(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
+                rpost && s > 1 ? :(x[padmap(obase + $(rlane(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
                 Nx == 0 ? :(x[padmap(xbase + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
                 quote   # s = 1: lane b0 + q = e + E p, element p + m jR along the dimension
                   bl = b0 + $qc
@@ -354,13 +377,32 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
           idx = tid + $(I(W * i))
           if idx < $(I(cnt))
             $(s == 1 ? quote
-              # lanes are whole lines: pairs k, R - k of a lane
-              k = idx % $(I(R ÷ 2 + 1)); l = idx ÷ $(I(R ÷ 2 + 1))
-              ryl = (ob + b0 + l) * $(I(Lout))
+              # lanes are whole lines: pairs k, R - k of a lane (along a strided dimension the
+              # neighbouring threads take neighbouring columns, so that their stores coalesce)
+              $(E == 1 ? :((k, l) = (idx % $(I(R ÷ 2 + 1)), idx ÷ $(I(R ÷ 2 + 1)))) :
+                         :((l, k) = (idx % $(I(G)), idx ÷ $(I(G)))))
+              ryl = $(E == 1 ? :((ob + b0 + l) * $(I(Lout))) : :(ob * $(I(E * Lout)) + b0 + l))
               if k == zero(Int32)
                 $(rzero(lb(:l)))
               else
                 $(rpair(:k, lb(:(l + $(I(G)) * k)), lb(:(l + $(I(G)) * ($(I(R)) - k)))))
+              end
+            end : E > 1 ? quote
+              # front column l (q = qf) element k pairs with lane H + l (q = s - qf) element R - 1 - k
+              l = idx % $(I(H)); k = idx ÷ $(I(H))
+              dg = b0 ÷ $(I(G)); dqf = dg ÷ $(I(EB)); deb = dg - dqf * $(I(EB))
+              ryl = ob * $(I(E * Lout)) + deb * $(I(H)) + l
+              if dqf == zero(Int32)
+                if k == zero(Int32)
+                  $(rzero(lb(:l)))
+                elseif k <= $(I(R ÷ 2))
+                  $(rpair(:($(I(s)) * k), lb(:(l + $(I(G)) * k)), lb(:(l + $(I(G)) * ($(I(R)) - k)))))
+                end
+                if k < $(I(cld(R, 2)))
+                  $(rpair(:($(I(s ÷ 2)) + $(I(s)) * k), lb(:($(I(H)) + l + $(I(G)) * k)), lb(:($(I(H)) + l + $(I(G)) * ($(I(R - 1)) - k)))))
+                end
+              else
+                $(rpair(:(dqf + $(I(s)) * k), lb(:(l + $(I(G)) * k)), lb(:($(I(H)) + l + $(I(G)) * ($(I(R - 1)) - k)))))
               end
             end : quote
               # front lane l (q = b0/2 + l) element k pairs with lane H + l element R - 1 - k
@@ -650,9 +692,10 @@ end
 # and :b may use a padded layout (`pad` elements after each run of dims[1]).
 # `rhook` = ±1 with the table `rtab` (region 1:1, no Bluestein): the half-length line plan of a
 # real transform, see pass_kernel; the r2c hook is dropped (plan.rhook = 0) when the last pass
-# has an odd G. `rhook` = 2 / 3 with `rtab` = (w, t): DCT-II / DST-II lines of length 2·dims[1]
-# (pre hook in the first pass, post hook in the last); dropped as a whole (plan.rhook = 0) when
-# the last pass cannot take the post hook.
+# has an odd G. `rhook` = 2 / 3 with `rtab` = (w, t): DCT-II / DST-II lines of length 2·dims[d]
+# along the one dimension d of `region` (pre hook in the first pass, post hook in the last);
+# dropped as a whole (plan.rhook = 0) when the workgroups of the first or last pass do not fit
+# the hooks (see pass_kernel).
 function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64, rhook = 0, rtab = nothing,
                 lim = device_limits(backend, T),   # override: hardware limits (rule tuning)
                 pad = default_pad(dims, region, T, device_profile(backend), lim)) where {T,D}
@@ -690,10 +733,11 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   end
   specs[end] = merge(specs[end], (dst = :y,))
   if rhook >= 2
-    @assert collect(region) == [1] && specs[1].Nx == 0 && specs[end].Ny == 0
-    sp = specs[end]
-    G = pass_G(sp.R, sp.s, sp.m, 1, sp.B, gmax, lim)
-    if sp.s == 1 || iseven(G)
+    @assert length(region) == 1 && specs[1].Nx == 0 && specs[end].Ny == 0
+    sf = specs[1]; sp = specs[end]; E = sf.E
+    Gf = pass_G(sf.R, sf.s, sf.m, E, sf.B, gmax, lim)
+    G = pass_G(sp.R, sp.s, sp.m, E, sp.B, gmax, lim)
+    if (E == 1 || E % Gf == 0) && (sp.s == 1 || (iseven(G) && (E == 1 || E % (G ÷ 2) == 0)))
       w, t = rtab
       specs[1] = merge(specs[1], (rh = rhook, pre = true))
       specs[end] = merge(specs[end], (rh = rhook, post = true, cout = w, cin = t))
