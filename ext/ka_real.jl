@@ -233,16 +233,19 @@ end
   @inbounds z[t+1] = complex(x[xb+S*a+1], x[xb+S*b+1])
 end
 
+# one thread per pair K, N - K (K = 0…N÷2; K = 0 writes y_0 and y_N from Z_0)
 @kernel function ka_dct1_post!(y, @Const(Z), @Const(u), S, N)
   t = (@index(Global, Linear) - 1) % Int32
-  i, K, o = lineidx(t, S, N + Int32(1))
-  zb = i + S * N * o
+  i, K, o = lineidx(t, S, N ÷ Int32(2) + Int32(1))
+  zb = i + S * N * o; yb = i + S * (N + Int32(1)) * o
   T = real(eltype(y))
-  k1 = K == N ? zero(Int32) : K
-  k2 = K == zero(Int32) ? zero(Int32) : N - K
-  @inbounds c1 = Z[zb+S*k1+1]
-  @inbounds c2 = conj(Z[zb+S*k2+1])
-  @inbounds y[t+1] = real((c1 + c2) * T(0.5) + u[K+1] * (c1 - c2))
+  @inbounds za = Z[zb+S*K+1]
+  @inbounds zm = K == zero(Int32) ? za : Z[zb+S*(N-K)+1]
+  ca = conj(zm); cm = conj(za)
+  @inbounds y[yb+S*K+1] = real((za + ca) * T(0.5) + u[K+1] * (za - ca))
+  if K == zero(Int32) || Int32(2) * K != N
+    @inbounds y[yb+S*(N-K)+1] = real((zm + cm) * T(0.5) + u[N-K+1] * (zm - cm))
+  end
 end
 
 todevice(backend, v::Vector) = (d = KA.allocate(backend, eltype(v), length(v)); copyto!(d, v); d)
@@ -397,9 +400,11 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
     if k == FFTL.REDFT00 && n >= 3
       # the same with the steps before and after the DFT as kernels of their own: n - 1 not
       # smooth (Bluestein), or the pass layout does not take the hooks
+      # (with Bluestein the pack step runs in the first pass's chirp loads)
       n1 = n - 1; zsz = setdim(sz, d, n1)
       u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
-      push!(dims, (:dct1, Int(k), KAPlan(backend, T, zsz, -1; region = d:d), u,
+      xr = FFTL.factorize(n1)[2] > 1
+      push!(dims, (:dct1, xr, KAPlan(backend, T, zsz, -1; region = d:d, xreal = xr), u,
                    devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
       continue
     end
@@ -469,10 +474,14 @@ function LinearAlgebra.mul!(y::AbstractArray{T}, p::KAR2RPlan{T}, x::AbstractArr
     if dim[1] === :fused
       launch!(y, src, dim[3])
     elseif dim[1] === :dct1
-      _, _, P, u, z, Z = dim
-      run!(ka_dct1_pre!, be, S * (n - 1) * outer, z, src, S, n - 1)
-      launch!(Z, z, P)
-      run!(ka_dct1_post!, be, S * n * outer, y, Z, u, S, n - 1)
+      _, xr, P, u, z, Z = dim
+      if xr
+        launch!(Z, src, P)
+      else
+        run!(ka_dct1_pre!, be, S * (n - 1) * outer, z, src, S, n - 1)
+        launch!(Z, z, P)
+      end
+      run!(ka_dct1_post!, be, S * ((n - 1) ÷ 2 + 1) * outer, y, Z, u, S, n - 1)
     elseif dim[1] === :half
       _, kind, P, w, tw, z, Z = dim
       M = n ÷ 2; dst = Int(kind == Int(FFTL.RODFT10) || kind == Int(FFTL.RODFT01))
