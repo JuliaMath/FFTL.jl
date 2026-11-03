@@ -177,6 +177,9 @@ local_twcount(n, rs) = sum((R - 1) * (L ÷ R) for (R, L) in zip(rs, accumulate(�
 #     (x_2K ∓ i x_(2N-1-2K)) cin[K] (minus for DCT-IV); `post` writes element K of the result times
 #     cout[K] as y_2K = 2 Re, y_(2N-1-2K) = 2 Im (reversed indices for DST-IV).
 #   Hooks 4–7 act per element at the first pass's loads and the last pass's stores, any layout.
+#   rhook = 8 (DCT-I of real lines of length N + 1 as the r2c of their even extension of length
+#     2N): `pre` reads element K as xe_2K + i xe_2K+1 with xe_i = x_i (i ≤ N), x_(2N-i) (i > N);
+#     `post` is the r2c pair hook writing only the real parts, y_K = Re X_K (K = 0…N).
 #   `pre` and `post` select the hook in the first and the last pass (both in a one-pass plan).
 #   Along a strided dimension (E > 1, DCT hooks only) lane e + E q is column e: the first pass
 #   needs G | E; with s > 1 the last pass takes G/2 columns at q and the same columns at s - q
@@ -205,9 +208,11 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     @assert (Nx == 0 || s == 1) && (Ny == 0 || (m == 1 && (batchlanes || !transposed)))
     rpre = rhook > 0 && pre; rpost = rhook > 0 && post
     dct = rhook >= 2; dst = rhook in (3, 5, 7)
-    ahook = rhook >= 4                   # element-wise hooks (loads and stores by address)
-    ppost = rpost && !ahook              # pair post hooks (r2c, DCT-II/DST-II)
-    Lout = dct ? 2N : N + 1              # output line length of the post hook
+    dct1 = rhook == 8
+    ahook = rhook >= 4                   # element-wise load hooks (by address)
+    apost = rpost && 4 <= rhook <= 7     # element-wise store hooks
+    ppost = rpost && !apost              # pair post hooks (r2c, DCT-II/DST-II, DCT-I)
+    Lout = dct && !dct1 ? 2N : N + 1     # output line length of the post hook
     # the hooks read the user's input (first pass) and write the user's output (last pass): both
     # unpadded; padded intermediates in between are fine
     @assert rhook == 0 || ((E == 1 || dct) && Nx == 0 && Ny == 0 && !crossing)
@@ -215,7 +220,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     @assert !rpost || pady == (1, 0)
     @assert !(ppost && E > 1 && s > 1) || E % (G ÷ 2) == 0
     @assert !rpre || s == 1
-    @assert !ppost || (m == 1 && (s == 1 || iseven(G)))
+    @assert !ppost || (m == 1 && (s == 1 || (iseven(s) && iseven(G))))
     bufout = transposed || ppost         # the last stage writes to workgroup memory
     ies = Lp
     ebits = cld(8 * sizeof(Int) - leading_zeros(N - 1), TWLEV)
@@ -258,13 +263,13 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         deb * $(I(HE)) + $l - $(I(HE)) + $(I(E)) * (dqf == zero(Int32) ? $(I(s ÷ 2)) : $(I(s)) - dqf)
     end
     # r2c: X_K and X_(N-K) (line offset ryl) from zk = Z_K and zm = Z_(N-K)
-    rpair(K, zk, zm) = dct ? dpair(K, zk, zm) : quote
+    rpair(K, zk, zm) = dct1 ? ipair(K, zk, zm) : dct ? dpair(K, zk, zm) : quote
       rK = $K; rzk = $zk; rzm = conj($zm)
       rh = (rzk + rzm) * $(T(0.5)); rd = ccmul(@inbounds(cout[rK + one(Int32)]), rzk - rzm)
       @inbounds y[ryl + rK + one(Int32)] = rh + rd
       @inbounds y[ryl + $(I(N)) - rK + one(Int32)] = conj(rh - rd)
     end
-    rzero(zk) = dct ? dzero(zk) : quote
+    rzero(zk) = dct1 ? izero(zk) : dct ? dzero(zk) : quote
       rz0 = $zk
       @inbounds y[ryl + one(Int32)] = complex(real(rz0) + imag(rz0), zero($T))
       @inbounds y[ryl + $(I(N + 1))] = complex(real(rz0) - imag(rz0), zero($T))
@@ -281,6 +286,18 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       @inbounds y[ryl + $(I(E)) * $(didx(:($(I(N)) - rK))) + one(Int32)] = 2real(dv)
       @inbounds y[ryl + $(I(E)) * $(didx(:($(I(N)) + rK))) + one(Int32)] = -2imag(dv)
     end
+    # DCT-I: real parts of X_K and X_(N-K) (real lines of N + 1, elements E apart)
+    ipair(K, zk, zm) = quote
+      rK = $K; rzk = $zk; rzm = conj($zm)
+      rh = (rzk + rzm) * $(T(0.5)); rd = ccmul(@inbounds(cout[rK + one(Int32)]), rzk - rzm)
+      @inbounds y[ryl + $(I(E)) * rK + one(Int32)] = real(rh + rd)
+      @inbounds y[ryl + $(I(E)) * ($(I(N)) - rK) + one(Int32)] = real(rh - rd)
+    end
+    izero(zk) = quote
+      rz0 = $zk
+      @inbounds y[ryl + one(Int32)] = real(rz0) + imag(rz0)
+      @inbounds y[ryl + $(I(E * N)) + one(Int32)] = real(rz0) - imag(rz0)
+    end
     dzero(zk) = quote
       rz0 = $zk
       @inbounds y[ryl + $(I(E)) * $(didx(:(zero(Int32)))) + one(Int32)] = 2 * (real(rz0) + imag(rz0))
@@ -296,7 +313,13 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       ayj = $j
       ayj >= $(I(2N)) ? zero($T) : @inbounds x[abase + $(I(E)) * $(dst ? :($(I(2N - 1)) - ayj) : :ayj) + one(Int32)]
     end
-    aload(A) = rhook <= 5 ? quote
+    aload(A) = dct1 ? quote
+      ao = $A ÷ $(I(E * N)); arem = $A - ao * $(I(E * N)); aK = arem ÷ $(I(E)); ae = arem - aK * $(I(E))
+      abase = ao * $(I(E * (N + 1))) + ae
+      ai = Int32(2) * aK; aj = ai + one(Int32)
+      ai = ai <= $(I(N)) ? ai : $(I(2N)) - ai; aj = aj <= $(I(N)) ? aj : $(I(2N)) - aj
+      complex(@inbounds(x[abase + $(I(E)) * ai + one(Int32)]), @inbounds(x[abase + $(I(E)) * aj + one(Int32)]))
+    end : rhook <= 5 ? quote
       $(asplit(A))
       aKb = $(I(N)) - aK
       aRa = ccmul(conj(@inbounds cin[aK + one(Int32)]), complex($(ayv(:aK)), -$(ayv(:($(I(2N)) - aK))))) * $(T(0.5))
@@ -325,7 +348,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       @inbounds y[abase + $(I(E)) * $(aout(:($(I(2N - 1)) - Int32(2) * aK))) + one(Int32)] = 2imag(aw)
     end
     # final store of v at logical address A (through the element-wise post hook if any)
-    ystore(A) = rpost && ahook ? astore(A, :v) : :(@inbounds y[padmap($A, $(PY[1]), $(PY[2])) + one(Int32)] = v)
+    ystore(A) = apost ? astore(A, :v) : :(@inbounds y[padmap($A, $(PY[1]), $(PY[2])) + one(Int32)] = v)
     # lane-major output: y[ybase + l + sp k], twiddle exponent k p s with p = b0 ÷ sp
     lanemajor_store(l, k) = Ny == 0 && crossing ? quote
       bl = b0 + $l; pl = bl ÷ $(I(sp)); ql = bl - pl * $(I(sp))
@@ -785,7 +808,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     end
   end
   specs[end] = merge(specs[end], (dst = :y,))
-  if rhook >= 4
+  if 4 <= rhook <= 7
     # element-wise hooks: the first pass must not cross lanes (G | E)
     @assert length(region) == 1 && specs[1].Nx == 0 && specs[end].Ny == 0
     sf = specs[1]; E = sf.E
@@ -797,12 +820,13 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     else
       rhook = 0
     end
-  elseif rhook >= 2
+  elseif rhook >= 2   # 2, 3, 8: pair post hook; pre hook in the first pass
     @assert length(region) == 1 && specs[1].Nx == 0 && specs[end].Ny == 0
     sf = specs[1]; sp = specs[end]; E = sf.E
     Gf = pass_G(sf.R, sf.s, sf.m, E, sf.B, gmax, lim)
     G = pass_G(sp.R, sp.s, sp.m, E, sp.B, gmax, lim)
-    if (E == 1 || E % Gf == 0) && (sp.s == 1 || (iseven(G) && (E == 1 || E % (G ÷ 2) == 0)))
+    # mirrored lanes q, s - q need an even s (the lane s/2 pairs with q = 0)
+    if (E == 1 || E % Gf == 0) && (sp.s == 1 || (iseven(sp.s) && iseven(G) && (E == 1 || E % (G ÷ 2) == 0)))
       w, t = rtab
       specs[1] = merge(specs[1], (rh = rhook, pre = true))
       specs[end] = merge(specs[end], (rh = rhook, post = true, cout = w, cin = t))
@@ -813,7 +837,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     @assert collect(region) == [1] && specs[1].Nx == 0 && specs[end].Ny == 0
     i = rhook > 0 ? 1 : length(specs)
     G = pass_G(specs[i].R, specs[i].s, specs[i].m, 1, specs[i].B, gmax, lim)
-    if rhook > 0 || specs[i].s == 1 || iseven(G)
+    if rhook > 0 || specs[i].s == 1 || (iseven(specs[i].s) && iseven(G))
       specs[i] = merge(specs[i], rhook > 0 ? (cin = rtab, rh = 1) : (cout = rtab, rh = -1))
     else
       rhook = 0
@@ -832,7 +856,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   lay(p) = p ? (dims[1], pad) : (1, 0)
   steps = Any[]
   for (i, sp) in enumerate(specs)
-    G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, get(sp, :rh, 0) >= 4 ? hook_limits(lim) : lim)
+    G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, 4 <= get(sp, :rh, 0) <= 7 ? hook_limits(lim) : lim)
     k, W, groups, bytes = pass_kernel(sp.R, G, sp.σ, T, sp.s, sp.M, sp.E, sp.B; Nx = sp.Nx, Ny = sp.Ny,
                                       padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]), lim = lim,
                                       rhook = get(sp, :rh, 0), pre = get(sp, :pre, get(sp, :rh, 0) == 1),
