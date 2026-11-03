@@ -18,6 +18,9 @@ using KernelAbstractions
     zi = inv(p) * y; KernelAbstractions.synchronize(be)
     @test relerr(zi, x) < tol(T)
   end
+  # Bluestein in one kernel (8 lines of M = 80 per workgroup) and in two launches (one line)
+  @test length(FFTL.plan_ka(be, T, (8, 37), -1; region = 2:2).steps) == 1
+  @test length(FFTL.plan_ka(be, T, (37,), -1).steps) == 2
   p = FFTL.plan_ka(be, T, (8,), -1)
   @test_throws DimensionMismatch mul!(zeros(Complex{T}, 8), p, zeros(Complex{T}, 4))
   x = rand(Complex{T}, 8)
@@ -85,6 +88,16 @@ end
     k == FFTL.REDFT00 || @test all(d -> d[1] === :fused, p.dims)
     y = p * x; KernelAbstractions.synchronize(be)
     @test relerr(y, FFTL.r2r(x, k, reg)) < 10tol(T)
+    z = copy(x); mul!(z, p, z); KernelAbstractions.synchronize(be)
+    @test relerr(z, y) < 10tol(T)
+  end
+  # DCT-I with n - 1 = 37 (Bluestein): complex DFT of n - 1 between kernels of its own
+  for (sz, reg) in (((38,), 1), ((5, 38), 2), ((38, 6), 1:2))
+    x = randn(T, sz)
+    p = FFTL.plan_ka_r2r(be, T, sz, FFTL.REDFT00; region = reg)
+    @test p.dims[1][1] === :dct1
+    y = p * x; KernelAbstractions.synchronize(be)
+    @test relerr(y, FFTL.r2r(x, FFTL.REDFT00, reg)) < 10tol(T)
     z = copy(x); mul!(z, p, z); KernelAbstractions.synchronize(be)
     @test relerr(z, y) < 10tol(T)
   end
