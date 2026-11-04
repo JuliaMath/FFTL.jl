@@ -126,6 +126,8 @@ function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer
   step = 2 * S * n * sizeof(T)
   if k isa FourStep
     run_fourstep!(py, px, k, nt)
+  elseif k isa BluesteinMT
+    run_bluestein_mt!(py, px, k, nt)
   elseif (k isa Chain || k isa RChain) && use_lanes(S, n, outer, nt)
     # never wider than the buffers made at plan time (the cache sizes may have changed since)
     B = min(lane_block(S, n, nt), fld(length(p.tbuf[1]), n))
@@ -263,6 +265,80 @@ function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T
     parallel_items(nb2, nt) do c, b
       local i0 = b * B2
       run_lanes!(py + i0 * CT, pa2 + i0 * CT, cptr(P.tbuf[3c-2]), cptr(P.tbuf[3c-1]), P.k1, n2 + ROW_PAD, n2, min(B2, n2 - i0))
+    end
+  end
+  nothing
+end
+
+"""
+    BluesteinMT{T}
+
+Bluestein's algorithm for one long contiguous line of a length with a prime factor above
+`MAX_RADIX_PRIME`, on several threads: the two convolution transforms of length M run as
+four-step transforms and the three element-wise passes (chirp product with zero padding,
+filter product, chirp product) are split over the threads.
+"""
+struct BluesteinMT{T,F1,F2} <: Kernel{T}
+  n::Int
+  chirp::Vector{Complex{T}}       # c_j, j = 0…n-1
+  kernel::Vector{Complex{T}}      # DFT of the convolution kernel, scaled by 1/M
+  fwd::F1
+  bwd::F2
+  buf::Vector{Complex{T}}         # length M
+end
+
+# Smallest 5-smooth M ≥ 2n - 1 that the four-step algorithm can split.
+function bluestein_mt_length(n::Int)
+  m = next_smooth(2n - 1)
+  while fourstep_split(m) == 0
+    m = next_smooth(m + 1)
+  end
+  m
+end
+
+function BluesteinMT{T}(n::Int, σ::Int, nt::Int) where {T}
+  M = bluestein_mt_length(n)
+  ser = Chain{T}(M, -1)
+  w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
+  chirp, b = cached(() -> bluestein_tables(T, n, σ, ser, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
+                   )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
+  fwd = FourStep{T}(M, -1, nt); bwd = FourStep{T}(M, 1, nt)
+  BluesteinMT{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, Vector{Complex{T}}(undef, M))
+end
+
+# From this length on, a Bluestein line runs on several threads.
+const BLUESTEIN_MT_MIN = 1 << 14
+
+use_bluestein_mt(n, nt) = nt > 1 && n >= BLUESTEIN_MT_MIN && !smooth(n)
+
+bluestein_mt_dim(sz, d::Int, nt::Int) = (so = dim_extent(sz, d); so[1] == 1 && so[2] == 1 && use_bluestein_mt(sz[d], nt))
+
+# f(i) for i in chunk `it` of `nchunks` chunks of 0…N-1, the chunks over nt tasks.
+@inline function chunked(f::F, N, nt) where {F}
+  nch = min(BLOCKS_PER_THREAD * nt, cld(N, 1 << 12))
+  parallel_items(nch, nt) do _, it
+    for i in chunk_range(it + 1, nch, N)
+      f(i)
+    end
+  end
+end
+
+function run_bluestein_mt!(py::Ptr{T}, px::Ptr{T}, P::BluesteinMT{T}, nt::Int) where {T}
+  n = P.n; M = length(P.buf)
+  GC.@preserve P begin
+    cx = Ptr{Complex{T}}(px); cy = Ptr{Complex{T}}(py)
+    pb = Ptr{Complex{T}}(cptr(P.buf))
+    pc = Ptr{Complex{T}}(cptr(P.chirp)); pk = Ptr{Complex{T}}(cptr(P.kernel))
+    chunked(M, nt) do j
+      unsafe_store!(pb, j < n ? unsafe_load(cx, j + 1) * unsafe_load(pc, j + 1) : zero(Complex{T}), j + 1)
+    end
+    run_fourstep!(cptr(P.buf), cptr(P.buf), P.fwd, nt)
+    chunked(M, nt) do j
+      unsafe_store!(pb, unsafe_load(pb, j + 1) * unsafe_load(pk, j + 1), j + 1)
+    end
+    run_fourstep!(cptr(P.buf), cptr(P.buf), P.bwd, nt)
+    chunked(n, nt) do k
+      unsafe_store!(cy, unsafe_load(pb, k + 1) * unsafe_load(pc, k + 1), k + 1)
     end
   end
   nothing

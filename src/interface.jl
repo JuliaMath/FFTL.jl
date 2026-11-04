@@ -41,6 +41,7 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Thre
   cache = Dict{Tuple{Int,Int},Kernel{T}}()
   function dim_kernel(d)
     fourstep_dim(sz, d, nt) && return FourStep{T}(sz[d], σ, nt)
+    bluestein_mt_dim(sz, d, nt) && return BluesteinMT{T}(sz[d], σ, nt)
     S, _ = dim_extent(sz, d)
     get!(() -> kernel(T, sz[d], σ, S), cache, (sz[d], S > LARGE_STRIDE ? S : 0))
   end
@@ -67,6 +68,7 @@ function Base.show(io::IO, ::MIME"text/plain", p::FFTLPlan{T}) where {T}
     print(io, "\n  dim $d: ")
     k isa Chain && print(io, "radices ", radix_tuple(k))
     k isa Bluestein && print(io, "Bluestein, convolution length ", k.fwd.n)
+    k isa BluesteinMT && print(io, "Bluestein on threads, convolution length ", k.fwd.n)
     k isa FourStep && print(io, "four-step $(k.n1) × $(k.n2), radices ", radix_tuple(k.k1), " and ", radix_tuple(k.k2))
   end
 end
