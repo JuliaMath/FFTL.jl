@@ -8,7 +8,7 @@
 #   Otherwise radix 4 throughout, one 8 (or 2) for an odd exponent; radix 16 and above lose
 #   (register spills, cache-set conflicts at large strides).
 # - aarch64: a factor 3 is merged with a 4 into 12, else with a 2 into 6; a factor 5 with a spare
-#   2 into 10 (see MERGE_COMPOSITE for x86). Two 3s give 9. An odd power of two is split as 4s and
+#   2 into 10 (see merge_composite for x86). Two 3s give 9. An odd power of two is split as 4s and
 #   a 2 (not an 8) when there is a 3 or 5 to merge the 2 with (x86: or a 7).
 # - Other primes up to MAX_RADIX_PRIME are radices of their own.
 # The first stage takes a power-of-two radix when there is one.
@@ -41,11 +41,12 @@ smooth(n::Int) = factorize(n)[2] == 1
 const LARGE_STRIDE = 256
 
 # Merging a factor 3 with a 4 or 2 (radix 12, 6) and a 5 with a spare 2 (radix 10) pays on aarch64
-# (NEON, 32 registers). On x86 with AVX2 (16 registers) the radices 4, 3, 5, 7 alone are faster:
-# of the lengths up to 1024 with prime factors ≤ 7 (Zen 2, all radix multisets measured), the merged
-# choice is up to 2.4× slower than the best one, plain radices at most 1.4× on lengths not used to
-# choose the rule.
-const MERGE_COMPOSITE = Sys.ARCH === :aarch64
+# (NEON, 32 registers). For a single contiguous line (S = 1) on x86 with AVX2 (16 registers) the
+# radices 4, 3, 5, 7 alone are faster: of the lengths up to 1024 with prime factors ≤ 7 (Zen 2, all
+# radix multisets measured), the merged choice is up to 2.4× slower than the best one, plain radices
+# at most 1.4× on lengths not used to choose the rule. Batches (S > 1) keep the merged radices; they
+# have not been measured on x86 for every length.
+merge_composite(S) = Sys.ARCH === :aarch64 || S > 1
 
 """
     radices(n, S = 1; esize = 16)
@@ -88,6 +89,7 @@ end
 
 function heuristic_radices(n::Int, S::Int)
   n == 1 && return Int[]
+  merge = merge_composite(S)
   f, rest = factorize(n)
   rest == 1 || throw(ArgumentError("length $n has prime factors larger than $MAX_RADIX_PRIME"))
   small = S > LARGE_STRIDE ? 8 : 16
@@ -104,13 +106,13 @@ function heuristic_radices(n::Int, S::Int)
   r = Int[]
   eight = 0; two = 0
   if isodd(a)
-    (a >= 3 && b + c == 0 && (MERGE_COMPOSITE || !haskey(f, 7))) ? (eight = 1; a -= 3) : (two = 1; a -= 1)
+    (a >= 3 && b + c == 0 && (merge || !haskey(f, 7))) ? (eight = 1; a -= 3) : (two = 1; a -= 1)
   end
   fours = a ÷ 2
-  while MERGE_COMPOSITE && b > 0 && fours > 0
+  while merge && b > 0 && fours > 0
     push!(r, 12); b -= 1; fours -= 1
   end
-  while MERGE_COMPOSITE && b > 0 && two > 0
+  while merge && b > 0 && two > 0
     push!(r, 6); b -= 1; two -= 1
   end
   while b >= 2
@@ -118,7 +120,7 @@ function heuristic_radices(n::Int, S::Int)
   end
   b == 1 && push!(r, 3)
   for _ in 1:c
-    if MERGE_COMPOSITE && two > 0
+    if merge && two > 0
       push!(r, 10); two -= 1
     else
       push!(r, 5)
@@ -127,7 +129,7 @@ function heuristic_radices(n::Int, S::Int)
   for p in (7, 11, 13, 17, 19, 23, 29, 31), _ in 1:get(f, p, 0)
     push!(r, p)
   end
-  MERGE_COMPOSITE || sort!(r, rev = true)
+  merge || sort!(r, rev = true)
   pow2 = vcat(fill(8, eight), fill(4, fours), fill(2, two))
   # first stage: a power-of-two radix if available, then the rest, remaining powers of two last
   if isempty(pow2)
