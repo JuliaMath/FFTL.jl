@@ -443,7 +443,9 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "real transforms of one long line on several threads" begin
-    for T in (Float64, Float32), n in (2^17, 3 * 2^16)
+    # from 256 KB per line on: Float64 2^15 and 50000, Float32 2^16 and 100000, and larger
+    for (T, n) in ((Float64, 2^15), (Float64, 50000), (Float32, 2^16), (Float32, 100000),
+                   (Float64, 2^17), (Float64, 3 * 2^16), (Float32, 2^17), (Float32, 3 * 2^16))
       x = randn(T, n)
       p = FFTL.plan_rfft(x; threads = 3)
       @test p.four !== nothing
@@ -451,6 +453,9 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       @test relerr(X, FFTL.plan_rfft(x; threads = 1) * x) < 10tol(T)
       @test relerr(FFTL.plan_brfft(X, n; threads = 3) * X, n .* x) < 10tol(T)
     end
+    # below 256 KB per line one task does the line
+    @test FFTL.plan_rfft(randn(Float64, 2^14); threads = 3).four === nothing
+    @test FFTL.plan_rfft(randn(Float32, 2^15); threads = 3).four === nothing
   end
 
   @testset "argument checks and fixed bugs" begin
