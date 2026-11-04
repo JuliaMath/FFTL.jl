@@ -121,6 +121,53 @@ function take_items(f::F, next, nitems, c) where {F}
   end
 end
 
+# Two dependent phases on the same tasks: f1(c, item) for item = 0…n1-1, then f2(c, item) for
+# item = 0…n2-1, with one fork-join. A task starts on phase 2 once every item of phase 1 is
+# finished; it waits only for items that running tasks have already claimed, so it cannot wait
+# for a task that has not started.
+function parallel_phases(ntasks, n1, f1::F1, n2, f2::F2) where {F1,F2}
+  nt = min(ntasks, max(n1, n2))
+  if nt <= 1
+    for it in 0:n1-1
+      f1(1, it)
+    end
+    for it in 0:n2-1
+      f2(1, it)
+    end
+    return nothing
+  end
+  spawn_phases(nt, n1, f1, n2, f2)
+end
+
+@noinline function spawn_phases(ntasks, n1, f1::F1, n2, f2::F2) where {F1,F2}
+  next1 = Threads.Atomic{Int}(0); done1 = Threads.Atomic{Int}(0); next2 = Threads.Atomic{Int}(0)
+  ts = Vector{Task}(undef, ntasks - 1)
+  for c in 2:ntasks
+    ts[c-1] = Threads.@spawn take_phases(f1, n1, f2, n2, next1, done1, next2, c)
+  end
+  take_phases(f1, n1, f2, n2, next1, done1, next2, 1)
+  foreach(wait, ts)
+  nothing
+end
+
+function take_phases(f1::F1, n1, f2::F2, n2, next1, done1, next2, c) where {F1,F2}
+  it = Threads.atomic_add!(next1, 1)
+  while it < n1
+    f1(c, it)
+    Threads.atomic_add!(done1, 1)
+    it = Threads.atomic_add!(next1, 1)
+  end
+  while done1[] < n1
+    GC.safepoint()
+    ccall(:jl_cpu_pause, Cvoid, ())
+  end
+  it = Threads.atomic_add!(next2, 1)
+  while it < n2
+    f2(c, it)
+    it = Threads.atomic_add!(next2, 1)
+  end
+end
+
 function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer::Int) where {T}
   nt = p.nthreads
   step = 2 * S * n * sizeof(T)
@@ -243,29 +290,30 @@ function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T
   GC.@preserve P begin
     pa = Ptr{Complex{T}}(cptr(P.buf))
     ptw = Ptr{Complex{T}}(cptr(P.tw))
-    # 1. blocks of j1: DFTs of length n2 into a cache buffer, twiddles, transposed into A
     B = min(lane_block(n1, n2, nt), fld(length(P.tbuf[1]), n2))
     nb = cld(n1, B)
-    parallel_items(nb, nt) do c, b
-      local pw3 = cptr(P.tbuf[3c])
-      local cw3 = Ptr{Complex{T}}(pw3)
-      local i0 = b * B
-      local Bc = min(B, n1 - i0)
-      run_lanes!(pw3, px + i0 * CT, cptr(P.tbuf[3c-2]), cptr(P.tbuf[3c-1]), P.k2, n1, Bc, Bc)
-      if length(P.tw) == P.n
-        twiddle_transpose!(pa, cw3, ptw, i0, Bc, n2)
-      else
-        twiddle_transpose!(pa, cw3, ptw, i0, Bc, n1, n2)
-      end
-    end
-    # 2. DFTs of length n1 over lane blocks of k2: A[k2 + n2 j1] → y[k2 + n2 k1]
     B2 = min(lane_block(n2, n1, nt), fld(length(P.tbuf[1]), n1))
     nb2 = cld(n2, B2)
     pa2 = cptr(P.buf)
-    parallel_items(nb2, nt) do c, b
-      local i0 = b * B2
-      run_lanes!(py + i0 * CT, pa2 + i0 * CT, cptr(P.tbuf[3c-2]), cptr(P.tbuf[3c-1]), P.k1, n2 + ROW_PAD, n2, min(B2, n2 - i0))
-    end
+    parallel_phases(nt,
+      # 1. blocks of j1: DFTs of length n2 into a cache buffer, twiddles, transposed into A
+      nb, (c, b) -> begin
+        local pw3 = cptr(P.tbuf[3c])
+        local cw3 = Ptr{Complex{T}}(pw3)
+        local i0 = b * B
+        local Bc = min(B, n1 - i0)
+        run_lanes!(pw3, px + i0 * CT, cptr(P.tbuf[3c-2]), cptr(P.tbuf[3c-1]), P.k2, n1, Bc, Bc)
+        if length(P.tw) == P.n
+          twiddle_transpose!(pa, cw3, ptw, i0, Bc, n2)
+        else
+          twiddle_transpose!(pa, cw3, ptw, i0, Bc, n1, n2)
+        end
+      end,
+      # 2. DFTs of length n1 over lane blocks of k2: A[k2 + n2 j1] → y[k2 + n2 k1]
+      nb2, (c, b) -> begin
+        local i0 = b * B2
+        run_lanes!(py + i0 * CT, pa2 + i0 * CT, cptr(P.tbuf[3c-2]), cptr(P.tbuf[3c-1]), P.k1, n2 + ROW_PAD, n2, min(B2, n2 - i0))
+      end)
   end
   nothing
 end
