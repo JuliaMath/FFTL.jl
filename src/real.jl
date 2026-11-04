@@ -224,11 +224,12 @@ end
 
 sortregion(region, N) = Tuple(normregion(region, N))
 
-# One real line of length n on several tasks: four-step for the half-length DFT. Below 2^17 the
-# extra parallel pass for the pairs does not pay off on a loaded M1 (2^16: up to 2× slower than
-# one task, while 2^17 is 0.5–1.1× and 2^18 0.4–0.8×).
-const REAL_FOURSTEP_MIN = 1 << 17
-use_real_fourstep(n, nt) = iseven(n) && n >= REAL_FOURSTEP_MIN && use_fourstep(n ÷ 2, nt)
+# One real line of length n on several tasks: four-step for the half-length DFT. The extra
+# parallel pass for the pairs pays off from 256 KB per line on (M1, 8 threads: Float64 32768 and
+# Float32 65536 are 0.6-0.9 of one task, Float64 16384 and Float32 16384-32768 up to 3x slower).
+const REAL_FOURSTEP_BYTES = 1 << 18
+use_real_fourstep(::Type{T}, n, nt) where {T} =
+  iseven(n) && n * sizeof(T) >= REAL_FOURSTEP_BYTES && use_fourstep(n ÷ 2, nt)
 
 function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = sortregion(region, N)
@@ -241,7 +242,7 @@ function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthr
   S, offs_r, offs_c = line_layout(sz, d1)
   nt = max(1, Int(threads))
   bufs = thread_buffers(T, n, 5nt)
-  four = length(offs_r) == 1 && use_real_fourstep(n, nt) ? FourStep{T}(n ÷ 2, -1, nt) : nothing
+  four = length(offs_r) == 1 && use_real_fourstep(T, n, nt) ? FourStep{T}(n ÷ 2, -1, nt) : nothing
   RFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg),typeof(four)}(sz, reg, line, four, cplan, S, offs_r, offs_c, nt, bufs)
 end
 
@@ -257,7 +258,7 @@ function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Thr
   S, offs_r, offs_c = line_layout(rsz, d1)
   nt = max(1, Int(threads))
   bufs = thread_buffers(T, d, 5nt)
-  four = length(offs_r) == 1 && use_real_fourstep(d, nt) ? FourStep{T}(d ÷ 2, 1, nt) : nothing
+  four = length(offs_r) == 1 && use_real_fourstep(T, d, nt) ? FourStep{T}(d ÷ 2, 1, nt) : nothing
   BRFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg),typeof(four)}(sz, d, reg, line, four, cplan, S, offs_r, offs_c, nt, bufs,
                                               Vector{Complex{T}}(undef, prod(sz)))
 end
