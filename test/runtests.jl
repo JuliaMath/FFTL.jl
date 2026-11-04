@@ -110,6 +110,26 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "Bluestein on several threads, $T" for T in (Float64, Float32)
+    # one long line with a prime factor above MAX_RADIX_PRIME: threaded convolution transforms
+    for n in pick((16411, 20011, 100003), (20011,))
+      x = randn(Complex{T}, n)
+      for (mk, σ) in ((FFTL.plan_fft, -1), (FFTL.plan_bfft, 1))
+        ref = mk(x; threads = 1) * x
+        for nt in pick((2, 3, 4), (3,))
+          p = mk(x; threads = nt)
+          @test p.kernels[1] isa FFTL.BluesteinMT
+          @test relerr(p * x, ref) < tol(T)
+          z = copy(x); mul!(z, p, z)
+          @test relerr(z, ref) < tol(T)
+        end
+      end
+    end
+    # below the threshold the serial Bluestein kernel stays
+    x = randn(Complex{T}, 4099)
+    @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Bluestein
+  end
+
   @testset "passes on strided views, $T" for T in (Float64, Float32)
     # views of a padded array as an NFFT uses them: interior boxes and pruned boxes
     G0 = randn(Complex{T}, 40, 36, 30)
