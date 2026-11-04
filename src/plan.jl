@@ -274,6 +274,7 @@ struct Bluestein{T,F,B} <: Kernel{T}
   work2::Vector{Complex{T}}
 end
 
+# 5-smooth numbers: the convolution lengths of the aarch64 rule.
 function next_smooth(n::Int)
   m = n
   while true
@@ -283,9 +284,57 @@ function next_smooth(n::Int)
   end
 end
 
+# Convolution length of Bluestein's algorithm: a 7-smooth M in [L, 1.4 L] with the lowest estimated
+# time of a chain of length M, time = M·(c0 + Σ_stages w[radix]) in µs. The stage costs are fitted
+# to measured chains (Zen 2, M = 70…300000, one thread); a length with many radix-9, -5 or -3
+# stages transforms several times slower than a power of two a few percent larger (Float32:
+# 2025 = 3^4·5^2 takes 11 µs, 2048 takes 2.5 µs). The aarch64 stage costs have not been measured:
+# there the smallest 5-smooth M is kept.
+const BLUESTEIN_RADIX = (2, 3, 4, 5, 6, 7, 8, 9, 10, 12)
+# weights for BLUESTEIN_RADIX, then any other radix, then the constant per point
+const BLUESTEIN_W = (Float64 = (0.0, 1.11e-3, 3.5e-4, 7.4e-4, 2.9e-4, 9.9e-4, 1.7e-4, 1.52e-3, 5.6e-4, 7.6e-4, 2.38e-3, 2.6e-4),
+                     Float32 = (4.1e-4, 8.2e-4, 9.0e-5, 4.0e-4, 4.9e-4, 6.2e-4, 0.0, 1.08e-3, 3.4e-4, 1.6e-4, 1.6e-3, 5.1e-4))
+
+function bluestein_cost(::Type{T}, m::Int) where {T}
+  w = BLUESTEIN_W[T === Float32 ? :Float32 : :Float64]
+  c = w[end]
+  for r in radices(m)
+    i = findfirst(==(r), BLUESTEIN_RADIX)
+    c += i === nothing ? w[end-1] : w[i]
+  end
+  m * c
+end
+
+function bluestein_length(::Type{T}, L::Int) where {T}
+  Sys.ARCH === :aarch64 && return next_smooth(L)
+  hi = ceil(Int, 1.4L)
+  best = 0; bestc = Inf
+  p2 = 1
+  while p2 <= hi
+    p3 = p2
+    while p3 <= hi
+      p5 = p3
+      while p5 <= hi
+        p7 = p5
+        while p7 <= hi
+          if p7 >= L
+            c = bluestein_cost(T, p7)
+            c < bestc && (best = p7; bestc = c)
+          end
+          p7 *= 7
+        end
+        p5 *= 5
+      end
+      p3 *= 3
+    end
+    p2 *= 2
+  end
+  best
+end
+
 # C: the chain type of the two convolution transforms (Chain, or RChain for run-time plans)
 function Bluestein{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
-  M = next_smooth(2n - 1)
+  M = bluestein_length(T, 2n - 1)
   fwd = C{T}(M, -1)
   bwd = C{T}(M, 1)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)

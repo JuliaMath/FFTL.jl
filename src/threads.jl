@@ -336,16 +336,16 @@ struct BluesteinMT{T,F1,F2} <: Kernel{T}
 end
 
 # Smallest 5-smooth M ≥ 2n - 1 that the four-step algorithm can split.
-function bluestein_mt_length(n::Int)
-  m = next_smooth(2n - 1)
+function bluestein_mt_length(::Type{T}, n::Int) where {T}
+  m = bluestein_length(T, 2n - 1)
   while fourstep_split(m) == 0
-    m = next_smooth(m + 1)
+    m = bluestein_length(T, m + 1)
   end
   m
 end
 
 function BluesteinMT{T}(n::Int, σ::Int, nt::Int) where {T}
-  M = bluestein_mt_length(n)
+  M = bluestein_mt_length(T, n)
   ser = Chain{T}(M, -1)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
   chirp, b = cached(() -> bluestein_tables(T, n, σ, ser, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
