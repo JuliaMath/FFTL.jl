@@ -17,6 +17,7 @@ using LinearAlgebra
 import AbstractFFTs
 
 include("limits.jl")
+include("tuning.jl")
 include("complexvec.jl")
 include("codegen.jl")
 include("kernels.jl")

@@ -227,9 +227,8 @@ sortregion(region, N) = Tuple(normregion(region, N))
 # One real line of length n on several tasks: four-step for the half-length DFT. The extra
 # parallel pass for the pairs pays off from 256 KB per line on (M1, 8 threads: Float64 32768 and
 # Float32 65536 are 0.6-0.9 of one task, Float64 16384 and Float32 16384-32768 up to 3x slower).
-const REAL_FOURSTEP_BYTES = 1 << 18
 use_real_fourstep(::Type{T}, n, nt) where {T} =
-  iseven(n) && n * sizeof(T) >= REAL_FOURSTEP_BYTES && use_fourstep(n ÷ 2, nt)
+  iseven(n) && n * sizeof(T) >= TUNING[].real_fourstep_bytes && use_fourstep(n ÷ 2, nt)
 
 function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = sortregion(region, N)
@@ -290,7 +289,7 @@ line_tasks(K, nt) = own_buffers(K) ? 1 : nt
 
 # Runs f(c, i) for the lines i = 0…nlines-1 on the plan's tasks.
 function each_line(f::F, nlines, n, nt) where {F}
-  ntasks = nt > 1 && nlines * n >= THREAD_MIN_WORK ? nt : 1
+  ntasks = nt > 1 && nlines * n >= TUNING[].thread_min_work ? nt : 1
   if ntasks == 1
     for i in 0:nlines-1
       f(1, i)

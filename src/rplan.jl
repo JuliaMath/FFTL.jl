@@ -44,10 +44,7 @@ function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Intege
   four = length(long) == 1 && fourstep_dim(dims, long[1], nt) ? FourStep{T}(dims[long[1]], Int(σ), nt, RChain) : nothing
   for d in reg
     n = dims[d]
-    S = 1
-    for i in 1:d-1
-      S *= dims[i]
-    end
+    S, _ = dim_extent(dims, d)
     if smooth(n)
       push!(chains, RChain{T}(n, Int(σ), radices(n, S; esize = sizeof(Complex{T}))))
       push!(blue, nothing)

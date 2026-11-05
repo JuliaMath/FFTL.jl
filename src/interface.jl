@@ -90,14 +90,7 @@ function apply_dims!(y::Array{Complex{T}}, x::Array{Complex{T}}, p::FFTLPlan{T},
     end
   end
   k, d = first(ks), first(ds)
-  # loops, not prod(p.sz[1:d-1]): a tuple sliced by a run-time range has an unknown length
-  S = 1; outer = 1
-  for i in 1:d-1
-    S *= p.sz[i]
-  end
-  for i in d+1:length(p.sz)
-    outer *= p.sz[i]
-  end
+  S, outer = dim_extent(p.sz, d)
   n = p.sz[d]
   GC.@preserve x y p run_dim!(cptr(y), cptr(x), p, k, S, n, outer)
   apply_dims!(y, y, p, Base.tail(ks), Base.tail(ds))

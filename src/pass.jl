@@ -179,7 +179,7 @@ function run_pass!(py::Ptr{T}, px::Ptr{T}, p::PassPlan{T}) where {T}
   else
     B = p.B; nb = cld(p.lanes, B)
     nitems = nb * length(p.offs)
-    ntasks = (k isa Chain && p.nthreads > 1 && length(p.offs) * p.lanes * p.sz[p.d] >= THREAD_MIN_WORK) ? p.nthreads : 1
+    ntasks = (k isa Chain && p.nthreads > 1 && length(p.offs) * p.lanes * p.sz[p.d] >= TUNING[].thread_min_work) ? p.nthreads : 1
     parallel_items(nitems, ntasks) do c, it
       local g, b; g, b = divrem(it, nb)
       local i0 = b * B

@@ -8,19 +8,17 @@
 # over the threads. Passes with few lanes (S small, e.g. the first dimension) run whole slices,
 # on several threads when there are enough slices.
 
-# Below this many complex values per pass, starting tasks costs more than it gains.
-const THREAD_MIN_WORK = 1 << 15
 # Lane blocks are multiples of 8 complex values (a 128-byte cache line of ComplexF64).
 const LANE_ALIGN = 8
 # Complex values per lane block buffer (a task holds two or three): 2^16 measured best on the
-# M1 (3 MB of L2 per core) and on Zen 3 with one thread, which then has the 32 MB L3 to itself.
-const BLOCK_BUDGET = 1 << 16
+# M1 (3 MB of L2 per core) and on Zen 3 with one thread, which then has the 32 MB L3 to itself
+# (`TUNING`, field block_budget).
 # With several threads, long lines (n >= 1024) take blocks of half the L2 per core in ComplexF64
 # values: 2^14 on Zen 3 (512 KB L2 per core, shared L3; 16 threads: 2^22 Float64 1.6× and 2048²
 # Float64 1.3× faster than with 2^16), 2^16 on the M1. One thread keeps the large blocks (Zen 3
 # 2048² 1.6× slower with the small ones), as do short lines.
 block_budget(n, nt) = nt > 1 && n >= 1024 ?
-  clamp(prevpow2(CACHES[].l2 ÷ 32), 1 << 12, BLOCK_BUDGET) : BLOCK_BUDGET
+  clamp(prevpow2(CACHES[].l2 ÷ 32), 1 << 12, TUNING[].block_budget) : TUNING[].block_budget
 
 # Blocks per thread: threads take blocks from a shared counter, so a slow core (or one busy
 # with something else) delays the pass by one block, not by a fixed share.
@@ -34,12 +32,14 @@ function lane_block(S, n, nt)
   min(Bc, Bt)
 end
 
-use_lanes(S, n, outer, nt) = S >= 2LANE_ALIGN && (S * n > BLOCK_BUDGET || (nt > 1 && outer < nt))
-threaded(S, n, outer, nt) = nt > 1 && S * n * outer >= THREAD_MIN_WORK
+use_lanes(S, n, outer, nt) = S >= 2LANE_ALIGN && (S * n > TUNING[].block_budget || (nt > 1 && outer < nt))
+threaded(S, n, outer, nt) = nt > 1 && S * n * outer >= TUNING[].thread_min_work
 
 # k work buffers of n complex values (one or more per task)
 thread_buffers(::Type{T}, n::Int, k::Int) where {T} = Vector{Complex{T}}[Vector{Complex{T}}(undef, n) for _ in 1:k]
 
+# S: product of the sizes before d (lanes), outer: product of the sizes after d. Loops, not
+# prod(sz[1:d-1]): a tuple sliced by a run-time range has an unknown length.
 function dim_extent(sz, d)
   S = 1; outer = 1
   for i in 1:d-1
@@ -168,40 +168,6 @@ function take_phases(f1::F1, n1, f2::F2, n2, next1, done1, next2, c) where {F1,F
   end
 end
 
-function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer::Int) where {T}
-  nt = p.nthreads
-  step = 2 * S * n * sizeof(T)
-  if k isa FourStep
-    run_fourstep!(py, px, k, nt)
-  elseif k isa BluesteinMT
-    run_bluestein_mt!(py, px, k, nt)
-  elseif (k isa Chain || k isa RChain) && use_lanes(S, n, outer, nt)
-    # never wider than the buffers made at plan time (the cache sizes may have changed since)
-    B = min(lane_block(S, n, nt), fld(length(p.tbuf[1]), n))
-    nb = cld(S, B)
-    ntasks = threaded(S, n, outer, nt) ? nt : 1
-    parallel_items(nb * outer, ntasks) do c, it
-      local o, b; o, b = divrem(it, nb)
-      local i0 = b * B
-      local off = o * step + i0 * 2 * sizeof(T)
-      run_lanes!(py + off, px + off, cptr(p.tbuf[2c-1]), cptr(p.tbuf[2c]), k, S, S, min(B, S - i0))
-    end
-  elseif (k isa Chain || k isa RChain) && threaded(S, n, outer, nt) && outer >= nt
-    # slices in groups, BLOCKS_PER_THREAD groups per thread
-    ng = min(outer, BLOCKS_PER_THREAD * nt)
-    parallel_items(ng, nt) do c, g
-      for o in chunk_range(g + 1, ng, outer)
-        run!(py + o * step, px + o * step, cptr(p.tbuf[2c-1]), cptr(p.tbuf[2c]), k, S)
-      end
-    end
-  else
-    pw1 = cptr(p.work1); pw2 = cptr(p.work2)
-    for o in 0:outer-1
-      run!(py + o * step, px + o * step, pw1, pw2, k, S)
-    end
-  end
-  nothing
-end
 
 """
     FourStep{T}
@@ -250,7 +216,7 @@ function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C}
   n2 = n ÷ n1
   k1 = C{T}(n1, σ, radices(n1, n2; esize = sizeof(Complex{T})))
   k2 = C{T}(n2, σ, radices(n2, n1; esize = sizeof(Complex{T})))
-  # Above FACTOR_TWIDDLES bytes the table of W_n^(j1 k2) would be as large as the data and cost a
+  # Above `TUNING[].factor_twiddles` bytes the table of W_n^(j1 k2) would be as large as the data and cost a
   # memory round trip: W_n^(j1 k2) = W_n1^a · W_n^b with j1 k2 = a n2 + b, from tables of n1 + n2
   # values (2^22 Float64 on 8 threads: 5 % faster on the M1). Cache-resident sizes keep the full
   # table: the extra product costs more there (65536 Float32: 4× slower with factor tables).
@@ -263,7 +229,8 @@ end
 function fourstep_twiddles(::Type{T}, n::Int, σ::Int, n1::Int) where {T}
   n2 = n ÷ n1
   W = unit_roots(σ, n)
-  if n * sizeof(Complex{T}) > FACTOR_TWIDDLES
+  # measured on the M1; on Zen 3 a threshold at its 32 MB L3 instead measures the same within noise (0.93–1.07)
+  if n * sizeof(Complex{T}) > TUNING[].factor_twiddles
     t = Vector{Complex{T}}(undef, n1 + n2)
     for a in 0:n1-1; t[a+1] = Complex{T}(W[a*n2+1]); end
     for b in 0:n2-1; t[n1+b+1] = Complex{T}(W[b+1]); end
@@ -276,13 +243,9 @@ function fourstep_twiddles(::Type{T}, n::Int, σ::Int, n1::Int) where {T}
   t
 end
 
-const FOURSTEP_MIN = 1 << 13
 const ROW_PAD = 4
-# Bytes above which the four-step uses factor twiddle tables (measured on the M1; on Zen 3 a
-# threshold at its 32 MB L3 instead measures the same within noise, 0.93–1.07).
-const FACTOR_TWIDDLES = 1 << 23
 
-use_fourstep(n, nt) = nt > 1 && n >= FOURSTEP_MIN && smooth(n) && fourstep_split(n) > 0
+use_fourstep(n, nt) = nt > 1 && n >= TUNING[].fourstep_min && smooth(n) && fourstep_split(n) > 0
 
 function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T}
   n1, n2 = P.n1, P.n2
@@ -355,9 +318,8 @@ function BluesteinMT{T}(n::Int, σ::Int, nt::Int) where {T}
 end
 
 # From this length on, a Bluestein line runs on several threads.
-const BLUESTEIN_MT_MIN = 1 << 14
 
-use_bluestein_mt(n, nt) = nt > 1 && n >= BLUESTEIN_MT_MIN && !smooth(n)
+use_bluestein_mt(n, nt) = nt > 1 && n >= TUNING[].bluestein_mt_min && !smooth(n)
 
 bluestein_mt_dim(sz, d::Int, nt::Int) = (so = dim_extent(sz, d); so[1] == 1 && so[2] == 1 && use_bluestein_mt(sz[d], nt))
 
@@ -436,9 +398,8 @@ end
 # round trip. Planes are the work items; with several threads there must be enough of them.
 # Complex values per plane (2 MB ComplexF64). Not the L2 per core: on Zen 3 (512 KB L2) planes of
 # 2^15 values are up to 1.37× slower than 2^17 with 16 threads (256³), the planes live in L3.
-const PLANE_BUDGET = 1 << 17
 
-fuse_planes(n1, n2, outer, nt) = n1 * n2 <= PLANE_BUDGET && (nt == 1 || outer >= nt)
+fuse_planes(n1, n2, outer, nt) = n1 * n2 <= TUNING[].plane_budget && (nt == 1 || outer >= nt)
 
 function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Union{Chain{T},RChain{T}}, k2::Union{Chain{T},RChain{T}},
                      n1::Int, n2::Int, outer::Int) where {T}
@@ -457,6 +418,60 @@ function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Union{Chain{T},RChain{T}}, k
     for i0 in 0:B:n1-1
       run_lanes!(py + base + i0 * CT, py + base + i0 * CT, pw1, pw2, k2, n1, n1, min(B, n1 - i0))
     end
+  end
+  nothing
+end
+
+# One dimension pass by kernel type; the driver (apply_dims! in interface.jl) calls run_dim!.
+function run_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer::Int) where {T}
+  run_kernel_dim!(py, px, p, k, S, n, outer)
+end
+
+run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::FourStep{T}, S::Int, n::Int, outer::Int) where {T} =
+  run_fourstep!(py, px, k, p.nthreads)
+
+run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::BluesteinMT{T}, S::Int, n::Int, outer::Int) where {T} =
+  run_bluestein_mt!(py, px, k, p.nthreads)
+
+# Stockham chains: lane blocks when there are enough lanes, slices in groups when there are enough
+# slices, otherwise one slice after the other.
+function run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Union{Chain{T},RChain{T}}, S::Int, n::Int, outer::Int) where {T}
+  nt = p.nthreads
+  step = 2 * S * n * sizeof(T)
+  if use_lanes(S, n, outer, nt)
+    # never wider than the buffers made at plan time (the cache sizes may have changed since)
+    B = min(lane_block(S, n, nt), fld(length(p.tbuf[1]), n))
+    nb = cld(S, B)
+    ntasks = threaded(S, n, outer, nt) ? nt : 1
+    parallel_items(nb * outer, ntasks) do c, it
+      local o, b; o, b = divrem(it, nb)
+      local i0 = b * B
+      local off = o * step + i0 * 2 * sizeof(T)
+      run_lanes!(py + off, px + off, cptr(p.tbuf[2c-1]), cptr(p.tbuf[2c]), k, S, S, min(B, S - i0))
+    end
+  elseif threaded(S, n, outer, nt) && outer >= nt
+    # slices in groups, BLOCKS_PER_THREAD groups per thread
+    ng = min(outer, BLOCKS_PER_THREAD * nt)
+    parallel_items(ng, nt) do c, g
+      for o in chunk_range(g + 1, ng, outer)
+        run!(py + o * step, px + o * step, cptr(p.tbuf[2c-1]), cptr(p.tbuf[2c]), k, S)
+      end
+    end
+  else
+    run_serial_dim!(py, px, p, k, S, n, outer)
+  end
+  nothing
+end
+
+# Other kernels (Bluestein) and chains that are not threaded: one slice after the other.
+run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer::Int) where {T} =
+  run_serial_dim!(py, px, p, k, S, n, outer)
+
+function run_serial_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer::Int) where {T}
+  step = 2 * S * n * sizeof(T)
+  pw1 = cptr(p.work1); pw2 = cptr(p.work2)
+  for o in 0:outer-1
+    run!(py + o * step, px + o * step, pw1, pw2, k, S)
   end
   nothing
 end
