@@ -139,6 +139,25 @@ plan_type(::AbstractArray{Complex{T}}) where {T<:FFTLFloat} = T
 plan_type(::AbstractArray{T}) where {T<:FFTLFloat} = T
 plan_type(::AbstractArray) = Float64
 
+"""
+    fft(x, region = 1:ndims(x))
+
+Forward DFT of `x` along `region` (all dimensions by default), unnormalised. Equal to
+`plan_fft(x, region) * x`.
+"""
 fft(x::AbstractArray, region = 1:ndims(x)) = plan_fft(x, region) * x
+
+"""
+    bfft(x, region = 1:ndims(x))
+
+Backward DFT along `region`, unnormalised: applying `bfft` to `fft(x)` multiplies `x` by the
+number of transformed elements.
+"""
 bfft(x::AbstractArray, region = 1:ndims(x)) = plan_bfft(x, region) * x
+
+"""
+    ifft(x, region = 1:ndims(x))
+
+Normalised inverse DFT along `region`: `ifft(fft(x)) ≈ x`.
+"""
 ifft(x::AbstractArray, region = 1:ndims(x)) = plan_ifft(x, region) * x
