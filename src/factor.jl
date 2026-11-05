@@ -130,13 +130,12 @@ function heuristic_radices(n::Int, S::Int)
     push!(r, p)
   end
   pow2 = vcat(fill(8, eight), fill(4, fours), fill(2, two))
-  # Single lines on x86: powers of two first, then the other radices from the smallest to the largest.
-  # The largest radix last is the fastest order: (3, 13) for 39 takes 0.65–0.75 of (13, 3), and the
-  # ascending order is the best measured one for 91 % of the lengths up to 1024 (Zen 2).
-  if !merge
+  # Single lines: powers of two first, then the other radices from the smallest to the largest. The
+  # largest radix last is the fastest order (39 as (3, 13) takes 0.65–0.75 of (13, 3)): measured on
+  # Zen 2 and on the M1 Max up to 1024. Batches keep the order of the merged rule (not measured).
+  if S == 1
     return vcat(sort(pow2; rev = true), sort!(r))
   end
-  # aarch64 and batches: a power-of-two radix first, then the rest, remaining powers of two last
   if isempty(pow2)
     return reverse!(sort(r))
   end
