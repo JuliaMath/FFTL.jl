@@ -1,3 +1,5 @@
+![FFTL.jl](assets/logo.png)
+
 # FFTL.jl
 
 *Fastest Fourier Transform in Lübeck*: a Fourier transform library in pure Julia. Complex, real
