@@ -1,4 +1,4 @@
-![FFTL.jl](assets/logo.png)
+![FFTL.jl](assets/logo.svg)
 
 # FFTL.jl
 

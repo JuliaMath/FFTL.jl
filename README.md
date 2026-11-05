@@ -1,3 +1,5 @@
+![FFTL — Fastest Fourier Transform in Lübeck](docs/assets/fftl-logo.svg)
+
 # FFTL.jl — Fastest Fourier Transform in Lübeck
 
 [![CI](https://github.com/JuliaMath/FFTL.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaMath/FFTL.jl/actions/workflows/CI.yml?query=branch%3Amain)
