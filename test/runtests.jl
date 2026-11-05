@@ -541,3 +541,9 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   include("ka.jl")
   include("aqua.jl")
 end
+
+@testset "radix sequences match the table of this platform" begin
+  include("radix_table.jl")
+  @test isfile(radix_table_path())
+  isfile(radix_table_path()) && @test radix_table_lines() == readlines(radix_table_path())
+end

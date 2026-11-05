@@ -31,17 +31,30 @@ end
 Base.hash(k::CacheKey, h::UInt) = hash(k.rs, hash(k.σ, hash(k.n, hash(k.T, hash(k.kind, h)))))
 Base.:(==)(a::CacheKey, b::CacheKey) = a.kind === b.kind && a.T === b.T && a.n == b.n && a.σ == b.σ && a.rs == b.rs
 
-const KCACHE = Dict{CacheKey,Any}()
+# Entries carry the tick of their last use; a full cache drops the least recently used one.
+const KCACHE = Dict{CacheKey,Tuple{Int,Any}}()
 const KCACHE_LOCK = ReentrantLock()
 const KCACHE_MAX = 128   # a chain and its tables are two entries
+const KCACHE_TICK = Ref(0)
 
 function cached(f::F, key::CacheKey) where {F}
   @lock KCACHE_LOCK begin
-    v = get(KCACHE, key, nothing)
-    v === nothing || return v
-    length(KCACHE) >= KCACHE_MAX && delete!(KCACHE, first(keys(KCACHE)))
+    e = get(KCACHE, key, nothing)
+    if e !== nothing
+      KCACHE_TICK[] += 1
+      KCACHE[key] = (KCACHE_TICK[], e[2])
+      return e[2]
+    end
+    if length(KCACHE) >= KCACHE_MAX
+      oldest, tick = first(KCACHE)[1], typemax(Int)
+      for (k, e) in KCACHE
+        e[1] < tick && ((oldest, tick) = (k, e[1]))
+      end
+      delete!(KCACHE, oldest)
+    end
     w = f()
-    KCACHE[key] = w
+    KCACHE_TICK[] += 1
+    KCACHE[key] = (KCACHE_TICK[], w)
     w
   end
 end
