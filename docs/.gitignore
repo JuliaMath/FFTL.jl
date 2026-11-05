@@ -1,0 +1,4 @@
+build/
+src/generated/
+Manifest.toml
+*.log

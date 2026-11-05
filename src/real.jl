@@ -423,6 +423,26 @@ function plan_irfft(X::AbstractArray, d::Integer, region = 1:ndims(X); kw...)
   AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(T, AbstractFFTs.output_size(p), p.region))
 end
 
+"""
+    rfft(x, region = 1:ndims(x))
+
+Forward DFT of real `x`, returning the half spectrum along the first dimension of `region`
+(`size(x, d) ÷ 2 + 1` values there).
+"""
 rfft(x::AbstractArray, region = 1:ndims(x)) = plan_rfft(x, region) * x
+
+"""
+    brfft(X, d, region = 1:ndims(X))
+
+Unnormalised inverse of the half spectrum `X` to a real array of length `d` along the first
+dimension of `region`.
+"""
 brfft(X::AbstractArray, d::Integer, region = 1:ndims(X)) = plan_brfft(X, d, region) * X
+
+"""
+    irfft(X, d, region = 1:ndims(X))
+
+Normalised inverse of the half spectrum `X` to a real array of length `d` along the first
+dimension of `region`: `irfft(rfft(x), length(x)) ≈ x`.
+"""
 irfft(X::AbstractArray, d::Integer, region = 1:ndims(X)) = plan_irfft(X, d, region) * X

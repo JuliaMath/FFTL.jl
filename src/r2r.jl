@@ -29,6 +29,13 @@
 # - R2HC: F = r2c(x) stored in halfcomplex order. HC2R: F_k = X_k + i X_(n-k) (imaginary part
 #   zero for k = 0 and k = n/2), Y = c2r(F).
 
+"""
+    R2RKind
+
+The real-to-real kinds: `REDFT00` … `REDFT11` (DCT-I … DCT-IV), `RODFT00` … `RODFT11` (DST-I … DST-IV),
+`DHT` (Hartley), `R2HC` and `HC2R` (halfcomplex). The formulas are in the documentation
+(Cosine, sine and Hartley transforms).
+"""
 @enum R2RKind REDFT00 REDFT10 REDFT01 REDFT11 RODFT00 RODFT10 RODFT01 RODFT11 DHT R2HC HC2R
 
 """
