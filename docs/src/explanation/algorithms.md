@@ -58,8 +58,11 @@ is a smooth number with ``M \ge 2n - 1``, so the convolution is two transforms o
 and one pointwise product. The kernel's transform is computed once when the plan is made.
 
 Per line, Bluestein costs two transforms of length ``M`` and a pointwise product, so it is used
-only for lengths that the smooth codelets cannot cover. The choice of ``M`` follows a cost model
-fitted to measurements (`src/plan.jl`).
+only for lengths that the smooth codelets cannot cover. On aarch64 the convolution length is the
+smallest 5-smooth number with ``M \ge 2n - 1``. On x86 a cost model fitted to measured chains
+picks the fastest 7-smooth length in ``[2n - 1,\, 1.4\,(2n - 1)]``: a length with many radix 9,
+5 or 3 stages transforms several times slower than a power of two a few percent larger
+(`src/plan.jl`).
 
 ## Multidimensional transforms without transposition
 

@@ -1,6 +1,8 @@
 # FFTL.jl documentation
 
-Documentation of FFTL.jl (branch `docs`, worktree `FastJuliaFFT/FFTL-docs`). Read this together with
+Documentation of FFTL.jl (`FFTL.jl/docs` on branch `main`; the former worktree
+`FastJuliaFFT/FFTL-docs` was merged into `main` as ffeac17, feature work continues on branches
+off `main`). Read this together with
 the package's `AGENTS.md`: the licence rules there apply to everything written here as well.
 
 Conversation with Tobias is in German; everything in this folder is written in English.
@@ -19,7 +21,8 @@ Conversation with Tobias is in German; everything in this folder is written in E
 - **Home** (`src/index.md`): logo, what you get, quick start, status.
 - **Getting Started**: "Your first transform".
 - **Tutorials** (Literate, `literate/tutorials/`): spectrum of a sampled signal, compressing an image
-  with the DCT, Poisson with the DST (second-order convergence shown), fast convolution.
+  with the DCT, Poisson with the DST (second-order convergence shown), fast convolution. Each has
+  at least one figure (CairoMakie) next to its printed results.
 - **How-to Guides** (`src/howto/`): plans and reuse, transforms along dimensions (including
   `plan_pass` with pruning, which NFFT.jl uses), real data, cosine/sine/Hartley transforms, threads,
   number types, precompilation, GPU, using FFTL next to FFTW.jl, C library (libfftl), contribute.
@@ -37,8 +40,16 @@ Conversation with Tobias is in German; everything in this folder is written in E
   `plan_inv`). FFTL does **not** register `AbstractFFTs.plan_fft`/`fft` for standard arrays, so
   loading it next to FFTW.jl does not take over `fft`. The docs say this explicitly. Niklas's remark
   "we implement AbstractFFTs" is true for the plan interface only. Changing this is Tobias's call.
-- **Feature/platform table:** built from README, code and the libfftl header. The FFTL paper was not
-  on disk (`papers/` is empty), so the table must be checked against the paper before release.
+- **Feature/platform table:** built from README, code and the libfftl header. Checked against the
+  FFTL paper (`~/Arbeit/Eigene Publikationen/Draft/2026 FFTL.jl/manuscript/`, 2026-11-05): the
+  table itself matched; fixed from the code was the Bluestein convolution-length rule
+  (aarch64: smallest 5-smooth M ≥ 2n−1; x86: cost model, 7-smooth M in [2n−1, 1.4·(2n−1)]) and
+  added from the header was the FFTW-padded real layout of in-place r2c/c2r in libfftl.
+- **Figures:** CairoMakie in the tutorials. Literate runs with `execute = false` (its default for
+  markdown), so the scripts execute as Documenter `@example` blocks during `makedocs`; a figure
+  cell ends with `fig` (no semicolon), because Documenter captures the block result — explicit
+  `display(fig)` calls would be discarded. Documenter renders SVG first (PNG is the LaTeX
+  fallback); Makie's default theme background is white.
 - **Benchmarks:** only a stub until Tobias asks for the dedicated benchmark work. The page lists the
   protocol (A/B on one machine, interleaved medians, A/A noise band, held-out sizes, accuracy against a
   high-precision reference, first plan and execution timed separately) and the machines. No numbers.
@@ -63,15 +74,16 @@ Conversation with Tobias is in German; everything in this folder is written in E
 
 ## Build and git
 
-- Build: `julia --project=docs docs/make.jl` (after `Pkg.instantiate` in `docs/`). Output in
+- Build: `julia --project=docs docs/make.jl` (after `Pkg.instantiate` in `docs/`; the docs env
+  carries FFTL as a path dep plus Documenter, Literate and CairoMakie). Output in
   `docs/build` (ignored). `docs/.gitignore` covers build output, generated pages, Manifest and logs.
-- Commit on branch `docs`. Do not push and do not merge into `main` without Tobias's OK.
+- Commit on a branch off `main`. Do not push and do not merge into `main` without Tobias's OK.
 - Commit trailer: `Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>`.
 
 ## Open items
 
-- Feature table: check against the FFTL paper.
 - GitHub workflow for the docs (`deploydocs` is in `make.jl`; no CI job yet).
 - Dark mode: Documenter's theme still offers a dark-mode switch; Tobias wants light mode only.
+  The tutorial figures have a white background, so they read in both themes.
 - Benchmarks: results once the benchmark release is done.
 - Package README still says "work in progress" and does not link the docs.

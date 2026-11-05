@@ -6,7 +6,7 @@
 #
 # The image is generated here, so the example needs no files.
 
-using FFTL, LinearAlgebra
+using FFTL, CairoMakie, LinearAlgebra
 
 n = 256
 u = range(0, 1; length = n)
@@ -42,6 +42,20 @@ end
 
 # The error is the price of dropping coefficients. Every line above is computed from the same
 # transform pair, so the trade-off is measured, not assumed.
+
+# The reconstruction from 5 % of the coefficients next to the original, and the coefficient
+# magnitudes on a log scale, which show where the energy sits:
+
+Ck, frac = compress(C, 0.05)
+fig = Figure(size = (720, 270))
+panels = [(img, "original"), (FFTL.idct(Ck), "5 % of the coefficients"),
+          (log10.(abs.(C) .+ 1e-16), "log |DCT|")]
+for (i, (d, t)) in enumerate(panels)
+  ax = Axis(fig[1, i]; title = t)
+  hidedecorations!(ax)
+  heatmap!(ax, d; colormap = i <= 2 ? :viridis : :inferno)
+end
+fig
 
 # ## Inverse
 #

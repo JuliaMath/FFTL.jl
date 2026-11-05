@@ -100,4 +100,9 @@ cc -O2 -Iinclude -Lbuild/lib -lfftl -Wl,-rpath,"$(pwd)/build/lib" example.c -o e
 - **One plan, one thread at a time.** Different plans can execute in parallel. Do not destroy a
   plan while it executes.
 - **Real transforms** are separate plan constructors, `fftl_plan_dft_r2c` and `fftl_plan_dft_c2r`,
-  and real-to-real transforms use `fftl_plan_r2r` with one kind per dimension.
+  and real-to-real transforms use `fftl_plan_r2r` with one kind per dimension. The complex array
+  holds the half spectrum along the first transformed dimension: `dim/2 + 1` values there, the
+  other dimensions as in the real array. **In place, the real array is padded** along that
+  dimension to `2 * (dim/2 + 1)` values, so that it occupies exactly the memory of the half
+  spectrum, as FFTW pads it; the values at positions `dim` and above are ignored by `r2c` and
+  undefined after `c2r`.

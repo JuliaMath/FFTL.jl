@@ -5,7 +5,7 @@
 # The record is exactly one second long, so each frequency bin is 1 Hz wide and the tones fall
 # on bins without leakage.
 
-using FFTL, Random
+using FFTL, CairoMakie, Random
 Random.seed!(2)
 
 fs = 8192.0                        # sampling rate in Hz
@@ -36,6 +36,19 @@ end
 
 # The two tones come out at 440 Hz and 1234 Hz with amplitudes close to 0.8 and 0.3; the noise
 # stays well below the threshold.
+
+# The spectrum itself, with the bins above the threshold and the threshold line:
+
+fig = Figure(size = (640, 380))
+ax = Axis(fig[1, 1]; xlabel = "Frequency (Hz)", ylabel = "Amplitude",
+          limits = (0, fs / 2, 0, 1))
+lines!(ax, f, amp)
+scatter!(ax, f[idx], amp[idx])
+hlines!(ax, 0.1; color = :gray, linestyle = :dash)
+text!(ax, f[idx], amp[idx] .+ 0.06;
+      text = [string(Int(round(fk)), " Hz") for fk in f[idx]],
+      align = (:center, :bottom))
+fig
 
 # ## Why this needs no more than one transform
 #

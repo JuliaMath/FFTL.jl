@@ -45,7 +45,7 @@ The example checks the self-inverse kinds directly:
 using FFTL, LinearAlgebra
 
 n = 9
-x = [sin(0.7j) + 0.1j for j in 0:n-1]
+x = [sin(0.7 * j) + 0.1 * j for j in 0:n-1]
 for (kind, factor) in ((FFTL.REDFT00, 2(n - 1)), (FFTL.REDFT11, 2n),
                        (FFTL.RODFT00, 2(n + 1)), (FFTL.RODFT11, 2n), (FFTL.DHT, n))
   y = FFTL.r2r(FFTL.r2r(x, kind), kind) ./ factor

@@ -9,8 +9,8 @@ the limits; the header has the exact contracts.
 |:--|:--|
 | `fftl_version(buf, len)` | the library version as `"major.minor.patch"` |
 | `fftl_plan_dft(rank, dims, transform_rank, region, precision, sign, threads)` | complex DFT plan, `sign` −1 forward or +1 backward |
-| `fftl_plan_dft_r2c(rank, dims, transform_rank, region, precision, threads)` | real input, half spectrum out |
-| `fftl_plan_dft_c2r(rank, dims, transform_rank, region, precision, threads)` | half spectrum in, real output, unnormalised |
+| `fftl_plan_dft_r2c(rank, dims, transform_rank, region, precision, threads)` | real input, half spectrum out; in place uses FFTW's padded real layout |
+| `fftl_plan_dft_c2r(rank, dims, transform_rank, region, precision, threads)` | half spectrum in, real output, unnormalised; in place uses FFTW's padded real layout |
 | `fftl_plan_r2r(rank, dims, transform_rank, region, kinds, precision, threads)` | real-to-real transforms, one kind per dimension |
 | `fftl_plan_execute(plan, out, in)` | apply a plan of any of the four kinds; `out == in` runs in place |
 | `fftl_plan_destroy(plan)` | free a plan |

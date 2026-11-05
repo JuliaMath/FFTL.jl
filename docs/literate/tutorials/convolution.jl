@@ -5,7 +5,7 @@
 # of spectra: transform both, multiply, transform back. That costs ``O(N log N)`` with ``N ≥ n + m - 1``.
 # The result is linear, not circular, so both inputs are zero-padded first.
 
-using FFTL, Random
+using FFTL, CairoMakie, Random
 Random.seed!(3)
 
 signal = randn(1000)
@@ -40,6 +40,18 @@ maximum(abs, y_fft - y_dir)
 
 # The difference is at the level of rounding, so the two agree. Both give the same output, and
 # the FFT version scales as ``N log N`` instead of ``nm``.
+
+# The signal, the filter and the output; the FFT points sit on the direct curve:
+
+fig = Figure(size = (640, 520))
+ax1 = Axis(fig[1, 1]; ylabel = "signal")
+lines!(ax1, signal)
+ax2 = Axis(fig[2, 1]; ylabel = "filter")
+lines!(ax2, kernel)
+ax3 = Axis(fig[3, 1]; ylabel = "output")
+lines!(ax3, y_dir)
+scatter!(ax3, y_fft; markersize = 5)
+fig
 
 # ## Filtering a long signal
 #

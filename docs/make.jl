@@ -71,6 +71,9 @@ makedocs(;
       "Benchmarks" => "reference/benchmarks.md",
     ],
   ],
+  # The public API is unexported by design (see "Using FFTL next to FFTW.jl"), so there are no
+  # exports for checkdocs to walk. The names in the `@docs` blocks of reference/api.md are the
+  # enforced list: a binding without a docstring fails the build.
   checkdocs = :none,
 )
 

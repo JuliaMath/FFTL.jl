@@ -67,5 +67,6 @@ p1 * x ≈ FFTL.fft(x)
 A plan for a new radix sequence compiles its kernels, which takes milliseconds for the sizes
 in the precompile workload and up to a few seconds for others. After that, plans of the same
 size are a lookup in a cache, and transforms never compile. Kernels are kept in a
-cache of 128 entries, least recently used first out (`FFTL.clear_cache!()` empties it). To remove the compilation cost
+cache of 128 entries that drops the least recently used entry when it is full
+(`FFTL.clear_cache!()` empties it). To remove the compilation cost
 from the first call entirely, see [Precompilation](@ref "Precompilation").
