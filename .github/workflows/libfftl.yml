@@ -55,6 +55,11 @@ jobs:
             fi
           fi
           FC="$FC" libfftl/test/fftw3_ftest.sh
+      # An unmodified third-party program (FINUFFT, Apache-2.0) on libfftl and on FFTW. Off until
+      # the program is approved for this workflow.
+      - name: Third-party program against libfftl (FINUFFT)
+        if: false
+        run: libfftl/test/thirdparty_finufft.sh
       - name: Bundle size
         run: |
           {
