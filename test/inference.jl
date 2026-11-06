@@ -48,10 +48,12 @@
   let G = randn(Complex{T}, 40, 36, 30), W = similar(G)
     v = view(G, 3:34, 2:33, 2:25)
     w = view(W, 3:34, 2:33, 2:25)
+    # Julia 1.10: apply! on a view allocates 64-80 bytes per call (mul! with a separate output
+    # does not); 1.11 and later are allocation-free.
     p = FFTL.plan_pass(v, 2; sign = -1, threads = 1)
     FFTL.apply!(p, v)
     @test (@inferred FFTL.apply!(p, v)) === v
-    @test (@allocated FFTL.apply!(p, v)) == 0
+    @test (@allocated FFTL.apply!(p, v)) == 0 broken = VERSION < v"1.11"
     mul!(w, p, v)
     @test (@inferred mul!(w, p, v)) === w
     @test (@allocated mul!(w, p, v)) == 0
@@ -63,11 +65,11 @@
     pnz = FFTL.plan_pass(u, 1; sign = -1, threads = 1, nonzero = rng)
     FFTL.apply!(pnz, u)
     @test (@inferred FFTL.apply!(pnz, u)) === u
-    @test (@allocated FFTL.apply!(pnz, u)) == 0
+    @test (@allocated FFTL.apply!(pnz, u)) == 0 broken = VERSION < v"1.11"
     pne = FFTL.plan_pass(u, 1; sign = 1, threads = 1, needed = rng)
     FFTL.apply!(pne, u)
     @test (@inferred FFTL.apply!(pne, u)) === u
-    @test (@allocated FFTL.apply!(pne, u)) == 0
+    @test (@allocated FFTL.apply!(pne, u)) == 0 broken = VERSION < v"1.11"
     @test_broken @inferred FFTL.plan_pass(v, 2)
   end
   # real transforms
