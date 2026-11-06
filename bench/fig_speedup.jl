@@ -11,10 +11,11 @@
 # shape is the kind group, colour the precision. Cases no competitor computes are not plotted;
 # their count is printed with the summary.
 #
-# Writes docs/src/generated/benchmarks/speedup.png.
+# Writes docs/src/generated/benchmarks/speedup.png and speedup.toml (the per-panel summary that
+# the benchmarks page quotes).
 # Usage: julia --project=docs bench/fig_speedup.jl   (or included from docs/make.jl)
 
-using CairoMakie, Statistics, Printf
+using CairoMakie, Statistics, Printf, TOML
 
 include(joinpath(@__DIR__, "overview.jl"))
 
@@ -52,10 +53,13 @@ end
 function main()
     set_theme!(fontsize = 10)
     fig = Figure(size = (920, 640), figure_padding = (4, 10, 4, 4))
+    summary = Dict{String,Any}()
     for (i, p) in enumerate(PANELS)
         pts, nocomp = speedups(p)
         s = [q.s for q in pts]
         med, share = median(s), mean(s .> 1)
+        summary[p.key] = Dict("median" => round(med; digits = 2), "faster_percent" => round(Int, 100share),
+                              "cases" => length(s))
         println(@sprintf("%-8s median %.2f×, faster in %d%% of %d cases, %d without competitor",
                          p.key, med, round(Int, 100share), length(s), nocomp))
         r, c = fldmod1(i, 3)
@@ -96,6 +100,7 @@ function main()
     rowgap!(fig.layout, 6); colgap!(fig.layout, 10)
     mkpath(OUT)
     save(joinpath(OUT, "speedup.png"), fig)
+    open(io -> TOML.print(io, summary), joinpath(OUT, "speedup.toml"), "w")
     set_theme!()   # reset: the figures of the other pages must not inherit this theme
     println("wrote ", joinpath(OUT, "speedup.png"))
 end

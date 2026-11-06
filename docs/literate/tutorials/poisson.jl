@@ -12,9 +12,9 @@
 using FFTL, CairoMakie, LinearAlgebra
 
 # The eigenvalues of the 1D second difference with Dirichlet conditions are
-# 2 - 2cos(jπh) over h², and the 2D eigenvalues are their sums, Λ_jk = λ_j + λ_k.
-# Dividing the DST coefficients by Λ and transforming back solves the system; the inverse
-# DST-I multiplies by 2(n+1) per dimension, which is why the result is divided by (2(n+1))².
+# ``λ_j = (2 - 2\cos(jπh))/h^2``, and the 2D eigenvalues are their sums, ``Λ_{jk} = λ_j + λ_k``.
+# Dividing the DST coefficients by ``Λ`` and transforming back solves the system; the scaling
+# by ``(2(n+1))^2`` is explained at the end.
 
 function poisson_solve(n)
   h = 1 / (n + 1)

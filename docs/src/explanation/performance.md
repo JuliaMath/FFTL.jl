@@ -1,7 +1,6 @@
 # Performance
 
-FFTL is built to be fast on the cases that matter, and to stay fast without a regression. This
-page says how speed is measured, and what the design does to get it. The numbers themselves
+This page describes what the design does for speed and how speed is measured. The numbers themselves
 come with the [benchmark release](@ref "Benchmarks"), not here.
 
 ## What is fast, and where

@@ -1,7 +1,7 @@
 # AbstractFFTs
 
-FFTL implements the plan side of [AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl).
-Which methods each plan type provides:
+FFTL is a backend of [AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl). Which
+methods each plan type provides:
 
 | method | complex plans | real plans (`rfft`, `brfft`, `irfft`) | real-to-real plans |
 |:--|:--|:--|:--|
@@ -15,11 +15,18 @@ Which methods each plan type provides:
 Real plans are `RFFTLPlan` (`rfft`) and `BRFFTLPlan` (`brfft`, `irfft`); the complex ones are
 `FFTLPlan`; real-to-real are `R2RPlan`.
 
-## What FFTL does not implement
+## The generic functions
 
-- **`AbstractFFTs.plan_fft` and `AbstractFFTs.fft` for standard arrays.** FFTL does not register
-  itself as the backend of the generic functions, so `AbstractFFTs.fft(x)` needs another backend
-  such as FFTW.jl loaded. The reason is in [Using FFTL next to FFTW.jl](@ref "Using FFTL next to FFTW.jl").
+FFTL's exported `fft`, `plan_fft`, … are its own functions, not AbstractFFTs's. For generic
+code, FFTL adds methods to AbstractFFTs's `plan_fft`, `plan_bfft`, `plan_fft!`, `plan_bfft!`,
+`plan_rfft` and `plan_brfft` for arrays of floating-point numbers; AbstractFFTs derives the
+transform functions, the normalised inverses and the promotion of real input from them. So
+`AbstractFFTs.fft(x)` runs on FFTL when no other backend is loaded.
+
+These methods are less specific than FFTW.jl's, which take `StridedArray`s of `Float32` and
+`Float64` values. With FFTW.jl loaded, the generic functions therefore run on FFTW for those
+arrays and on FFTL for the others (other floating-point types, non-strided arrays). Code that
+wants FFTL calls FFTL's functions; see [Coming from FFTW.jl](@ref "Coming from FFTW.jl").
 
 ## Inverses
 

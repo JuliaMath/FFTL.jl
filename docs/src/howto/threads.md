@@ -8,9 +8,9 @@ using FFTL, LinearAlgebra, Random
 Random.seed!(6)
 
 x = randn(ComplexF64, 512, 512)
-p8 = FFTL.plan_fft(x; threads = 8)
+p8 = plan_fft(x; threads = 8)
 y8 = p8 * x
-y8 ≈ FFTL.fft(x)
+y8 ≈ fft(x)
 ```
 
 The threaded result agrees with the single-threaded one up to rounding. Long one-dimensional
@@ -40,12 +40,18 @@ Code that already threads over its own work should not also ask FFTL for threads
 oversubscription is worse than the parallelism it adds:
 
 ```julia
-Threads.@threads for i in eachindex(images)
-  mul!(out[i], plans[Threads.threadid()], images[i])   # plans made with threads = 1
+chunks = Iterators.partition(eachindex(images), cld(length(images), Threads.nthreads()))
+@sync for c in chunks
+  Threads.@spawn begin
+    p = plan_fft(images[first(c)]; threads = 1)
+    for i in c
+      mul!(out[i], p, images[i])
+    end
+  end
 end
 ```
 
-Pass `threads = 1` when making the plans in that case.
+Each task makes its own plan with `threads = 1`; see [Plans and reuse](@ref "One plan per task").
 
 ## Plans are not shared between tasks
 
@@ -54,8 +60,8 @@ time corrupt each other's results. Make one plan per task (see [Plans and reuse]
 
 ## Apple silicon
 
-On an Apple M1 Max, `Threads.nthreads()` counts the performance cores only if Julia is started
-that way; with `-t auto` the efficiency cores join, and a thread on an efficiency core can hold
-up a threaded pass. Measured on the M1 Max, the 64³ transform with 8 threads was slower when the
+With `-t auto`, Julia starts one thread per core, efficiency cores included. A thread on an
+efficiency core can hold up a threaded pass, so on Apple silicon start Julia with the number of
+performance cores (`julia -t 8` on an M1 Max). Measured on the M1 Max, the 64³ transform with 8 threads was slower when the
 efficiency cores took part. The libfftl build uses the performance cores for the same reason
 (see [libfftl](@ref "C library (libfftl)")).

@@ -106,16 +106,16 @@ Each kind is computed from a real or complex DFT of a rearranged input. Examples
   ``e^{-i\pi k/(2n)}``, gives the DCT-II. This is the reordering that makes the DCT cost one
   real DFT of length ``n``.
 - **DST-II and DST-IV** are DCTs of the input with alternating signs, read in reverse order.
-- **DCT-I and DST-I** extend the input to an even or odd sequence of length ``2N`` and take one
-  real DFT of that length.
+- **DCT-I and DST-I** extend the input to an even or odd sequence of length ``2(n-1)`` or
+  ``2(n+1)`` and take one real DFT of that length.
 - **DHT** is the real DFT with the real and imaginary parts combined: ``\operatorname{Re} F_k - \operatorname{Im} F_k``.
 
 The formulas are in the header comment of `src/r2r.jl`. Their inverses and scale factors are
 listed on [the cosine, sine and Hartley page](@ref "Cosine, sine and Hartley transforms").
 
-## Pass plans for the grid
+## Passes
 
-`plan_pass` applies one 1D transform to all lines of a strided array with the same kernel. It is
-the building block of NFFT.jl: the oversampled grid is transformed along one dimension at a
-time, with zero input outside the nodes' support and only part of the output needed. Both
-declarations use the pruned codelets above.
+`plan_pass` applies one 1D transform to all lines of a strided array with the same kernel. It
+lets a library assemble its own multidimensional transform one dimension at a time and declare,
+per dimension, which inputs are zero and which outputs it needs; both declarations use the
+pruned codelets above. NFFT.jl transforms its oversampled grid this way.

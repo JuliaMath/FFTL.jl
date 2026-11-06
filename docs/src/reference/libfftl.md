@@ -36,8 +36,8 @@ The kinds are `FFTL_REDFT00` … `FFTL_REDFT11` (DCT-I to DCT-IV), `FFTL_RODFT00
 
 ## Build and size
 
-On macOS (arm64), the build output in `libfftl/build/lib` is about 23 MB: the library and the Julia
-runtime it embeds. No Julia installation is needed to run a program that links it. The build
+On macOS (arm64), the build output in `libfftl/build/lib` is 23 MB: the library (14 MB) and the
+Julia runtime next to it (10 MB). No Julia installation is needed to run a program that links it. The build
 needs Julia 1.12 or newer with `juliac`. See [C library (libfftl)](@ref "C library (libfftl)")
 for the build variables.
 

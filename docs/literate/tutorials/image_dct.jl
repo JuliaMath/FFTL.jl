@@ -16,10 +16,10 @@ size(img)
 
 # ## The transform
 #
-# `FFTL.dct` transforms both dimensions. It is orthonormal, so the energy is the same in both
+# `dct` transforms both dimensions. It is orthonormal, so the energy is the same in both
 # domains (Parseval):
 
-C = FFTL.dct(img)
+C = dct(img)
 norm(C) ≈ norm(img)
 
 # ## Keep the largest coefficients
@@ -35,20 +35,19 @@ end
 
 for keep in (0.2, 0.05, 0.01)
   Ck, frac = compress(C, keep)
-  R = FFTL.idct(Ck)
+  R = idct(Ck)
   println("kept ", round(100 * frac; digits = 1), " % of the coefficients, relative error ",
           round(norm(R - img) / norm(img); sigdigits = 2))
 end
 
-# The error is the price of dropping coefficients. Every line above is computed from the same
-# transform pair, so the trade-off is measured, not assumed.
+# The error grows as fewer coefficients are kept.
 
 # The reconstruction from 5 % of the coefficients next to the original, and the coefficient
 # magnitudes on a log scale, which show where the energy sits:
 
 Ck, frac = compress(C, 0.05)
 fig = Figure(size = (720, 270))
-panels = [(img, "original"), (FFTL.idct(Ck), "5 % of the coefficients"),
+panels = [(img, "original"), (idct(Ck), "5 % of the coefficients"),
           (log10.(abs.(C) .+ 1e-16), "log |DCT|")]
 for (i, (d, t)) in enumerate(panels)
   ax = Axis(fig[1, i]; title = t)
@@ -59,6 +58,6 @@ fig
 
 # ## Inverse
 #
-# `FFTL.idct` inverts `FFTL.dct` exactly, up to rounding:
+# `idct` inverts `dct` exactly, up to rounding:
 
-norm(FFTL.idct(C) - img) / norm(img) < 1e-12
+norm(idct(C) - img) / norm(img) < 1e-12

@@ -1,8 +1,18 @@
 # Contribute
 
-FFTL is a small code base with one hard requirement: every change is checked against the
-tests, and every claim about speed is checked against a measurement. This page shows how to
-set up, what to run, and what a change must come with.
+FFTL is meant to be developed by the Julia community, as the FFT the ecosystem shares. Help is
+most useful where one developer with two machines cannot reach:
+
+- **Measurements on other hardware.** FFTL is tuned on an Apple M1 Max, AMD EPYC (Zen 2 and 3),
+  and an NVIDIA RTX A6000. Results on other CPUs and GPUs, and the cases where FFTL is slow or
+  wrong there, show where the rules need work.
+- **Applications.** A transform, number type or memory layout your code needs and FFTL does not
+  offer.
+- **Kernels, tuning, documentation and tests.**
+
+Open an issue with the case (size, type, transform, machine, the numbers), or a pull request.
+Every change is checked against the tests, and every claim about speed against a measurement.
+This page shows how to set up, what to run, and what a change must come with.
 
 ## Set up
 

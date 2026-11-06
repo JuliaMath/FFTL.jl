@@ -55,13 +55,13 @@ end
 
 ## The orthonormal DCT-II
 
-`FFTL.dct` is the DCT-II scaled to an orthonormal map, and `FFTL.idct` its exact inverse. It is
+`dct` is the DCT-II scaled to an orthonormal map, and `idct` its exact inverse. It is
 the transform most users want for compression and for energy-preserving spectra:
 
 ```@example rr
 c = randn(16)
-D = FFTL.dct(c)
-(norm(D) ≈ norm(c), FFTL.idct(D) ≈ c)
+D = dct(c)
+(norm(D) ≈ norm(c), idct(D) ≈ c)
 ```
 
 Its values are the unnormalised DCT-II divided by ``2\sqrt{n}`` for the zero frequency and by
@@ -83,6 +83,6 @@ Y = FFTL.r2r(M, (FFTL.REDFT10, FFTL.R2HC), (1, 2))
 size(Y)
 ```
 
-Real-to-real plans of the same size share the same rules as the complex ones: `plan_r2r` returns
-a plan, `inv` of a plan gives its normalised inverse for the pairs above, and `plan_r2r_pass`
-transforms one dimension of a strided array.
+Plans work as for the complex transforms: `plan_r2r` returns a plan, `inv` of a plan gives its
+normalised inverse for the pairs above, and `plan_r2r_pass` transforms one dimension of a
+strided array.

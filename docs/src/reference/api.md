@@ -4,8 +4,11 @@
 CurrentModule = FFTL
 ```
 
-FFTL does not export its functions. They are called qualified, `FFTL.fft` and so on, so that
-the package can be loaded next to FFTW.jl. The names listed here are public.
+The names listed here are public. FFTL exports the names FFTW.jl exports: the DFT and DCT
+functions with their `plan_` and in-place forms, and AbstractFFTs.jl's helpers (`fftshift`,
+`fftfreq`, …). All other names are used with the prefix, `FFTL.r2r`, `FFTL.REDFT10` and so on.
+The exported functions are FFTL's own; the generic functions of AbstractFFTs.jl reach them
+through the methods described on [AbstractFFTs](@ref "AbstractFFTs").
 
 ## Complex transforms
 
@@ -14,9 +17,12 @@ fft
 bfft
 ifft
 plan_fft
+plan_fft!
+InplacePlan
 ```
 
-`plan_bfft` and `plan_ifft` are documented with `plan_fft`.
+`plan_bfft` and `plan_ifft` are documented with `plan_fft`; `fft!`, `bfft!`, `ifft!`,
+`plan_bfft!` and `plan_ifft!` with `plan_fft!`.
 
 ## Real transforms
 
@@ -33,11 +39,13 @@ plan_rfft
 
 ```@docs
 dct
+plan_dct
 plan_r2r
 R2RKind
 ```
 
-`idct` is documented with `dct`, and `r2r` with `plan_r2r`.
+`idct` is documented with `dct`; `plan_idct`, `plan_dct!`, `plan_idct!`, `dct!` and `idct!` with
+`plan_dct`; `r2r` with `plan_r2r`.
 
 The kinds, as constants: `REDFT00` (DCT-I), `REDFT10` (DCT-II), `REDFT01` (DCT-III), `REDFT11`
 (DCT-IV), `RODFT00` (DST-I), `RODFT10` (DST-II), `RODFT01` (DST-III), `RODFT11` (DST-IV), `DHT`
@@ -54,6 +62,20 @@ plan_r2r_pass
 apply!
 ```
 
+## Run-time plans
+
+Plans whose radix sequences and sizes are data, for programs compiled with `juliac --trim`; see
+[Compiling ahead of time](@ref "Compiling ahead of time").
+
+```@docs
+RPlan
+execute!
+RRFFTPlan
+RR2RPlan
+```
+
+`execute_r2c!`, `execute_c2r!` and `execute_r2r!` are documented with the plans they apply.
+
 ## GPU
 
 Available after `using KernelAbstractions` and a GPU package.
@@ -68,6 +90,8 @@ plan_ka_rfft
 ## Cache and configuration
 
 ```@docs
+FFTL.set_num_threads
+FFTL.ESTIMATE
 FFTL.clear_cache!
 FFTL.cpu_caches
 FFTL.set_cpu_caches!
@@ -85,6 +109,8 @@ part of the interface.
 | `RFFTLPlan` | `plan_rfft` |
 | `BRFFTLPlan` | `plan_brfft`, `plan_irfft` (wrapped in `ScaledPlan`) |
 | `R2RPlan` | `plan_r2r` |
+| `OrthoDCTPlan` | `plan_dct`, `plan_idct` |
+| `InplacePlan` | `plan_fft!`, `plan_bfft!`, `plan_ifft!`, `plan_dct!`, `plan_idct!` |
 | `PassPlan` | `plan_pass` |
 | `R2RPassPlan` | `plan_r2r_pass` |
 | `GPlan`, `GRPlan`, `GR2RPlan` | the same functions for `BigFloat` and other number types |
