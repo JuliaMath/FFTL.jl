@@ -1,4 +1,4 @@
-# Dominance: every library against its best counterpart, per platform.
+# Standing: every library against its best counterpart, per platform.
 #
 # Same data pipeline, competitors and fair thread rule as the FFTL paper's Fig. 5 (its
 # scripts/fig5-dominance.jl; docs sizing and PNG output instead of the Nature figure). The
@@ -6,17 +6,18 @@
 # by this library's time. > 1 means the library is faster than its best counterpart (a win,
 # visible as the right tail), < 1 means slower (the left tail), 1 = parity. Unlike a "distance
 # to the fastest" plot this does not clip the wins at the parity line — the speed-up factor
-# itself is the plotted quantity. The geometric mean of the fold change is the dominance factor.
+# itself is the plotted quantity. The fold factor (the geometric mean of the fold changes) is
+# the library's standing against its best counterpart.
 #
 # One panel per platform, one column per library: raw strip (one point per case), box summary
 # (quartile rectangle, median line, Tukey whiskers), and the parity line at 1. Tick labels carry
-# the dominance factor, win rate and coverage (cases computed / panel cases): the factor is
+# the fold factor, win rate and coverage (cases computed / panel cases): the factor is
 # computed over the cases the library itself computes, and libraries with partial coverage
 # (ducc0: no DCT kinds, vDSP: c2c and DCT-II only) would otherwise read as comparable over the
 # full panel. All panels share one y range in whole octaves, exact powers of two as ticks.
 #
-# Writes docs/src/generated/benchmarks/dominance.png.
-# Usage: julia --project=docs bench/fig_dominance.jl   (or included from docs/make.jl)
+# Writes docs/src/generated/benchmarks/standing.png.
+# Usage: julia --project=docs bench/fig_standing.jl   (or included from docs/make.jl)
 
 using CairoMakie, Statistics, Printf
 
@@ -117,9 +118,9 @@ function main()
            orientation = :horizontal, framevisible = false, labelsize = 8.5)
     rowgap!(fig.layout, 6); colgap!(fig.layout, 10)
     mkpath(OUT)
-    save(joinpath(OUT, "dominance.png"), fig)
+    save(joinpath(OUT, "standing.png"), fig)
     set_theme!()   # reset: the figures of the other pages must not inherit this theme
-    println("wrote ", joinpath(OUT, "dominance.png"))
+    println("wrote ", joinpath(OUT, "standing.png"))
 end
 
 main()

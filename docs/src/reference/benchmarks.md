@@ -6,6 +6,25 @@
     figure. The measurement campaign on quiet machines will replace them; the protocol below is
     already the one the campaign follows.
 
+## Which library to depend on
+
+![The standing of every library against its best counterpart on each platform](../generated/benchmarks/standing.png)
+
+This figure asks the question a package author faces: which single library to depend on. Per
+case, the fold change is the time of the fastest *other* library divided by this library's
+time; right of the parity line is a win, left of it a loss, and wins are not clipped at 1. The
+box is the quartile rectangle with the median line and Tukey whiskers, the points are the raw
+cases. The label under each column carries the fold factor (the geometric mean of the fold
+changes over the cases the library itself computes), the win rate, and the coverage: libraries
+that lack transform kinds (ducc0 without DCT/DST, vDSP with c2c and DCT-II only, MPSGraph and
+cuFFT without real-to-real at all) compute their factor over a smaller subset, so the coverage
+is part of the label.
+
+FFTL is the only library that runs on all six panels and computes every kind. Its fold factor
+is 1.23–1.33× on the CPUs and the Apple GPU and 0.88× on the A6000, the exception below; no
+other library comes with full coverage and full kind support (see
+[Platforms and limits](@ref "Platforms and limits")).
+
 ## How FFTL compares
 
 ![Speed-up of FFTL over the fastest other library on each platform](../generated/benchmarks/speedup.png)
@@ -25,25 +44,6 @@ better setting, the lead holds: 84 % on the M1 with 8 threads (1.26×) and 68 % 
 16 threads (1.20×). On the Apple GPU, against the best of MPSGraph and VkFFT, the median is
 1.26× with 77 % of the cases faster. On the NVIDIA A6000 the median is 0.88×: small transforms
 are launch-bound and the DCT kinds were tuned last (see [Platforms and limits](@ref "Platforms and limits")).
-
-## Which library to depend on
-
-![Fold change of every library against its best counterpart on each platform](../generated/benchmarks/dominance.png)
-
-This figure asks the question a package author faces: which single library to depend on. Per
-case, the fold change is the time of the fastest *other* library divided by this library's
-time; right of the parity line is a win, left of it a loss, and wins are not clipped at 1. The
-box is the quartile rectangle with the median line and Tukey whiskers, the points are the raw
-cases. The label under each column carries the dominance factor (the geometric mean over the
-cases the library itself computes), the win rate, and the coverage: libraries that lack
-transform kinds (ducc0 without DCT/DST, vDSP with c2c and DCT-II only, MPSGraph and cuFFT
-without real-to-real at all) compute their factor over a smaller subset, so the coverage is
-part of the label.
-
-FFTL is the only library that runs on all six panels and computes every kind. Its dominance
-factor is 1.23–1.33× on the CPUs and the Apple GPU and 0.88× on the A6000, the exception above;
-no other library comes with full coverage and full kind support (see
-[Platforms and limits](@ref "Platforms and limits")).
 
 ## What the release covers
 

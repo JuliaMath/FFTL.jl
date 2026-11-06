@@ -23,7 +23,7 @@ write(joinpath(GENERATED, "libfftl_header.md"), "# C header (fftl.h)\n\n```c\n" 
 # (bench/results) on every build, so a fresh clone reproduces them without any measurement.
 # Each script runs in its own process: they are standalone scripts that define their own
 # constants and print their summary to the build log.
-for f in ("fig_speedup.jl", "fig_dominance.jl")
+for f in ("fig_standing.jl", "fig_speedup.jl")
     run(`$(Base.julia_cmd()) --project=$(joinpath(ROOT, "docs")) $(joinpath(ROOT, "bench", f))`)
 end
 

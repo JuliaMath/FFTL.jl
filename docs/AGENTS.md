@@ -52,13 +52,15 @@ Conversation with Tobias is in German; everything in this folder is written in E
   `display(fig)` calls would be discarded. Documenter renders SVG first (PNG is the LaTeX
   fallback); Makie's default theme background is white.
 - **Benchmarks:** Tobias asked for the benchmark page (2026-11-06). It carries the two figures
-  of the paper (Fig. 1 speed-up, Fig. 5 dominance), regenerated from the committed overview data
-  in `bench/results` (copied from the workspace harness; ~0.4 MB) on every build — `make.jl`
-  runs `bench/fig_speedup.jl` and `bench/fig_dominance.jl` as their own processes, because the
-  scripts are standalone with their own constants. The scripts are adapted from the paper's
-  `scripts/fig1.jl` and `fig5-dominance.jl` (docs sizing, PNG output). The numbers are labelled
-  as the development state (loaded machines, one round per case); the campaign on quiet machines
-  replaces the data, and the figures follow it.
+  of the paper (the standing of every library against its best counterpart, and the speed-up
+  over the fastest other library — the paper's Fig. 5 and Fig. 1, standing first), regenerated
+  from the committed overview data in `bench/results` (copied from the workspace harness; ~0.4
+  MB) on every build — `make.jl` runs `bench/fig_standing.jl` and `bench/fig_speedup.jl` as
+  their own processes, because the scripts are standalone with their own constants. The scripts
+  are adapted from the paper's `scripts/fig5-dominance.jl` and `fig1.jl` (docs sizing, PNG
+  output; "dominance" is called "standing" here, the summary statistic is the "fold factor").
+  The numbers are labelled as the development state (loaded machines, one round per case); the
+  campaign on quiet machines replaces the data, and the figures follow it.
 - **libfftl:** size (about 23 MB with the Julia runtime, macOS arm64), build requirements (Julia 1.12+
   with juliac), build variables (`FFTL_THREADS`, `FFTL_TRIM`, `JULIA_CPU_TARGET`), baked thread pool,
   column-major data, unnormalised backward transform, error handling via `fftl_last_error`, concurrency
