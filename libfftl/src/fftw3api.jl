@@ -357,7 +357,7 @@ end
 # (type, precision, index) of an fftw_plan; type -1 if it is none
 function wdecode(p::Ptr{Cvoid})
   p == C_NULL && return (-1, 0, 0)
-  h = Int64(UInt(p)) - 1
+  h = reinterpret(Int64, UInt64(UInt(p))) - 1      # any pointer: no InexactError
   h < 0 && return (-1, 0, 0)
   typ = Int(h >> 40); prec = Int((h >> 32) & 0xff)
   (0 <= typ <= W_R2R && (prec == 1 || prec == 2)) || return (-1, 0, 0)
@@ -687,11 +687,15 @@ end
 # 64-byte alignment: a cache line, and more than any SIMD width FFTL uses
 function wmalloc(n::Csize_t)
   p = Ref{Ptr{Cvoid}}(C_NULL)
-  ccall(:posix_memalign, Cint, (Ref{Ptr{Cvoid}}, Csize_t, Csize_t), p, 64, max(n, Csize_t(1))) == 0 || return C_NULL
+  ccall(:posix_memalign, Cint, (Ref{Ptr{Cvoid}}, Csize_t, Csize_t), p, 64, max(n, Csize_t(1))) == 0 ||
+    return (set_error!("FFTW interface: out of memory"); C_NULL)
   p[]
 end
 
-walloc(n::Csize_t, size::Int) = n > typemax(Csize_t) ÷ Csize_t(size) ? C_NULL : wmalloc(n * Csize_t(size))
+function walloc(n::Csize_t, size::Int)
+  n > typemax(Csize_t) ÷ Csize_t(size) && return (set_error!("FFTW interface: allocation size overflows"); C_NULL)
+  wmalloc(n * Csize_t(size))
+end
 
 # --- the C entry points ---------------------------------------------------------------------
 
@@ -924,7 +928,7 @@ for (T, pre) in ((Float64, "fftw_"), (Float32, "fftwf_"))
     end
     Base.@ccallable function $(wname(:sprint_plan))(p::Ptr{Cvoid})::Ptr{UInt8}
       s, _, ok = winfo($T, p)
-      ok ? malloc_cstr(s) : Ptr{UInt8}(C_NULL)
+      ok ? malloc_cstr(s) : (set_error!("FFTW interface: invalid plan"); Ptr{UInt8}(C_NULL))
     end
     Base.@ccallable function $(wname(:fprint_plan))(p::Ptr{Cvoid}, file::Ptr{Cvoid})::Cvoid
       s, _, ok = winfo($T, p)
