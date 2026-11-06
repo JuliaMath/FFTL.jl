@@ -16,6 +16,8 @@
  *   every split array, is copied into a contiguous buffer of the plan and back, which costs one
  *   pass over the input and one over the output. In-place split r2c/c2r of rank above 1 (NULL
  *   in FFTW) are planned as well. Long double, quad precision and MPI are not provided.
+ * - Fortran: the legacy interface (dfftw_* and sfftw_*, with one or two trailing underscores;
+ *   constants in fftw3.f) and the Fortran 2003 interface (fftw3.f03) are part of the library.
  * - Failed plans return NULL with the reason in fftl_last_error (fftl.h).
  * - Planner flags are accepted and change nothing, except FFTW_WISDOM_ONLY: there is never
  *   wisdom, so such a plan is NULL. Planning never reads or writes the arrays; c2r keeps

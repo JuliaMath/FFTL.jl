@@ -63,3 +63,7 @@ end
 # --- the FFTW3 interface (include/fftw3.h) --------------------------------------------
 
 include("fftw3api.jl")
+
+# --- the legacy Fortran interface (dfftw_*, sfftw_*; include/fftw3.f) --------------------
+
+include("fortranapi.jl")
