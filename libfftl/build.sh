@@ -50,4 +50,18 @@ julia --project=jc -m JuliaC --output-lib build/libfftl --project . --bundle bui
 for lib in LLVM julia-codegen openblas gfortran quadmath gomp crypto ssl git2 ssh2 curl nghttp2 stdc++ ssp gmpxx dSFMT atomic; do
   rm -f build/lib/julia/lib${lib}*.{so,dylib,dll} build/lib/julia/lib${lib}*.so.* build/bin/lib${lib}*.dll
 done
+# The FFTW3 interface (include/fftw3.h): libfftl exports fftw_* and fftwf_*, so the FFTW library
+# names are links to it. Programs link with -lfftw3 / -lfftw3f (and -lfftw3_threads or
+# -lfftw3_omp, which FFTW keeps separate) or load libfftw3.so.3 / libfftw3.3.dylib by name.
+if [ "$(uname -s)" = Darwin ]; then
+  for name in fftw3 fftw3f fftw3_threads fftw3f_threads fftw3_omp fftw3f_omp; do
+    ln -sf libfftl.dylib build/lib/lib$name.dylib
+    ln -sf libfftl.dylib build/lib/lib$name.3.dylib
+  done
+else
+  for name in fftw3 fftw3f fftw3_threads fftw3f_threads fftw3_omp fftw3f_omp; do
+    ln -sf libfftl.so build/lib/lib$name.so
+    ln -sf libfftl.so build/lib/lib$name.so.3
+  done
+fi
 cc -O2 -o test/test test/test.c -Iinclude -Lbuild/lib -lfftl -lm -Wl,-rpath,"$(pwd)/build/lib"
