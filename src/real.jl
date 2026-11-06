@@ -406,17 +406,24 @@ realtype(::AbstractArray{Complex{T}}) where {T<:FFTLFloat} = T
 realtype(::AbstractArray) = Float64
 
 """
-    plan_rfft(x::AbstractArray{<:Real}, region = 1:ndims(x); threads)
-    plan_brfft(X::AbstractArray{<:Complex}, d, region = 1:ndims(X); threads)
-    plan_irfft(X::AbstractArray{<:Complex}, d, region = 1:ndims(X); threads)
+    plan_rfft(x::AbstractArray{<:Real}, region = 1:ndims(x); threads, num_threads, flags, timelimit)
+    plan_brfft(X::AbstractArray{<:Complex}, d, region = 1:ndims(X); …)
+    plan_irfft(X::AbstractArray{<:Complex}, d, region = 1:ndims(X); …)
 
 Real-input forward DFT (half spectrum along the first dimension of `region`), its unnormalised
 inverse to real arrays with length `d` along that dimension, and the normalised inverse.
+Keywords as for [`plan_fft`](@ref).
 """
-plan_rfft(x::AbstractArray, region = 1:ndims(x); kw...) = generic_float(elreal(x)) ?
-  GRPlan{elreal(x)}(size(x), size(x, minimum(region)), region, -1) : RFFTLPlan{realtype(x)}(size(x), region; kw...)
-plan_brfft(X::AbstractArray, d::Integer, region = 1:ndims(X); kw...) = generic_float(elreal(X)) ?
-  GRPlan{elreal(X)}(size(X), Int(d), region, 1) : BRFFTLPlan{realtype(X)}(size(X), Int(d), region; kw...)
+function plan_rfft(x::AbstractArray, region = 1:ndims(x); threads = nothing, num_threads = nothing,
+                   flags = nothing, timelimit = nothing, kw...)
+  generic_float(elreal(x)) && return GRPlan{elreal(x)}(size(x), size(x, minimum(region)), region, -1)
+  RFFTLPlan{realtype(x)}(size(x), region; threads = planthreads(threads, num_threads), kw...)
+end
+function plan_brfft(X::AbstractArray, d::Integer, region = 1:ndims(X); threads = nothing, num_threads = nothing,
+                    flags = nothing, timelimit = nothing, kw...)
+  generic_float(elreal(X)) && return GRPlan{elreal(X)}(size(X), Int(d), region, 1)
+  BRFFTLPlan{realtype(X)}(size(X), Int(d), region; threads = planthreads(threads, num_threads), kw...)
+end
 function plan_irfft(X::AbstractArray, d::Integer, region = 1:ndims(X); kw...)
   p = plan_brfft(X, d, region; kw...)
   T = generic_float(elreal(X)) ? elreal(X) : realtype(X)

@@ -641,14 +641,17 @@ function AbstractFFTs.plan_inv(p::R2RPlan{T}) where {T}
 end
 
 """
-    plan_r2r(x::AbstractArray{<:Real}, kinds, region = 1:ndims(x); threads)
+    plan_r2r(x::AbstractArray{<:Real}, kinds, region = 1:ndims(x); threads, num_threads, flags, timelimit)
     r2r(x, kinds, region = 1:ndims(x))
 
 Unnormalised real-to-real transforms; `kinds` is one `R2RKind` (REDFT00 … RODFT11, DHT, R2HC, HC2R) for all
-dimensions of `region` or one per dimension.
+dimensions of `region` or one per dimension. Keywords as for [`plan_fft`](@ref).
 """
-plan_r2r(x::AbstractArray, kinds, region = 1:ndims(x); kw...) = generic_float(elreal(x)) ?
-  GR2RPlan{elreal(x)}(size(x), kinds, region) : R2RPlan{realtype(x)}(size(x), kinds, region; kw...)
+function plan_r2r(x::AbstractArray, kinds, region = 1:ndims(x); threads = nothing, num_threads = nothing,
+                  flags = nothing, timelimit = nothing, kw...)
+  generic_float(elreal(x)) && return GR2RPlan{elreal(x)}(size(x), kinds, region)
+  R2RPlan{realtype(x)}(size(x), kinds, region; threads = planthreads(threads, num_threads), kw...)
+end
 r2r(x::AbstractArray, kinds, region = 1:ndims(x)) = plan_r2r(x, kinds, region) * x
 
 """
@@ -675,6 +678,65 @@ function idct(x::AbstractArray, region = 1:ndims(x))
   end
   r2r(y, REDFT01, region)
 end
+
+"""
+    OrthoDCTPlan
+
+Plan of the orthonormal DCT-II (`plan_dct`) or its inverse (`plan_idct`): an unnormalised
+REDFT10 or REDFT01 plan and the scaling that makes it orthonormal. The scaling is not uniform
+(the first element of each transformed dimension has its own factor), so a `ScaledPlan` cannot
+express it.
+"""
+mutable struct OrthoDCTPlan{T,P<:AbstractFFTs.Plan{T}} <: AbstractFFTs.Plan{T}
+  p::P
+  region::Vector{Int}
+  inverse::Bool
+  pinv::AbstractFFTs.Plan{T}
+  OrthoDCTPlan(p::AbstractFFTs.Plan{T}, region, inverse::Bool) where {T} =
+    new{T,typeof(p)}(p, collect(Int, region isa Integer ? (region,) : region), inverse)
+end
+
+"""
+    plan_dct(x, region = 1:ndims(x); …), plan_idct(x, region = 1:ndims(x); …)
+    plan_dct!(x, region = 1:ndims(x); …), plan_idct!(x, region = 1:ndims(x); …)
+    dct!(x, region = 1:ndims(x)), idct!(x, region = 1:ndims(x))
+
+Plans of the orthonormal DCT-II and its inverse (the scaling of [`dct`](@ref)), and their
+in-place forms. Keywords as for [`plan_fft`](@ref).
+"""
+plan_dct(x::AbstractArray, region = 1:ndims(x); kw...) = OrthoDCTPlan(plan_r2r(x, REDFT10, region; kw...), region, false)
+plan_idct(x::AbstractArray, region = 1:ndims(x); kw...) = OrthoDCTPlan(plan_r2r(x, REDFT01, region; kw...), region, true)
+plan_dct!(x::AbstractArray, region = 1:ndims(x); kw...) = InplacePlan(plan_dct(x, region; kw...))
+plan_idct!(x::AbstractArray, region = 1:ndims(x); kw...) = InplacePlan(plan_idct(x, region; kw...))
+dct!(x::AbstractArray, region = 1:ndims(x)) = plan_dct!(x, region) * x
+idct!(x::AbstractArray, region = 1:ndims(x)) = plan_idct!(x, region) * x
+
+Base.size(q::OrthoDCTPlan) = size(q.p)
+Base.ndims(q::OrthoDCTPlan) = ndims(q.p)
+AbstractFFTs.fftdims(q::OrthoDCTPlan) = q.region
+AbstractFFTs.plan_inv(q::OrthoDCTPlan) =
+  OrthoDCTPlan(plan_r2r(Array{eltype(q)}(undef, size(q)), q.inverse ? REDFT10 : REDFT01, q.region), q.region, !q.inverse)
+Base.show(io::IO, q::OrthoDCTPlan) = print(io, q.inverse ? "orthonormal inverse DCT (DCT-III) plan, " :
+                                           "orthonormal DCT-II plan, ", join(size(q), "×"), ", dims ", q.region)
+
+function Base.:*(q::OrthoDCTPlan{T}, x::AbstractArray) where {T}
+  if q.inverse
+    y = copyto!(similar(x, T), x)
+    for d in q.region
+      selectdim(y, d, 1) .*= sqrt(T(2))
+      y .*= inv(sqrt(T(2size(y, d))))
+    end
+    q.p * y
+  else
+    y = q.p * x
+    for d in q.region
+      y .*= inv(sqrt(T(2size(y, d))))
+      selectdim(y, d, 1) ./= sqrt(T(2))
+    end
+    y
+  end
+end
+LinearAlgebra.mul!(y::AbstractArray, q::OrthoDCTPlan, x::AbstractArray) = copyto!(y, q * x)
 
 """
     R2RPassPlan{T}

@@ -1,8 +1,38 @@
-# User interface. Plans are AbstractFFTs plans (`p * x`, `mul!`, `inv`, `\`), but FFTL does not
-# add methods to `AbstractFFTs.plan_fft` for standard arrays: that would take over `fft` from
-# FFTW.jl whenever both are loaded. FFTL's functions are called qualified (`FFTL.fft`).
+# User interface: plans are AbstractFFTs plans (`p * x`, `mul!`, `inv`, `\`). `fft`, `plan_fft`
+# and the other functions here are FFTL's own, exported under FFTW.jl's names; the methods that
+# make AbstractFFTs's generic functions reach FFTL are in src/abstractffts.jl.
 
 const FFTLFloat = Union{Float32,Float64}
+
+# The thread default for new plans: set_num_threads(n) sets it (the drop-in for
+# FFTW.set_num_threads); 0 means Threads.nthreads().
+const DEFAULT_THREADS = Ref(0)
+plan_threads() = DEFAULT_THREADS[] == 0 ? Threads.nthreads() : DEFAULT_THREADS[]
+"""
+    FFTL.set_num_threads(n)
+
+Default number of threads for the plans made afterwards (`threads` keyword not given), as
+`FFTW.set_num_threads`. Without a call, plans use `Threads.nthreads()`.
+"""
+set_num_threads(n::Integer) = (DEFAULT_THREADS[] = Int(n); nothing)
+
+# The planning flags of FFTW.jl's interface, accepted and ignored: an FFTL plan does not
+# depend on measurements made while planning, so there is nothing for them to select.
+"""
+    FFTL.ESTIMATE, FFTL.MEASURE, FFTL.PATIENT, FFTL.EXHAUSTIVE
+
+Values for the `flags` keyword of the plan functions, accepted for FFTW.jl compatibility.
+They have no effect: an FFTL plan does not depend on measurements made while planning.
+"""
+const ESTIMATE = UInt32(1 << 0)
+const MEASURE = UInt32(1 << 1)
+const PATIENT = UInt32(1 << 2)
+const EXHAUSTIVE = UInt32(1 << 3)
+
+# The FFTW-style keywords: num_threads maps to threads, flags and timelimit are accepted and
+# ignored (documented); the remaining keywords go to the plan constructors.
+planthreads(threads, num_threads) =
+  num_threads !== nothing ? Int(num_threads) : threads !== nothing ? Int(threads) : plan_threads()
 
 # The transformed dimensions: sorted, without duplicates, each within 1:N (an integer is one
 # dimension). The message is a literal: the run-time plans are compiled ahead of time.
@@ -115,18 +145,28 @@ AbstractFFTs.plan_inv(p::FFTLPlan{T}) where {T} =
                           AbstractFFTs.normalization(T, p.sz, p.region))
 
 """
-    plan_fft(x::AbstractArray, region = 1:ndims(x); threads = Threads.nthreads()) / plan_bfft / plan_ifft
+    plan_fft(x::AbstractArray, region = 1:ndims(x); threads, num_threads, flags, timelimit)
+    plan_bfft(x, region = 1:ndims(x); …), plan_ifft(x, region = 1:ndims(x); …)
 
 Plans for the forward, unnormalised backward and normalised inverse DFT along the dimensions
 `region` of arrays like `x`. Float32 and Float64 (real or complex) use the SIMD kernels, and
-transforms large enough to profit run on up to `threads` threads. Other floating-point types
-(BigFloat, Double64, Float128, …) are transformed in their own precision by a generic,
-single-threaded path; Float16, integers and other numbers are converted to ComplexF64.
+transforms large enough to profit run on up to `threads` threads (default: the value of
+[`FFTL.set_num_threads`](@ref), else `Threads.nthreads()`; `num_threads` is a synonym).
+`flags` and `timelimit` are accepted for FFTW.jl compatibility and have no effect: FFTL does
+not measure while planning. Other floating-point types (BigFloat, Double64, Float128, …) are
+transformed in their own precision by a generic, single-threaded path; Float16, integers and
+other numbers are converted to ComplexF64.
 """
-plan_fft(x::AbstractArray, region = 1:ndims(x); kw...) =
-  generic_float(elreal(x)) ? GPlan{elreal(x)}(size(x), region, -1) : FFTLPlan{plan_type(x)}(size(x), region, -1; kw...)
-plan_bfft(x::AbstractArray, region = 1:ndims(x); kw...) =
-  generic_float(elreal(x)) ? GPlan{elreal(x)}(size(x), region, 1) : FFTLPlan{plan_type(x)}(size(x), region, 1; kw...)
+function plan_fft(x::AbstractArray, region = 1:ndims(x); threads = nothing, num_threads = nothing,
+                  flags = nothing, timelimit = nothing, kw...)
+  generic_float(elreal(x)) && return GPlan{elreal(x)}(size(x), region, -1)
+  FFTLPlan{plan_type(x)}(size(x), region, -1; threads = planthreads(threads, num_threads), kw...)
+end
+function plan_bfft(x::AbstractArray, region = 1:ndims(x); threads = nothing, num_threads = nothing,
+                   flags = nothing, timelimit = nothing, kw...)
+  generic_float(elreal(x)) && return GPlan{elreal(x)}(size(x), region, 1)
+  FFTLPlan{plan_type(x)}(size(x), region, 1; threads = planthreads(threads, num_threads), kw...)
+end
 # the normalisation over the plan's dimensions (the region without duplicates)
 function plan_ifft(x::AbstractArray, region = 1:ndims(x); kw...)
   p = plan_bfft(x, region; kw...)
@@ -161,3 +201,42 @@ bfft(x::AbstractArray, region = 1:ndims(x)) = plan_bfft(x, region) * x
 Normalised inverse DFT along `region`: `ifft(fft(x)) ≈ x`.
 """
 ifft(x::AbstractArray, region = 1:ndims(x)) = plan_ifft(x, region) * x
+
+"""
+    InplacePlan(p)
+
+A plan that applies `p` in place: `q * x` overwrites `x` and returns it, as FFTW.jl's in-place
+plans do. Returned by `plan_fft!`, `plan_bfft!`, `plan_ifft!`, `plan_dct!` and `plan_idct!`.
+"""
+mutable struct InplacePlan{T,P<:AbstractFFTs.Plan{T}} <: AbstractFFTs.Plan{T}
+  p::P
+  pinv::AbstractFFTs.Plan{T}
+  InplacePlan(p::AbstractFFTs.Plan{T}) where {T} = new{T,typeof(p)}(p)
+end
+
+Base.size(q::InplacePlan) = size(q.p)
+Base.ndims(q::InplacePlan) = ndims(q.p)
+AbstractFFTs.fftdims(q::InplacePlan) = AbstractFFTs.fftdims(q.p)
+AbstractFFTs.plan_inv(q::InplacePlan) = InplacePlan(inv(q.p))
+LinearAlgebra.mul!(y::AbstractArray, q::InplacePlan, x::AbstractArray) = mul!(y, q.p, x)
+Base.:*(q::InplacePlan, x::AbstractArray) = inplace!(q.p, x)
+Base.show(io::IO, q::InplacePlan) = (print(io, "in-place "); show(io, q.p))
+
+# The complex CPU plans may run with y === x: every pass loads a line before it stores it.
+# Other plans go through a temporary.
+inplace!(p::Union{FFTLPlan{T},AbstractFFTs.ScaledPlan{<:Any,<:FFTLPlan{T}}}, x::Array{Complex{T}}) where {T} = mul!(x, p, x)
+inplace!(p::AbstractFFTs.Plan, x::AbstractArray) = copyto!(x, p * x)
+
+"""
+    plan_fft!(x, region = 1:ndims(x); …), plan_bfft!, plan_ifft!
+    fft!(x, region = 1:ndims(x)), bfft!, ifft!
+
+In-place forms: the plans overwrite the array they are applied to with `p * x`, and `fft!`,
+`bfft!` and `ifft!` overwrite `x`. Keywords as for [`plan_fft`](@ref).
+"""
+plan_fft!(x::AbstractArray{<:Complex}, region = 1:ndims(x); kw...) = InplacePlan(plan_fft(x, region; kw...))
+plan_bfft!(x::AbstractArray{<:Complex}, region = 1:ndims(x); kw...) = InplacePlan(plan_bfft(x, region; kw...))
+plan_ifft!(x::AbstractArray{<:Complex}, region = 1:ndims(x); kw...) = InplacePlan(plan_ifft(x, region; kw...))
+fft!(x::AbstractArray{<:Complex}, region = 1:ndims(x)) = plan_fft!(x, region) * x
+bfft!(x::AbstractArray{<:Complex}, region = 1:ndims(x)) = plan_bfft!(x, region) * x
+ifft!(x::AbstractArray{<:Complex}, region = 1:ndims(x)) = plan_ifft!(x, region) * x
