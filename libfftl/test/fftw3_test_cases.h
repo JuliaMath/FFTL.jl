@@ -332,27 +332,319 @@ static void FN(guru)(void) {
     X(free)(x);
     X(free)(y);
   }
-#ifdef LINKED_FFTL
-  /* rejected by design (FFTW plans these): the halved dimension not the fastest transformed
-   * one, a strided layout with gaps, split arrays */
+}
+
+/* -------------------------------------------- strided, embedded and split layouts */
+
+/* An array in a user layout: element o (in FFTW's units: complex numbers for interleaved
+ * arrays, real numbers for real and split arrays) has its real part at re[mult * o] and its
+ * imaginary part at im[mult * o]. Interleaved: im = re + 1, mult 2; split: mult 1; real: im
+ * NULL, mult 1. */
+typedef struct {
+  R *re, *im;
+  long mult;
+} FN(arr);
+
+/* The parameters of plan_many for a case planned through the advanced interface */
+typedef struct {
+  int rank, howmany, istride, idist, ostride, odist;
+  const int *n, *inembed, *onembed;
+} FN(manyp);
+
+/* One transform in a user layout, against the reference in long double. k logical dimensions
+ * of sizes n (the real sizes for r2c/c2r), tdim[0..rank-1] the transform dimensions in FFTW's
+ * order (the last one is halved for r2c/c2r), the others vector dimensions; is/os the strides
+ * per logical dimension. typ 0 c2c (forward), 1 r2c, 2 c2r, 3 r2r. Planned through guru64, or
+ * through plan_many if many is not NULL; split arrays through the split planners. */
+static void FN(layout_case)(const char *nm, int typ, int k, const int *n, int rank, const int *tdim,
+                            const long *is, const long *os, FN(arr) in, FN(arr) out, int split,
+                            const X(r2r_kind) *kinds, const FN(manyp) *many) {
+  int cin[8], cout[8], hd = rank > 0 ? tdim[rank - 1] : -1;
+  for (int d = 0; d < k; d++) {
+    int h = (d == hd && (typ == 1 || typ == 2)) ? n[d] / 2 + 1 : n[d];
+    cin[d] = typ == 2 ? h : n[d];
+    cout[d] = typ == 1 ? h : n[d];
+  }
+  long N = prod(k, n), Nin = prod(k, cin), Nout = prod(k, cout);
+  X(iodim64) td[8], vd[8];
+  int nv = 0;
+  for (int j = 0; j < rank; j++) td[j] = (X(iodim64)){n[tdim[j]], is[tdim[j]], os[tdim[j]]};
+  for (int d = 0; d < k; d++) {
+    int t = 0;
+    for (int j = 0; j < rank; j++) t |= tdim[j] == d;
+    if (!t) vd[nv++] = (X(iodim64)){n[d], is[d], os[d]};
+  }
+  X(plan) p = NULL;
+  void *i1 = in.re, *o1 = out.re;
+  if (many) {
+    const FN(manyp) *m = many;
+    if (typ == 0) p = X(plan_many_dft)(m->rank, m->n, m->howmany, i1, m->inembed, m->istride, m->idist, o1, m->onembed, m->ostride, m->odist, FFTW_FORWARD, FFTW_ESTIMATE);
+    else if (typ == 1) p = X(plan_many_dft_r2c)(m->rank, m->n, m->howmany, i1, m->inembed, m->istride, m->idist, o1, m->onembed, m->ostride, m->odist, FFTW_ESTIMATE);
+    else if (typ == 2) p = X(plan_many_dft_c2r)(m->rank, m->n, m->howmany, i1, m->inembed, m->istride, m->idist, o1, m->onembed, m->ostride, m->odist, FFTW_ESTIMATE);
+    else p = X(plan_many_r2r)(m->rank, m->n, m->howmany, i1, m->inembed, m->istride, m->idist, o1, m->onembed, m->ostride, m->odist, kinds, FFTW_ESTIMATE);
+  } else if (split) {
+    if (typ == 0) p = X(plan_guru64_split_dft)(rank, td, nv, vd, in.re, in.im, out.re, out.im, FFTW_ESTIMATE);
+    else if (typ == 1) p = X(plan_guru64_split_dft_r2c)(rank, td, nv, vd, in.re, out.re, out.im, FFTW_ESTIMATE);
+    else p = X(plan_guru64_split_dft_c2r)(rank, td, nv, vd, in.re, in.im, out.re, FFTW_ESTIMATE);
+  } else {
+    if (typ == 0) p = X(plan_guru64_dft)(rank, td, nv, vd, i1, o1, FFTW_FORWARD, FFTW_ESTIMATE);
+    else if (typ == 1) p = X(plan_guru64_dft_r2c)(rank, td, nv, vd, i1, o1, FFTW_ESTIMATE);
+    else if (typ == 2) p = X(plan_guru64_dft_c2r)(rank, td, nv, vd, i1, o1, FFTW_ESTIMATE);
+    else p = X(plan_guru64_r2r)(rank, td, nv, vd, i1, o1, kinds, FFTW_ESTIMATE);
+  }
+  CHECK(p != NULL, "%s: plan", nm);
+  if (!p) return;
+  /* input (after planning), reference */
+  LD *ref = malloc(2 * (N > Nout ? N : Nout) * sizeof(LD)), *a = malloc(2 * N * sizeof(LD));
+  LD *xr = malloc(N * sizeof(LD));
+  for (long i = 0; i < N; i++) xr[i] = (R) urand();
+  if (typ == 0) {
+    for (long i = 0; i < N; i++) {
+      R re = (R) urand(), im = (R) urand();
+      long o = in.mult * lay_off(k, cin, is, i);
+      in.re[o] = re;
+      in.im[o] = im;
+      a[2 * i] = re;
+      a[2 * i + 1] = im;
+    }
+    for (int j = 0; j < rank; j++) ref_dft_dim(a, k, n, tdim[j], FFTW_FORWARD);
+    memcpy(ref, a, 2 * N * sizeof(LD));
+  } else if (typ == 1 || typ == 2) {
+    /* the half spectrum of xr along the transform dimensions */
+    for (long i = 0; i < N; i++) {
+      a[2 * i] = xr[i];
+      a[2 * i + 1] = 0;
+    }
+    for (int j = 0; j < rank; j++) ref_dft_dim(a, k, n, tdim[j], FFTW_FORWARD);
+    LD *half = typ == 1 ? ref : a;
+    if (typ == 2) {
+      half = malloc(2 * Nin * sizeof(LD));
+      for (long i = 0; i < Nin; i++) {
+        long f = lay_remap(k, cin, n, i);
+        half[2 * i] = (R) a[2 * f];
+        half[2 * i + 1] = (R) a[2 * f + 1];
+        long o = in.mult * lay_off(k, cin, is, i);
+        in.re[o] = (R) half[2 * i];
+        in.im[o] = (R) half[2 * i + 1];
+      }
+      /* c2r of the rounded half spectrum: compare with the exact inverse of it */
+      LD *b = malloc(2 * N * sizeof(LD));
+      for (long i = 0; i < N; i++) b[2 * i] = b[2 * i + 1] = 0;
+      for (long i = 0; i < Nin; i++) {
+        long f = lay_remap(k, cin, n, i);
+        b[2 * f] = half[2 * i];
+        b[2 * f + 1] = half[2 * i + 1];
+      }
+      /* fill the other half by Hermitian symmetry along all transform dimensions: the
+       * mirrored index of every transform dimension */
+      for (long i = 0; i < N; i++) {
+        int dig[8];
+        long r = i;
+        for (int d = k - 1; d >= 0; d--) {
+          dig[d] = r % n[d];
+          r /= n[d];
+        }
+        if (dig[hd] < cin[hd]) continue;
+        int mir[8];
+        for (int d = 0; d < k; d++) mir[d] = dig[d];
+        for (int j = 0; j < rank; j++) mir[tdim[j]] = (n[tdim[j]] - dig[tdim[j]]) % n[tdim[j]];
+        long m = 0;
+        for (int d = 0; d < k; d++) m = m * n[d] + mir[d];
+        b[2 * i] = b[2 * m];
+        b[2 * i + 1] = -b[2 * m + 1];
+      }
+      for (int j = 0; j < rank; j++) ref_dft_dim(b, k, n, tdim[j], FFTW_BACKWARD);
+      for (long i = 0; i < N; i++) ref[i] = b[2 * i];
+      free(b);
+      free(half);
+    } else {
+      for (long i = 0; i < Nout; i++) {
+        long f = lay_remap(k, cout, n, i);
+        ref[2 * i] = a[2 * f];
+        ref[2 * i + 1] = a[2 * f + 1];
+      }
+      for (long i = 0; i < N; i++) in.re[in.mult * lay_off(k, cin, is, i)] = (R) xr[i];
+    }
+  } else {
+    for (long i = 0; i < N; i++) {
+      in.re[in.mult * lay_off(k, cin, is, i)] = (R) xr[i];
+      ref[i] = (R) xr[i];
+    }
+    for (int j = 0; j < rank; j++) ref_r2r_dim(ref, k, n, tdim[j], kinds[j]);
+  }
+  X(execute)(p);
+  /* the output, gathered from its layout */
+  int cplx = typ == 0 || typ == 1;
+  R *y = malloc((cplx ? 2 : 1) * Nout * sizeof(R));
+  for (long i = 0; i < Nout; i++) {
+    long o = out.mult * lay_off(k, cout, os, i);
+    if (cplx) {
+      y[2 * i] = out.re[o];
+      y[2 * i + 1] = out.im[o];
+    } else {
+      y[i] = out.re[o];
+    }
+  }
+  double e = RELERR(y, ref, (cplx ? 2 : 1) * Nout);
+  CHECK(e < TOL, "%s: rel err %g", nm, e);
+  dump(nm, y, (cplx ? 2 : 1) * Nout * sizeof(R));
+  X(destroy_plan)(p);
+  free(y);
+  free(ref);
+  free(a);
+  free(xr);
+}
+
+/* Strides for dimensions taken in the order ord (fastest first), with gap extra elements after
+ * each: st[ord[0]] = s0, then times (counts + gap). Returns the number of elements spanned. */
+static long FN(mkstrides)(int k, const int *counts, const int *ord, const int *gap, long s0, long *st) {
+  long acc = s0;
+  for (int j = 0; j < k; j++) {
+    st[ord[j]] = acc;
+    acc *= counts[ord[j]] + gap[j];
+  }
+  return acc;
+}
+
+static FN(arr) FN(inter)(CPX *p) { return (FN(arr)){(R *) p, (R *) p + 1, 2}; }
+static FN(arr) FN(realarr)(R *p) { return (FN(arr)){p, NULL, 1}; }
+static FN(arr) FN(splitarr)(R *re, R *im) { return (FN(arr)){re, im, 1}; }
+
+static void FN(layouts)(void) {
+  char nm[256];
+  /* c2c, 4 x 6 x 5, transformed along 2 and 0, 1 a vector dimension; input and output in
+   * different orders, both with gaps */
   {
-    char msg[256];
-    R *x = X(alloc_real)(400);
-    CPX *y = X(alloc_complex)(400);
-    X(iodim) dims[2] = {{8, 1, 1}, {6, 8, 8}};
-    CHECK(X(plan_guru_dft_r2c)(2, dims, 0, NULL, x, y, FFTW_ESTIMATE) == NULL, "%d guru r2c, halved dimension not fastest: NULL", PREC);
-    fftl_last_error(msg, sizeof msg);
-    CHECK(strstr(msg, "halved") != NULL, "%d guru r2c, halved dimension not fastest: message '%s'", PREC, msg);
-    int n[1] = {16};
-    CHECK(X(plan_many_dft)(1, n, 2, y, NULL, 2, 40, y + 100, NULL, 2, 40, FFTW_FORWARD, FFTW_ESTIMATE) == NULL, "%d many_dft with stride 2: NULL", PREC);
-    X(iodim) sd[1] = {{16, 2, 2}};
-    CHECK(X(plan_guru_split_dft)(1, sd, 0, NULL, x, x + 1, x + 40, x + 41, FFTW_ESTIMATE) == NULL, "%d guru split_dft: NULL", PREC);
-    fftl_last_error(msg, sizeof msg);
-    CHECK(strstr(msg, "split") != NULL, "%d guru split_dft: message '%s'", PREC, msg);
+    int n[3] = {4, 6, 5}, td[2] = {2, 0}, oi[3] = {1, 2, 0}, gi[3] = {1, 0, 2}, oo[3] = {0, 1, 2}, go[3] = {0, 2, 1};
+    long is[3], os[3];
+    long li = FN(mkstrides)(3, n, oi, gi, 1, is), lo = FN(mkstrides)(3, n, oo, go, 1, os);
+    CPX *x = X(alloc_complex)(li), *y = X(alloc_complex)(lo);
+    memset(y, 0, lo * sizeof(CPX));
+    snprintf(nm, sizeof nm, "%d_layout_c2c_gaps_transposed", PREC);
+    FN(layout_case)(nm, 0, 3, n, 2, td, is, os, FN(inter)(x), FN(inter)(y), 0, NULL, NULL);
+    /* the same with split arrays (strides in real numbers) */
+    R *xr = X(alloc_real)(li), *xi = X(alloc_real)(li), *yr = X(alloc_real)(lo), *yi = X(alloc_real)(lo);
+    snprintf(nm, sizeof nm, "%d_layout_split_c2c", PREC);
+    FN(layout_case)(nm, 0, 3, n, 2, td, is, os, FN(splitarr)(xr, xi), FN(splitarr)(yr, yi), 1, NULL, NULL);
+    /* split pointers into interleaved arrays, real and imaginary parts swapped (FFTW's way to a
+     * backward transform) */
+    long is2[3], os2[3];
+    for (int d = 0; d < 3; d++) {
+      is2[d] = 2 * is[d];
+      os2[d] = 2 * os[d];
+    }
+    snprintf(nm, sizeof nm, "%d_layout_split_c2c_swapped", PREC);
+    FN(layout_case)(nm, 0, 3, n, 2, td, is2, os2, FN(splitarr)((R *) x + 1, (R *) x), FN(splitarr)((R *) y + 1, (R *) y), 1, NULL, NULL);
     X(free)(x);
     X(free)(y);
+    X(free)(xr);
+    X(free)(xi);
+    X(free)(yr);
+    X(free)(yi);
   }
-#endif
+  /* c2c in place with gaps: 8 x 3, transformed along 0 */
+  {
+    int n[2] = {8, 3}, td[1] = {0}, o[2] = {0, 1}, g[2] = {2, 1};
+    long st[2];
+    long l = FN(mkstrides)(2, n, o, g, 1, st);
+    CPX *x = X(alloc_complex)(l);
+    snprintf(nm, sizeof nm, "%d_layout_c2c_inplace_gaps", PREC);
+    FN(layout_case)(nm, 0, 2, n, 1, td, st, st, FN(inter)(x), FN(inter)(x), 0, NULL, NULL);
+    /* split, in place, rank 1: an interleaved array as split arrays */
+    int n1[1] = {12}, t1[1] = {0};
+    long s1[1] = {2};
+    snprintf(nm, sizeof nm, "%d_layout_split_c2c_inplace", PREC);
+    FN(layout_case)(nm, 0, 1, n1, 1, t1, s1, s1, FN(splitarr)((R *) x, (R *) x + 1), FN(splitarr)((R *) x, (R *) x + 1), 1, NULL, NULL);
+    X(free)(x);
+  }
+  /* r2c / c2r with the halved dimension the slowest: 6 x 10 x 3, transformed along 1 and 0
+   * (0 halved), 2 a vector dimension */
+  {
+    int n[3] = {6, 10, 3}, h[3] = {4, 10, 3}, td[2] = {1, 0}, oi[3] = {2, 1, 0}, gi[3] = {0, 1, 0}, oo[3] = {1, 2, 0}, go[3] = {1, 0, 2};
+    long rs[3], cs[3];
+    long lr = FN(mkstrides)(3, n, oi, gi, 1, rs), lc = FN(mkstrides)(3, h, oo, go, 1, cs);
+    R *x = X(alloc_real)(lr), *z = X(alloc_real)(lr);
+    CPX *y = X(alloc_complex)(lc);
+    snprintf(nm, sizeof nm, "%d_layout_r2c_halved_slowest", PREC);
+    FN(layout_case)(nm, 1, 3, n, 2, td, rs, cs, FN(realarr)(x), FN(inter)(y), 0, NULL, NULL);
+    snprintf(nm, sizeof nm, "%d_layout_c2r_halved_slowest", PREC);
+    FN(layout_case)(nm, 2, 3, n, 2, td, cs, rs, FN(inter)(y), FN(realarr)(z), 0, NULL, NULL);
+    /* split complex side */
+    R *yr = X(alloc_real)(lc), *yi = X(alloc_real)(lc);
+    snprintf(nm, sizeof nm, "%d_layout_split_r2c", PREC);
+    FN(layout_case)(nm, 1, 3, n, 2, td, rs, cs, FN(realarr)(x), FN(splitarr)(yr, yi), 1, NULL, NULL);
+    snprintf(nm, sizeof nm, "%d_layout_split_c2r", PREC);
+    FN(layout_case)(nm, 2, 3, n, 2, td, cs, rs, FN(splitarr)(yr, yi), FN(realarr)(z), 1, NULL, NULL);
+    X(free)(x);
+    X(free)(z);
+    X(free)(y);
+    X(free)(yr);
+    X(free)(yi);
+  }
+  /* r2c / c2r in place: 5 x 7 (7 halved, padded), a gap of one complex number per row */
+  {
+    int n[2] = {5, 7}, h[2] = {5, 4}, td[2] = {0, 1}, o[2] = {1, 0}, g[2] = {1, 0};
+    long cs[2], rs[2];
+    long lc = FN(mkstrides)(2, h, o, g, 1, cs);
+    rs[1] = 1;
+    rs[0] = 2 * cs[0];
+    CPX *b = X(alloc_complex)(lc);
+    snprintf(nm, sizeof nm, "%d_layout_r2c_inplace_gaps", PREC);
+    FN(layout_case)(nm, 1, 2, n, 2, td, rs, cs, FN(realarr)((R *) b), FN(inter)(b), 0, NULL, NULL);
+    snprintf(nm, sizeof nm, "%d_layout_c2r_inplace_gaps", PREC);
+    FN(layout_case)(nm, 2, 2, n, 2, td, cs, rs, FN(inter)(b), FN(realarr)((R *) b), 0, NULL, NULL);
+    X(free)(b);
+  }
+  /* r2r: 5 x 6 x 4 along 0 and 2, different layouts; 7 x 4 in place with gaps */
+  {
+    int n[3] = {5, 6, 4}, td[2] = {0, 2}, oi[3] = {2, 0, 1}, gi[3] = {0, 2, 1}, oo[3] = {1, 2, 0}, go[3] = {1, 1, 0};
+    X(r2r_kind) k[2] = {FFTW_REDFT10, FFTW_RODFT11};
+    long is[3], os[3];
+    long li = FN(mkstrides)(3, n, oi, gi, 1, is), lo = FN(mkstrides)(3, n, oo, go, 1, os);
+    R *x = X(alloc_real)(li), *y = X(alloc_real)(lo);
+    snprintf(nm, sizeof nm, "%d_layout_r2r_transposed", PREC);
+    FN(layout_case)(nm, 3, 3, n, 2, td, is, os, FN(realarr)(x), FN(realarr)(y), 0, k, NULL);
+    X(free)(x);
+    X(free)(y);
+    int m[2] = {7, 4}, t1[1] = {1}, o[2] = {1, 0}, g[2] = {2, 1};
+    X(r2r_kind) k1[1] = {FFTW_DHT};
+    long st[2];
+    long l = FN(mkstrides)(2, m, o, g, 1, st);
+    R *z = X(alloc_real)(l);
+    snprintf(nm, sizeof nm, "%d_layout_r2r_inplace_gaps", PREC);
+    FN(layout_case)(nm, 3, 2, m, 1, t1, st, st, FN(realarr)(z), FN(realarr)(z), 0, k1, NULL);
+    X(free)(z);
+  }
+  /* the advanced interface with embedded arrays: 3 arrays of 6 x 5 in 6 x 7 (stride 2, a gap
+   * of 3 between arrays) to 6 x 6 (stride 1, distance 40) */
+  {
+    int n[3] = {6, 5, 3}, td[2] = {0, 1}, nn[2] = {6, 5}, ie[2] = {6, 7}, oe[2] = {6, 6};
+    long is[3] = {2 * 7, 2, 2 * 42 + 3}, os[3] = {6, 1, 40};
+    FN(manyp) m = {2, 3, 2, 2 * 42 + 3, 1, 40, nn, ie, oe};
+    CPX *x = X(alloc_complex)(3 * is[2]), *y = X(alloc_complex)(120);
+    snprintf(nm, sizeof nm, "%d_layout_many_dft_embed", PREC);
+    FN(layout_case)(nm, 0, 3, n, 2, td, is, os, FN(inter)(x), FN(inter)(y), 0, NULL, &m);
+    X(free)(x);
+    X(free)(y);
+    /* r2c and c2r: 2 arrays of 4 x 9 real values in 4 x 11 (distance 50), half spectra 4 x 5
+     * in 4 x 6 (stride 2, distance 52) */
+    int r[3] = {4, 9, 2}, rn[2] = {4, 9}, rie[2] = {4, 11}, coe[2] = {4, 6};
+    long rs[3] = {11, 1, 50}, cs[3] = {12, 2, 52};
+    FN(manyp) mr = {2, 2, 1, 50, 2, 52, rn, rie, coe};
+    FN(manyp) mc = {2, 2, 2, 52, 1, 50, rn, coe, rie};
+    R *xr = X(alloc_real)(100), *zr = X(alloc_real)(100);
+    CPX *yc = X(alloc_complex)(104);
+    snprintf(nm, sizeof nm, "%d_layout_many_r2c_embed", PREC);
+    FN(layout_case)(nm, 1, 3, r, 2, td, rs, cs, FN(realarr)(xr), FN(inter)(yc), 0, NULL, &mr);
+    snprintf(nm, sizeof nm, "%d_layout_many_c2r_embed", PREC);
+    FN(layout_case)(nm, 2, 3, r, 2, td, cs, rs, FN(inter)(yc), FN(realarr)(zr), 0, NULL, &mc);
+    X(r2r_kind) k[2] = {FFTW_RODFT00, FFTW_HC2R};
+    snprintf(nm, sizeof nm, "%d_layout_many_r2r_embed", PREC);
+    FN(layout_case)(nm, 3, 3, r, 2, td, rs, rs, FN(realarr)(xr), FN(realarr)(zr), 0, k, &(FN(manyp)){2, 2, 1, 50, 1, 50, rn, rie, rie});
+    X(free)(xr);
+    X(free)(zr);
+    X(free)(yc);
+  }
 }
 
 /* ----------------------------------------------------- new arrays and concurrent execution */
@@ -677,6 +969,178 @@ static void FN(misc)(void) {
   X(cleanup)();
 }
 
+/* ------------------------------------------- errors, empty transforms, threads, registry */
+
+#ifdef LINKED_FFTL
+/* the message of the last failed call contains want */
+static int FN(msg_has)(const char *want) {
+  char msg[256];
+  fftl_last_error(msg, sizeof msg);
+  return strstr(msg, want) != NULL;
+}
+#endif
+
+static void FN(errors)(void) {
+  CPX *a = X(alloc_complex)(64), *b = X(alloc_complex)(64);
+  R *r = X(alloc_real)(64);
+  /* NULL in both libraries */
+  int n2[2] = {8, 0};
+  X(plan) p = X(plan_dft)(2, n2, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  CHECK(p == NULL, "%d second size 0: NULL", PREC);
+#ifdef LINKED_FFTL
+  CHECK(FN(msg_has)("positive"), "%d second size 0: message", PREC);
+#endif
+  p = X(plan_r2r_1d)(1, r, r, FFTW_REDFT00, FFTW_ESTIMATE);
+  CHECK(p == NULL, "%d DCT-I of length 1: NULL", PREC);
+  X(iodim) d8[1] = {{8, 1, 1}}, vneg[1] = {{-1, 8, 8}};
+  p = X(plan_guru_dft)(1, d8, -1, vneg, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  CHECK(p == NULL, "%d howmany_rank -1: NULL", PREC);
+  p = X(plan_guru_dft)(1, d8, 1, vneg, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  CHECK(p == NULL, "%d vector size -1: NULL", PREC);
+#ifdef LINKED_FFTL
+  CHECK(FN(msg_has)("nonnegative"), "%d vector size -1: message", PREC);
+  /* NULL in libfftl; FFTW's behaviour is not defined by the manual */
+  CHECK(X(plan_dft_1d)(8, a, b, 0, FFTW_ESTIMATE) == NULL && FN(msg_has)("sign"), "%d sign 0: NULL and message", PREC);
+  CHECK(X(plan_r2r_1d)(8, r, r, (X(r2r_kind)) 11, FFTW_ESTIMATE) == NULL && FN(msg_has)("kind"), "%d kind 11: NULL and message", PREC);
+  CHECK(X(plan_dft_1d)(-1, a, b, FFTW_FORWARD, FFTW_ESTIMATE) == NULL && FN(msg_has)("positive"), "%d n = -1: NULL and message", PREC);
+  CHECK(X(plan_dft_1d)(16, a, b, FFTW_FORWARD, FFTW_WISDOM_ONLY) == NULL && FN(msg_has)("WISDOM_ONLY"), "%d FFTW_WISDOM_ONLY: message", PREC);
+  /* pointers that are no plans */
+  memset(b, 0, 64 * sizeof(CPX));
+  X(plan) bogus[3] = {NULL, (X(plan)) (uintptr_t) 12345, (X(plan)) (uintptr_t) -1};
+  for (int i = 0; i < 3; i++) {
+    X(plan_dft_1d)(0, a, b, FFTW_FORWARD, FFTW_ESTIMATE);  /* a different message first */
+    X(execute_dft)(bogus[i], a, b);
+    CHECK(FN(msg_has)("invalid plan"), "%d execute_dft on no plan %d: message", PREC, i);
+    X(plan_dft_1d)(0, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+    X(execute)(bogus[i]);
+    CHECK(FN(msg_has)("invalid plan"), "%d execute on no plan %d: message", PREC, i);
+    CHECK(X(copy_plan)(bogus[i]) == NULL && FN(msg_has)("invalid plan"), "%d copy_plan of no plan %d", PREC, i);
+    if (i > 0) {
+      X(plan_dft_1d)(0, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+      X(destroy_plan)(bogus[i]);
+      CHECK(FN(msg_has)("invalid plan"), "%d destroy_plan of no plan %d: message", PREC, i);
+    }
+  }
+  int zero = 1;
+  for (int i = 0; i < 128; i++) zero &= ((R *) b)[i] == 0;
+  CHECK(zero, "%d no plan: nothing written", PREC);
+  /* destroying twice */
+  p = X(plan_dft_1d)(64, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  X(destroy_plan)(p);
+  X(plan_dft_1d)(0, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  X(destroy_plan)(p);
+  CHECK(FN(msg_has)("invalid plan"), "%d second destroy_plan: message", PREC);
+  /* the wrong execute function, the other precision */
+  p = X(plan_dft_1d)(64, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  X(execute_r2r)(p, r, r);
+  CHECK(FN(msg_has)("transform type"), "%d execute_r2r on a c2c plan: message", PREC);
+  X(execute_split_dft)(p, r, r + 1, (R *) b, (R *) b + 1);
+  CHECK(FN(msg_has)("split"), "%d execute_split_dft on an interleaved plan: message", PREC);
+  X(execute_dft)(p, a, a);
+  CHECK(FN(msg_has)("in place"), "%d in-place arrays on an out-of-place plan: message", PREC);
+#if PREC == 64
+  fftwf_execute((fftwf_plan) p);
+#else
+  fftw_execute((fftw_plan) p);
+#endif
+  CHECK(FN(msg_has)("invalid plan"), "%d plan executed with the other precision: message", PREC);
+  X(destroy_plan)(p);
+  /* c2r out of place keeps its input (FFTW may overwrite it) */
+  {
+    int n[2] = {6, 10};
+    CPX *c = X(alloc_complex)(36), *c0 = X(alloc_complex)(36);
+    R *o = X(alloc_real)(60);
+    X(plan) q = X(plan_dft_c2r)(2, n, c, o, FFTW_ESTIMATE);
+    FN(fill)((R *) c, NULL, 72);
+    memcpy(c0, c, 36 * sizeof(CPX));
+    X(execute)(q);
+    CHECK(memcmp(c, c0, 36 * sizeof(CPX)) == 0, "%d c2r out of place keeps its input", PREC);
+    X(destroy_plan)(q);
+    X(free)(c);
+    X(free)(c0);
+    X(free)(o);
+  }
+#endif
+  X(free)(a);
+  X(free)(b);
+  X(free)(r);
+}
+
+static void FN(empty_threads_registry)(void) {
+  /* rank 0 over a 4 x 5 vector: a copy out of place, nothing in place */
+  {
+    X(iodim) v[2] = {{4, 5, 5}, {5, 1, 1}};
+    CPX *x = X(alloc_complex)(20), *y = X(alloc_complex)(20);
+    X(plan) p = X(plan_guru_dft)(0, NULL, 2, v, x, y, FFTW_FORWARD, FFTW_ESTIMATE);
+    X(plan) q = X(plan_guru_dft)(0, NULL, 2, v, x, x, FFTW_FORWARD, FFTW_ESTIMATE);
+    CHECK(p && q, "%d rank 0 plans", PREC);
+    if (p && q) {
+      FN(fill)((R *) x, NULL, 40);
+      X(execute)(p);
+      CHECK(memcmp(x, y, 20 * sizeof(CPX)) == 0, "%d rank 0 out of place copies", PREC);
+      memcpy(y, x, 20 * sizeof(CPX));
+      X(execute)(q);
+      CHECK(memcmp(x, y, 20 * sizeof(CPX)) == 0, "%d rank 0 in place leaves the array", PREC);
+    }
+    if (p) X(destroy_plan)(p);
+    if (q) X(destroy_plan)(q);
+    X(free)(x);
+    X(free)(y);
+  }
+  /* plan threads 1 and 4 give the same result: 33 x 1024 and one line of 2^17 */
+  X(plan_with_nthreads)(0);
+  CHECK(X(planner_nthreads)() == 1, "%d plan_with_nthreads(0) gives 1", PREC);
+  {
+    int shapes[2][2] = {{33, 1024}, {131072, 0}}, ranks[2] = {2, 1};
+    for (int s = 0; s < 2; s++) {
+      long N = prod(ranks[s], shapes[s]);
+      CPX *x = X(alloc_complex)(N), *y1 = X(alloc_complex)(N), *y4 = X(alloc_complex)(N);
+      X(plan_with_nthreads)(1);
+      X(plan) p1 = X(plan_dft)(ranks[s], shapes[s], x, y1, FFTW_FORWARD, FFTW_ESTIMATE);
+      X(plan_with_nthreads)(4);
+      X(plan) p4 = X(plan_dft)(ranks[s], shapes[s], x, y4, FFTW_FORWARD, FFTW_ESTIMATE);
+      FN(fill)((R *) x, NULL, 2 * N);
+      X(execute)(p1);
+      X(execute)(p4);
+      LD *ref = malloc(2 * N * sizeof(LD));
+      for (long i = 0; i < 2 * N; i++) ref[i] = ((R *) y1)[i];
+      double e = RELERR((R *) y4, ref, 2 * N);
+      CHECK(e < TOL, "%d %ld points: threads 4 agrees with threads 1 (rel diff %g)", PREC, N, e);
+      free(ref);
+      X(destroy_plan)(p1);
+      X(destroy_plan)(p4);
+      X(free)(x);
+      X(free)(y1);
+      X(free)(y4);
+    }
+    X(plan_with_nthreads)(1);
+  }
+  /* 64 plans alive at once, executed in reverse order of creation */
+  {
+    X(plan) ps[64];
+    CPX *xs[64], *ys[64];
+    for (int i = 0; i < 64; i++) {
+      xs[i] = X(alloc_complex)(16 + i);
+      ys[i] = X(alloc_complex)(16 + i);
+      ps[i] = X(plan_dft_1d)(16 + i, xs[i], ys[i], i % 2 ? FFTW_FORWARD : FFTW_BACKWARD, FFTW_ESTIMATE);
+    }
+    int ok = 0;
+    for (int i = 63; i >= 0; i--) {
+      int n = 16 + i;
+      LD *ref = malloc(2 * n * sizeof(LD));
+      FN(fill)((R *) xs[i], ref, 2 * n);
+      X(execute)(ps[i]);
+      ref_dft_dim(ref, 1, &n, 0, i % 2 ? FFTW_FORWARD : FFTW_BACKWARD);
+      ok += RELERR((R *) ys[i], ref, 2 * n) < TOL;
+      X(destroy_plan)(ps[i]);
+      X(free)(xs[i]);
+      X(free)(ys[i]);
+      free(ref);
+    }
+    CHECK(ok == 64, "%d 64 plans alive at once: %d correct", PREC, ok);
+  }
+}
+
 /* ----------------------------------------------------------------------------- driver */
 
 static void FN(run)(void) {
@@ -718,9 +1182,12 @@ static void FN(run)(void) {
   }
   FN(many)();
   FN(guru)();
+  FN(layouts)();
   FN(new_arrays)();
   FN(large)();
   FN(misc)();
+  FN(errors)();
+  FN(empty_threads_registry)();
 }
 
 #undef CAT_

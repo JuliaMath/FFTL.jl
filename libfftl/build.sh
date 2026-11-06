@@ -1,6 +1,6 @@
 #!/bin/bash
-# Builds build/lib/libfftl with juliac --trim (JuliaC.jl in its own environment jc/), compiles
-# the C test test/test against it. Needs Julia >= 1.12. FFTL_TRIM=off skips the trim verifier
+# Builds build/lib/libfftl with juliac --trim (JuliaC.jl in its own environment jc/) and the
+# FFTW library names as links to it. Needs Julia >= 1.12. FFTL_TRIM=off skips the trim verifier
 # (plain --output-lib).
 #
 # The embedded Julia runtime's worker pool is fixed when the library is built (baked through
@@ -64,4 +64,3 @@ else
     ln -sf libfftl.so build/lib/lib$name.so.3
   done
 fi
-cc -O2 -o test/test test/test.c -Iinclude -Lbuild/lib -lfftl -lm -Wl,-rpath,"$(pwd)/build/lib"

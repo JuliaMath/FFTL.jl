@@ -39,7 +39,8 @@ shares. [Contribute](@ref "Contribute") says where help is most useful.
   (see [Threads](@ref "Threads")).
 
 **A C library made from the Julia code.** [libfftl](@ref "C library (libfftl)") is the package
-compiled with `juliac --trim`. No transform is written in C, and a program that links the
+compiled with `juliac --trim`, with FFTW3's C and Fortran interfaces, so programs written for
+FFTW3 compile and link against it without source changes. No transform is written in C, and a program that links the
 library needs no Julia installation. The run-time plans it is built from are public, so Julia
 programs that use them can be trimmed as well.
 

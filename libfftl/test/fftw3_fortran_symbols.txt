@@ -1,0 +1,54 @@
+# The legacy Fortran routines libfftl exports, from the FFTW manual ("Calling FFTW from Legacy
+# Fortran": every C routine without FILE, string or memory arguments, the plan or result as
+# first argument), without prefix and suffix: each must exist as dfftw_<name> and
+# sfftw_<name>, with one and with two trailing underscores. Checked by test/fftw3_symbols.sh.
+cleanup
+cleanup_threads
+copy_plan
+cost
+destroy_plan
+execute
+execute_dft
+execute_dft_c2r
+execute_dft_r2c
+execute_r2r
+execute_split_dft
+execute_split_dft_c2r
+execute_split_dft_r2c
+export_wisdom
+flops
+forget_wisdom
+import_system_wisdom
+import_wisdom
+init_threads
+plan_dft
+plan_dft_1d
+plan_dft_2d
+plan_dft_3d
+plan_dft_c2r
+plan_dft_c2r_1d
+plan_dft_c2r_2d
+plan_dft_c2r_3d
+plan_dft_r2c
+plan_dft_r2c_1d
+plan_dft_r2c_2d
+plan_dft_r2c_3d
+plan_guru_dft
+plan_guru_dft_c2r
+plan_guru_dft_r2c
+plan_guru_r2r
+plan_guru_split_dft
+plan_guru_split_dft_c2r
+plan_guru_split_dft_r2c
+plan_many_dft
+plan_many_dft_c2r
+plan_many_dft_r2c
+plan_many_r2r
+plan_r2r
+plan_r2r_1d
+plan_r2r_2d
+plan_r2r_3d
+plan_with_nthreads
+planner_nthreads
+print_plan
+set_timelimit

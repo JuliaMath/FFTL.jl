@@ -1,0 +1,181 @@
+! The Fortran 2003 interface (fftw3.f03), precision RKIND: functions bound to the C interface,
+! dimensions in C order. Generated per precision by fftw3_ftest.sh.
+module f03cb_PREC
+  use, intrinsic :: iso_c_binding
+  implicit none
+  logical :: nul_PREC = .false.
+contains
+  subroutine count_char_PREC(c, p) bind(C)
+    character(C_CHAR), value :: c
+    type(C_PTR), value :: p
+    integer(C_INT), pointer :: cnt
+    call c_f_pointer(p, cnt)
+    cnt = cnt + 1
+    if (c == C_NULL_CHAR) nul_PREC = .true.
+  end subroutine count_char_PREC
+end module f03cb_PREC
+
+subroutine run_f03_PREC()
+  use, intrinsic :: iso_c_binding
+  use ftest_ref
+  use f03cb_PREC
+  implicit none
+  include 'fftw3.f03'
+  interface
+    integer(C_SIZE_T) function strlen(s) bind(C, name='strlen')
+      import
+      type(C_PTR), value :: s
+    end function strlen
+    subroutine free(p) bind(C, name='free')
+      import
+      type(C_PTR), value :: p
+    end subroutine free
+  end interface
+  type(C_PTR) :: plan, data, p2, s
+  complex(CKIND), allocatable :: x2(:,:), y2(:,:), x3(:,:,:), y3(:,:,:)
+  complex(CKIND), pointer :: cout(:,:,:)
+  real(RKIND), pointer :: rin(:,:,:)
+  real(RKIND), allocatable :: r2(:,:), s2(:,:), xr(:,:), xi(:,:), yr(:,:), yi(:,:)
+  complex(8), allocatable :: ref(:)
+  real(8), allocatable :: rr(:), tmp(:)
+  real(8) :: tol, add, mul, fma
+  integer :: seed, i
+  integer(C_INT) :: ret, n2(2), ie(2), oe(2)
+  integer(C_INT), target :: cnt
+  integer(C_FFTW_R2R_KIND) :: kinds(2)
+  type(IODIM) :: d1(1), v1(1)
+  type(IODIM64) :: d2(2)
+  tol = TOLV
+  seed = 11
+
+  ! 2D complex: Fortran x(5, 6) is the C array 6 x 5
+  allocate(x2(5, 6), y2(5, 6), ref(30), tmp(60))
+  plan = fftwY_plan_dft_2d(6, 5, x2, y2, FFTW_FORWARD, FFTW_ESTIMATE)
+  call fill_r(tmp, 60, seed)
+  x2 = reshape(cmplx(tmp(1:60:2), tmp(2:60:2), RKIND), [5, 6])
+  ref = reshape(cmplx(x2, kind=8), [30])
+  call fftwY_execute_dft(plan, x2, y2)
+  call dft_dim(ref, [5, 6], 2, 1, -1)
+  call dft_dim(ref, [5, 6], 2, 2, -1)
+  call check(relerr_c(reshape(cmplx(y2, kind=8), [30]), ref, 30) < tol, 'PREC f03 plan_dft_2d')
+  call fftwY_flops(plan, add, mul, fma)
+  call check(add >= 0 .and. mul >= 0 .and. fma >= 0 .and. add + mul + fma < huge(1d0), 'PREC f03 flops')
+  s = fftwY_sprint_plan(plan)
+  call check(c_associated(s), 'PREC f03 sprint_plan')
+  call free(s)
+  p2 = fftwY_copy_plan(plan)
+  call fftwY_destroy_plan(plan)
+  y2 = 0
+  call fftwY_execute_dft(p2, x2, y2)
+  call check(relerr_c(reshape(cmplx(y2, kind=8), [30]), ref, 30) < tol, 'PREC f03 copy_plan')
+  call fftwY_destroy_plan(p2)
+  deallocate(x2, y2, ref, tmp)
+
+  ! in-place r2c of L x M x N = 7 x 4 x 3 with fftw_alloc_complex (the manual's example)
+  data = fftwY_alloc_complex(int(4 * 4 * 3, C_SIZE_T))
+  call c_f_pointer(data, rin, [8, 4, 3])
+  call c_f_pointer(data, cout, [4, 4, 3])
+  allocate(rr(84), ref(84))
+  call fill_r(rr, 84, seed)
+  plan = fftwY_plan_dft_r2c_3d(3, 4, 7, rin, cout, FFTW_ESTIMATE)
+  rin(1:7, :, :) = reshape(real(rr, RKIND), [7, 4, 3])
+  ref = cmplx(reshape(real(rin(1:7, :, :), 8), [84]), 0d0, 8)
+  do i = 1, 3
+    call dft_dim(ref, [7, 4, 3], 3, i, -1)
+  end do
+  call fftwY_execute_dft_r2c(plan, rin, cout)
+  call check(relerr_c(reshape(cmplx(cout, kind=8), [48]), head_rows(ref, 7, 12, 4), 48) < tol, &
+             'PREC f03 in-place r2c 3d with alloc_complex')
+  call fftwY_destroy_plan(plan)
+  plan = fftwY_plan_dft_c2r_3d(3, 4, 7, cout, rin, FFTW_ESTIMATE)
+  rr = reshape(real(real(rr, RKIND), 8), [84])
+  call fftwY_execute_dft_c2r(plan, cout, rin)
+  call check(relerr_r(reshape(real(rin(1:7, :, :), 8), [84]), 84 * rr, 84) < 10 * tol, 'PREC f03 in-place c2r 3d')
+  call fftwY_destroy_plan(plan)
+  call fftwY_free(data)
+  deallocate(rr, ref)
+
+  ! advanced: 2 arrays of C size 5 x 4 (Fortran 4 x 5) in Fortran 6 x 5, into 4 x 5
+  allocate(x3(6, 5, 2), y3(4, 5, 2), ref(40), tmp(120))
+  call fill_r(tmp, 120, seed)
+  x3 = reshape(cmplx(tmp(1:120:2), tmp(2:120:2), RKIND), [6, 5, 2])
+  ref = reshape(cmplx(x3(1:4, :, :), kind=8), [40])
+  n2 = [5, 4]
+  ie = [5, 6]
+  oe = [5, 4]
+  plan = fftwY_plan_many_dft(2, n2, 2, x3, ie, 1, 30, y3, oe, 1, 20, FFTW_FORWARD, FFTW_ESTIMATE)
+  call fftwY_execute_dft(plan, x3, y3)
+  call dft_dim(ref, [4, 5, 2], 3, 1, -1)
+  call dft_dim(ref, [4, 5, 2], 3, 2, -1)
+  call check(relerr_c(reshape(cmplx(y3, kind=8), [40]), ref, 40) < tol, 'PREC f03 plan_many_dft with embed')
+  call fftwY_destroy_plan(plan)
+  deallocate(x3, y3, ref, tmp)
+
+  ! guru: 4 x 6 along the second dimension; split arrays
+  allocate(x2(4, 6), y2(4, 6), ref(24), tmp(48), xr(4, 6), xi(4, 6), yr(4, 6), yi(4, 6))
+  call fill_r(tmp, 48, seed)
+  x2 = reshape(cmplx(tmp(1:48:2), tmp(2:48:2), RKIND), [4, 6])
+  ref = reshape(cmplx(x2, kind=8), [24])
+  call dft_dim(ref, [4, 6], 2, 2, 1)
+  d1(1) = IODIM(6, 4, 4)
+  v1(1) = IODIM(4, 1, 1)
+  plan = fftwY_plan_guru_dft(1, d1, 1, v1, x2, y2, FFTW_BACKWARD, FFTW_ESTIMATE)
+  call fftwY_execute_dft(plan, x2, y2)
+  call check(relerr_c(reshape(cmplx(y2, kind=8), [24]), ref, 24) < tol, 'PREC f03 plan_guru_dft')
+  call fftwY_destroy_plan(plan)
+  ! backward as a forward split transform with real and imaginary parts swapped
+  xr = real(x2, RKIND)
+  xi = aimag(x2)
+  plan = fftwY_plan_guru_split_dft(1, d1, 1, v1, xi, xr, yi, yr, FFTW_ESTIMATE)
+  call fftwY_execute_split_dft(plan, xi, xr, yi, yr)
+  call check(relerr_c(reshape(cmplx(yr, yi, 8), [24]), ref, 24) < tol, 'PREC f03 plan_guru_split_dft (backward)')
+  call fftwY_destroy_plan(plan)
+  deallocate(x2, y2, ref, tmp, xr, xi, yr, yi)
+
+  ! guru64 r2r on 5 x 6, both dimensions; plan_r2r_2d with kinds in C order
+  allocate(r2(5, 6), s2(5, 6), rr(30))
+  call fill_r(rr, 30, seed)
+  r2 = reshape(real(rr, RKIND), [5, 6])
+  rr = reshape(real(r2, 8), [30])
+  d2(1) = IODIM64(6, 5, 5)
+  d2(2) = IODIM64(5, 1, 1)
+  kinds = [FFTW_RODFT00, FFTW_REDFT10]
+  plan = fftwY_plan_guru64_r2r(2, d2, 0, d2, r2, s2, kinds, FFTW_ESTIMATE)
+  call fftwY_execute_r2r(plan, r2, s2)
+  call r2r_dim(rr, [5, 6], 2, 2, FFTW_RODFT00)
+  call r2r_dim(rr, [5, 6], 2, 1, FFTW_REDFT10)
+  call check(relerr_r(reshape(real(s2, 8), [30]), rr, 30) < tol, 'PREC f03 plan_guru64_r2r')
+  call fftwY_destroy_plan(plan)
+  rr = reshape(real(r2, 8), [30])
+  plan = fftwY_plan_r2r_2d(6, 5, r2, s2, FFTW_DHT, FFTW_RODFT01, FFTW_ESTIMATE)
+  call fftwY_execute_r2r(plan, r2, s2)
+  call r2r_dim(rr, [5, 6], 2, 2, FFTW_DHT)
+  call r2r_dim(rr, [5, 6], 2, 1, FFTW_RODFT01)
+  call check(relerr_r(reshape(real(s2, 8), [30]), rr, 30) < tol, 'PREC f03 plan_r2r_2d')
+  call fftwY_destroy_plan(plan)
+  deallocate(r2, s2, rr)
+
+  ! threads, memory, wisdom
+  call check(fftwY_init_threads() /= 0, 'PREC f03 init_threads')
+  call fftwY_plan_with_nthreads(3)
+  call check(fftwY_planner_nthreads() == 3, 'PREC f03 planner_nthreads')
+  call fftwY_plan_with_nthreads(1)
+  data = fftwY_alloc_real(int(1000, C_SIZE_T))
+  call check(c_associated(data), 'PREC f03 alloc_real')
+  call fftwY_free(data)
+  data = fftwY_malloc(int(100, C_SIZE_T))
+  call check(c_associated(data), 'PREC f03 malloc')
+  call fftwY_free(data)
+  ret = fftwY_export_wisdom_to_filename(C_CHAR_'ftest_PREC_wisdom.txt' // C_NULL_CHAR)
+  call check(ret /= 0, 'PREC f03 export_wisdom_to_filename')
+  ret = fftwY_import_wisdom_from_filename(C_CHAR_'ftest_PREC_wisdom.txt' // C_NULL_CHAR)
+  call check(ret /= 0, 'PREC f03 import_wisdom_from_filename')
+  s = fftwY_export_wisdom_to_string()
+  call check(c_associated(s) .and. strlen(s) > 0, 'PREC f03 export_wisdom_to_string')
+  call free(s)
+  cnt = 0
+  call fftwY_export_wisdom(c_funloc(count_char_PREC), c_loc(cnt))
+  call check(cnt > 0 .and. .not. nul_PREC, 'PREC f03 export_wisdom through a bind(C) callback')
+  call fftwY_forget_wisdom()
+  call fftwY_cleanup()
+end subroutine run_f03_PREC
