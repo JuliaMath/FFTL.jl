@@ -1,6 +1,6 @@
 name = "FFTL"
 uuid = "b53ef638-a7f0-46a4-97a9-16ee08a896af"
-version = "0.1.0-dev"
+version = "0.1.0"
 authors = ["Tobias Knopp <tobias@knoppweb.de>"]
 
 [deps]
