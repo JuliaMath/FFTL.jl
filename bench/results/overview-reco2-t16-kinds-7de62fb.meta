@@ -1,0 +1,5 @@
+threads: 16; FFTL 7de62fb; julia 1.13.3; workstation
+start: 2026-11-04T21:03:44; load:  21:03:44 up 48 days,  7:29,  6 users,  load average: 2,63, 3,37, 5,00
+libraries: fftl,ducc
+end: 2026-11-04T21:09:03; load:  21:09:03 up 48 days,  7:34,  6 users,  load average: 4,72, 4,02, 4,78
+merged: FFTW rows from overview-reco2-t16-fftw-only-7de62fb.csv (FFTW timed at 16 threads in a process with one Julia thread; FFTW.jl with 16 Julia threads crashes in libfftw3f with threaded Float32 3D plans on this host, with the native build and with FFTW_jll). The FFTW run kept its wisdom between cases (OVERVIEW_KEEP_WISDOM).

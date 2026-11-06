@@ -1,8 +1,49 @@
 # Benchmarks
 
-!!! note "In preparation"
-    The benchmark results are not published yet. This page lists what the release will contain
-    and how it is measured; no number on it is a result.
+!!! warning "Interim numbers"
+    The figures and numbers on this page are the development state: one round per case, measured
+    on the machines listed at the bottom under their normal load, at the commits given with each
+    figure. The measurement campaign on quiet machines will replace them; the protocol below is
+    already the one the campaign follows.
+
+## How FFTL compares
+
+![Speed-up of FFTL over the fastest other library on each platform](../generated/benchmarks/speedup.png)
+
+The speed-up is the time of the fastest other library for that case divided by FFTL's time;
+above 1 (shaded), FFTL is faster. One marker per transform — colour: precision, shape: kind;
+open triangles at the panel edge mark values beyond the axis. In the two multi-thread panels
+every library is timed at its better setting per case, the minimum over one and all threads, so
+FFTW is not charged for spreading tiny transforms over many threads. Transforms that no
+competitor computes (DCT and DST in cuFFT and MPSGraph, most real-to-real kinds) are not
+plotted. The data is the overview set in `bench/results`, measured at FFTL `7de62fb` (CPU) and
+`49648b3` (GPU); the figures are regenerated from it on every documentation build.
+
+With one thread, FFTL is faster than the best of FFTW, ducc0 and vDSP in 87 % of the cases on
+the M1 (median 1.21×) and in 73 % on the EPYC (1.21×). With many threads, at each library's
+better setting, the lead holds: 84 % on the M1 with 8 threads (1.26×) and 68 % on the EPYC with
+16 threads (1.20×). On the Apple GPU, against the best of MPSGraph and VkFFT, the median is
+1.26× with 77 % of the cases faster. On the NVIDIA A6000 the median is 0.88×: small transforms
+are launch-bound and the DCT kinds were tuned last (see [Platforms and limits](@ref "Platforms and limits")).
+
+## Which library to depend on
+
+![Fold change of every library against its best counterpart on each platform](../generated/benchmarks/dominance.png)
+
+This figure asks the question a package author faces: which single library to depend on. Per
+case, the fold change is the time of the fastest *other* library divided by this library's
+time; right of the parity line is a win, left of it a loss, and wins are not clipped at 1. The
+box is the quartile rectangle with the median line and Tukey whiskers, the points are the raw
+cases. The label under each column carries the dominance factor (the geometric mean over the
+cases the library itself computes), the win rate, and the coverage: libraries that lack
+transform kinds (ducc0 without DCT/DST, vDSP with c2c and DCT-II only, MPSGraph and cuFFT
+without real-to-real at all) compute their factor over a smaller subset, so the coverage is
+part of the label.
+
+FFTL is the only library that runs on all six panels and computes every kind. Its dominance
+factor is 1.23–1.33× on the CPUs and the Apple GPU and 0.88× on the A6000, the exception above;
+no other library comes with full coverage and full kind support (see
+[Platforms and limits](@ref "Platforms and limits")).
 
 ## What the release covers
 
@@ -28,7 +69,7 @@ from the sizes used for tuning.
 | machine | role |
 |:--|:--|
 | Apple M1 Max | development machine, CPU and Metal GPU |
-| AMD EPYC 7763 (2 sockets) | CPU server, x86-64 with AVX2 |
+| AMD EPYC (2 sockets) | CPU server, x86-64 with AVX2 |
 | NVIDIA RTX A6000 | CUDA GPU |
 
 Each result names the library, its version, the build flags and the thread count. Competitors are
@@ -38,13 +79,9 @@ built from their current releases with native CPU flags.
 
 | part | status |
 |:--|:--|
-| harness and protocol | prepared |
-| CPU, M1 Max | planned |
-| CPU, EPYC | planned |
-| GPU, Metal | planned |
-| GPU, CUDA | planned |
-| libfftl | planned |
-| accuracy | planned |
+| harness, protocol and figures | prepared |
+| campaign (quiet machines, several rounds, held-out sizes) | planned |
 
-The results come with the first release that carries them. Until then, the functions are
-documented and tested, and the speed statements in this manual are statements about design.
+The figures above are the development state and are regenerated from the committed overview data
+on every build. The campaign results replace them with the first release that carries them; the
+functions themselves are documented and tested already.

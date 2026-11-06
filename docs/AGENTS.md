@@ -32,7 +32,8 @@ Conversation with Tobias is in German; everything in this folder is written in E
   the two chain forms, why libfftl needs `RChain`), performance (measurement protocol).
 - **Reference** (`src/reference/`): Julia API (`@docs`), AbstractFFTs (what is implemented),
   libfftl C API (prose; the header page is generated from `libfftl/include/fftl.h`), platforms and
-  limits, benchmarks (stub: protocol and machines, no numbers yet).
+  limits, benchmarks (the speed-up and dominance figures, generated from the committed overview
+  data in `bench/results`; the campaign on quiet machines replaces the data).
 
 ## Decisions
 
@@ -50,9 +51,14 @@ Conversation with Tobias is in German; everything in this folder is written in E
   cell ends with `fig` (no semicolon), because Documenter captures the block result — explicit
   `display(fig)` calls would be discarded. Documenter renders SVG first (PNG is the LaTeX
   fallback); Makie's default theme background is white.
-- **Benchmarks:** only a stub until Tobias asks for the dedicated benchmark work. The page lists the
-  protocol (A/B on one machine, interleaved medians, A/A noise band, held-out sizes, accuracy against a
-  high-precision reference, first plan and execution timed separately) and the machines. No numbers.
+- **Benchmarks:** Tobias asked for the benchmark page (2026-11-06). It carries the two figures
+  of the paper (Fig. 1 speed-up, Fig. 5 dominance), regenerated from the committed overview data
+  in `bench/results` (copied from the workspace harness; ~0.4 MB) on every build — `make.jl`
+  runs `bench/fig_speedup.jl` and `bench/fig_dominance.jl` as their own processes, because the
+  scripts are standalone with their own constants. The scripts are adapted from the paper's
+  `scripts/fig1.jl` and `fig5-dominance.jl` (docs sizing, PNG output). The numbers are labelled
+  as the development state (loaded machines, one round per case); the campaign on quiet machines
+  replaces the data, and the figures follow it.
 - **libfftl:** size (about 23 MB with the Julia runtime, macOS arm64), build requirements (Julia 1.12+
   with juliac), build variables (`FFTL_THREADS`, `FFTL_TRIM`, `JULIA_CPU_TARGET`), baked thread pool,
   column-major data, unnormalised backward transform, error handling via `fftl_last_error`, concurrency
@@ -90,4 +96,5 @@ Conversation with Tobias is in German; everything in this folder is written in E
 - Dark mode: Documenter's theme still offers a dark-mode switch; Tobias wants light mode only.
   The sidebar logo has light and dark variants; the tutorial figures have a white background, so
   they read in both themes.
-- Benchmarks: results once the benchmark release is done.
+- Benchmarks: the campaign results (quiet machines, several rounds, held-out sizes) replace the
+  interim data in `bench/results`; the figures and the numbers on the page follow it.

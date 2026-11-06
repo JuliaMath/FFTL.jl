@@ -19,6 +19,14 @@ mkpath(GENERATED)
 header = read(joinpath(ROOT, "libfftl", "include", "fftl.h"), String)
 write(joinpath(GENERATED, "libfftl_header.md"), "# C header (fftl.h)\n\n```c\n" * header * "```\n")
 
+# The two figures of the benchmarks page are generated from the committed overview data
+# (bench/results) on every build, so a fresh clone reproduces them without any measurement.
+# Each script runs in its own process: they are standalone scripts that define their own
+# constants and print their summary to the build log.
+for f in ("fig_speedup.jl", "fig_dominance.jl")
+    run(`$(Base.julia_cmd()) --project=$(joinpath(ROOT, "docs")) $(joinpath(ROOT, "bench", f))`)
+end
+
 DocMeta.setdocmeta!(FFTL, :DocTestSetup, :(using FFTL, LinearAlgebra); recursive = true)
 
 makedocs(;
