@@ -58,7 +58,7 @@ functions are FFTL's own: a module that writes `using FFTL` gets FFTL, also when
 dependencies loads FFTW.jl. Generic code that calls
 [AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl)'s functions runs on FFTL as well;
 with FFTW.jl loaded, it runs on FFTW for FFTW's arrays. The manual has a page for
-[coming from FFTW.jl](https://JuliaMath.github.io/FFTL.jl/dev/howto/fftw/).
+[coming from FFTW.jl](https://JuliaMath.github.io/FFTL.jl/dev/howto/fftw).
 
 Plans use `threads = Threads.nthreads()` by default; transforms below about 2^15 values run on
 one thread regardless. Inside code that is already threaded, pass `threads = 1`. A plan owns its
@@ -69,12 +69,14 @@ The first plan for a new radix sequence compiles its kernels (milliseconds for t
 precompile workload, up to a few seconds otherwise); later plans of the same size take
 microseconds, and transforms never compile.
 
-With KernelAbstractions.jl and a GPU package loaded, the same functions take GPU arrays:
+With KernelAbstractions.jl and a GPU package loaded, the same functions take GPU arrays. Some GPU
+packages, Metal.jl among them, export AbstractFFTs's `fft`, `plan_fft`, …, which are different
+functions from FFTL's; with such a package (or FFTW.jl) loaded, write `FFTL.fft`:
 
 ```julia
 using FFTL, Metal, KernelAbstractions          # or CUDA
 
-yd = fft(MtlArray(randn(ComplexF32, 1024, 1024)))
+yd = FFTL.fft(MtlArray(randn(ComplexF32, 1024, 1024)))
 ```
 
 ## What FFTL covers
@@ -108,7 +110,7 @@ own transforms from one-dimensional passes use these; NFFT.jl is one of them.
 
 ## Performance
 
-The [benchmarks page](https://JuliaMath.github.io/FFTL.jl/dev/reference/benchmarks/) compares FFTL
+The [benchmarks page](https://JuliaMath.github.io/FFTL.jl/dev/reference/benchmarks) compares FFTL
 with FFTW, ducc0 and vDSP on an Apple M1 Max and an AMD EPYC, and with the vendor libraries and
 VkFFT on the M1's GPU and an NVIDIA RTX A6000, and describes the measurement protocol. The
 figures there are regenerated from the committed data on every documentation build.
@@ -135,7 +137,7 @@ figures there are regenerated from the committed data on every documentation bui
 FFTL owes much to FFTW by Matteo Frigo and Steven G. Johnson: the idea of generating codelets
 with a special-purpose compiler, the real-to-real kinds and their definitions, and the interface
 that FFTW.jl brought to Julia. The manual's page
-[FFTW and FFTL](https://JuliaMath.github.io/FFTL.jl/dev/explanation/fftw/) describes FFTW's
+[FFTW and FFTL](https://JuliaMath.github.io/FFTL.jl/dev/explanation/fftw) describes FFTW's
 history and what FFTL takes from its papers.
 
 ## Contributing
@@ -149,7 +151,7 @@ several. Useful contributions:
 - applications that need a transform, a type or a layout that FFTL does not offer;
 - kernels, tuning, documentation and tests.
 
-The manual's [Contribute](https://JuliaMath.github.io/FFTL.jl/dev/howto/contribute/) page
+The manual's [Contribute](https://JuliaMath.github.io/FFTL.jl/dev/howto/contribute) page
 describes the setup and what a change must come with.
 
 ## Tests

@@ -2,18 +2,20 @@
 
 With [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl) and a GPU package
 loaded, the same functions accept GPU arrays. The example needs a GPU, so it is shown but not
-run during the documentation build.
+run during the documentation build. Some GPU packages, Metal.jl among them, export
+AbstractFFTs's `fft`, `plan_fft`, …, which are different functions from FFTL's. With such a
+package loaded, an unqualified `fft` is ambiguous, so the example writes `FFTL.fft`.
 
 ```julia
-using FFTL, Metal, KernelAbstractions  # or CUDA, AMDGPU, oneAPI
+using FFTL, Metal, KernelAbstractions, LinearAlgebra  # or CUDA, AMDGPU, oneAPI
 
 xd = MtlArray(randn(ComplexF32, 1024, 1024))
-yd = fft(xd)                           # a new GPU array
-p = plan_fft(xd, 2)                    # plan along dimension 2
+yd = FFTL.fft(xd)                      # a new GPU array
+p = FFTL.plan_fft(xd, 2)               # plan along dimension 2
 yd2 = similar(xd)
 mul!(yd2, p, xd)                       # out of place: yd2 !== xd
 
-Rd = rfft(MtlArray(randn(Float32, 1024, 1024)))
+Rd = FFTL.rfft(MtlArray(randn(Float32, 1024, 1024)))
 ```
 
 ## What to expect
