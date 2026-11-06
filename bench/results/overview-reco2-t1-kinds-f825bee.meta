@@ -1,0 +1,4 @@
+threads: 1; FFTL f825bee; julia 1.13.3; workstation
+start: 2026-11-06T07:17:54; load:  07:17:54 up 49 days, 17:43,  6 users,  load average: 23,28, 17,63, 7,59
+libraries: fftl,fftw_measure,ducc
+end: 2026-11-06T07:43:49; load:  07:43:49 up 49 days, 18:09,  6 users,  load average: 1,09, 1,22, 2,32

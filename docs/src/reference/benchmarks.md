@@ -23,7 +23,7 @@ cuFFT without real-to-real at all) compute their factor over a smaller subset, s
 is part of the label.
 
 FFTL is the only library that runs on all six panels and computes every kind. Its fold factor
-is 1.23–1.33× on the CPUs and the Apple GPU and 0.88× on the A6000, the exception below; no
+is 1.23–1.39× on the CPUs and the Apple GPU and 0.88× on the A6000, the exception below; no
 other library comes with full coverage and full kind support (see
 [Platforms and limits](@ref "Platforms and limits")).
 
@@ -37,14 +37,16 @@ open triangles at the panel edge mark values beyond the axis. In the two multi-t
 every library is timed at its better setting per case, the minimum over one and all threads, so
 FFTW is not charged for spreading tiny transforms over many threads. Transforms that no
 competitor computes (DCT and DST in cuFFT and MPSGraph, most real-to-real kinds) are not
-plotted. The data is the overview set in `bench/results`, measured at FFTL `7de62fb` (CPU) and
-`49648b3` (GPU); the figures are regenerated from it on every documentation build.
+plotted. The data is the overview set in `bench/results`, measured at FFTL `9e9bcc2`/`fec5b70`
+on the M1, `f825bee` on the EPYC and `49648b3` on the A6000 (the `.meta` files carry the exact
+provenance: commit, machine, load); the figures are regenerated from it on every documentation
+build.
 
-With one thread, FFTL is faster than the best of FFTW, ducc0 and vDSP in 87 % of the cases on
-the M1 (median 1.21×) and in 73 % on the EPYC (1.21×). With many threads, at each library's
-better setting, the lead holds: 84 % on the M1 with 8 threads (1.26×) and 68 % on the EPYC with
+With one thread, FFTL is faster than the best of FFTW, ducc0 and vDSP in 89 % of the cases on
+the M1 (median 1.33×) and in 74 % on the EPYC (1.23×). With many threads, at each library's
+better setting, the lead grows: 87 % on the M1 with 8 threads (1.35×) and 69 % on the EPYC with
 16 threads (1.20×). On the Apple GPU, against the best of MPSGraph and VkFFT, the median is
-1.26× with 77 % of the cases faster. On the NVIDIA A6000 the median is 0.88×: small transforms
+1.24× with 73 % of the cases faster. On the NVIDIA A6000 the median is 0.88×: small transforms
 are launch-bound and the DCT kinds were tuned last (see [Platforms and limits](@ref "Platforms and limits")).
 
 ## What the release covers

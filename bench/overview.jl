@@ -10,11 +10,11 @@ const BENCH = @__DIR__
 const RES = joinpath(BENCH, "results")
 
 const PANELS = [
-    (key = "m1t1",   title = "Apple M1 Max CPU, 1 thread",    file = "overview-m1-t1-kinds-7de62fb.csv", comps = ["fftw_measure", "ducc", "vdsp"]),
-    (key = "epyct1", title = "AMD EPYC 7702 CPU, 1 thread",   file = "overview-reco2-t1-kinds-7de62fb.csv", comps = ["fftw_measure", "ducc"]),
-    (key = "m1gpu",  title = "Apple M1 Max GPU",              file = "overview-m1-gpu.csv",             comps = ["metal", "vkfft"]),
-    (key = "m1t8",   title = "Apple M1 Max CPU, 8 threads",   file = "overview-m1-t8-kinds-7de62fb.csv", comps = ["fftw_measure", "ducc"], single = "overview-m1-t1-kinds-7de62fb.csv"),
-    (key = "epyct16", title = "AMD EPYC 7702 CPU, 16 threads", file = "overview-reco2-t16-kinds-7de62fb.csv", comps = ["fftw_measure", "ducc"], single = "overview-reco2-t1-kinds-7de62fb.csv"),
+    (key = "m1t1",   title = "Apple M1 Max CPU, 1 thread",    file = "overview-m1-t1-kinds-0ab2ed0.csv", comps = ["fftw_measure", "ducc", "vdsp"]),
+    (key = "epyct1", title = "AMD EPYC 7702 CPU, 1 thread",   file = "overview-reco2-t1-kinds-f825bee.csv", comps = ["fftw_measure", "ducc"]),
+    (key = "m1gpu",  title = "Apple M1 Max GPU",              file = "overview-m1-gpu-kinds-0ab2ed0.csv", comps = ["metal", "vkfft"]),
+    (key = "m1t8",   title = "Apple M1 Max CPU, 8 threads",   file = "overview-m1-t8-kinds-0ab2ed0.csv", comps = ["fftw_measure", "ducc"], single = "overview-m1-t1-kinds-0ab2ed0.csv"),
+    (key = "epyct16", title = "AMD EPYC 7702 CPU, 16 threads", file = "overview-reco2-t16-kinds-f825bee.csv", comps = ["fftw_measure", "ducc"], single = "overview-reco2-t1-kinds-f825bee.csv"),
     (key = "a6000",  title = "NVIDIA RTX A6000 GPU",          file = "overview-a6000-gpu.csv",          comps = ["cufft", "vkfft"]),
 ]
 const COMPNAME = Dict("fftw_measure" => "FFTW", "ducc" => "ducc0", "vdsp" => "vDSP",
