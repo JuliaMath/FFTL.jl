@@ -33,7 +33,7 @@ best = argmax(l -> gpu[l]["fold"], collect(keys(gpu)))
 Markdown.parse(@sprintf("""
 FFTL is the only library that runs in all six panels and computes every kind. Its fold factor ranges
 from %.2f× to %.2f× over the panels. It is below 1 on the NVIDIA A6000 (%.2f×), where %s
-has the highest factor (%.2f×); see [Platforms and limits](@ref "Platforms and limits").
+has the highest factor (%.2f×); see [Platforms and limits](platforms.md).
 """, minimum(f), maximum(f), gpu["FFTL"]["fold"], best, gpu[best]["fold"]))
 ```
 

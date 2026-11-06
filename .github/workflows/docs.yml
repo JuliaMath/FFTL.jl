@@ -1,6 +1,7 @@
 name: Documentation
 
-# Builds the manual with Documenter and deploys it to gh-pages on pushes to main; pull requests
+# Builds the manual with Documenter and DocumenterVitepress (Node comes with the
+# NodeJS_20_jll artifact, no setup step needed) and deploys it to gh-pages on pushes to main; pull requests
 # build it and (with push_preview in make.jl) get a preview link in their checks. The Literate
 # scripts and the @example blocks run during the build, so a broken example fails the job.
 on:

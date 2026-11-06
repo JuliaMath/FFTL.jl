@@ -12,7 +12,7 @@ Conversation with Tobias is in German; everything in this folder is written in E
 - The manual must be complete, precise and well exemplified. Tobias asked for an "end boss" manual
   that makes up for the weak docs of AbstractFFTs.jl and FFTW.jl. Strong, clear and concrete, not
   marketing: every claim is checked against the code or a measurement.
-- Plain Documenter theme, no fancy landing page. Good examples over decoration. Light mode.
+- DocumenterVitepress (VitePress theme on top of Documenter), no fancy landing page. Good examples over decoration. Light mode.
 - Tone (Tobias, 2026-11-06): no claim to be the best. The message is that Julia and coding agents
   make a library of this scope possible, and that FFTL is meant to be developed further by the
   Julia community as the one FFT the ecosystem shares (said as an invitation; other packages are
@@ -86,8 +86,9 @@ Conversation with Tobias is in German; everything in this folder is written in E
   `fftl-main.svg` (wordmark with spectrum underline, everyday use), `fftl-icon.svg` (bars only,
   16-48 px), `fftl-logo.svg` (wide: butterfly, wordmark and spectrum, for headers with room; the
   README links it). `fftl-main-dark.svg` and `fftl-logo-dark.svg` are the dark-ground variants.
-  Copies in `docs/src/assets/`: `logo.svg` and `logo-dark.svg` (main; Documenter's sidebar picks
-  them up, including the dark-theme switch), `fftl-wide.svg` (home page header), `favicon.ico`
+  Copies in `docs/src/assets/`: `logo.svg` and `logo-dark.svg` (main; DocumenterVitepress moves
+  every `*logo*` file to `public/` and uses `logo.svg` in the navbar; `logo-dark.svg` is unused
+  until a custom `.vitepress/config.mts` sets a light/dark pair), `fftl-wide.svg` (home page header), `favicon.ico`
   (from `fftl-icon.svg`: `rsvg-convert` to 16, 32 and 48 px PNGs, then `magick` to combine them;
   `magick` alone drops the stems). No other raster images. If the SVGs change, copy them over.
 
@@ -114,8 +115,7 @@ Conversation with Tobias is in German; everything in this folder is written in E
 
 - Accuracy: the manual claims accuracy checks but shows no numbers; a page from the workspace's
   `quality.csv` (error against BigFloat) is missing.
-- Dark mode: Documenter's theme still offers a dark-mode switch; Tobias wants light mode only.
-  The sidebar logo has light and dark variants; the tutorial figures have a white background, so
-  they read in both themes.
+- Dark mode: the VitePress theme offers a dark-mode switch; Tobias wants light mode only. The
+  tutorial figures have a white background, so they read in both themes.
 - Benchmarks: the campaign results (quiet machines, several rounds, held-out sizes) replace the
   interim data in `bench/results`; the figures and the numbers on the page follow it.

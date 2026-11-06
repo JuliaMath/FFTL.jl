@@ -1,4 +1,4 @@
-using Documenter, Literate, FFTL
+using Documenter, DocumenterVitepress, Literate, FFTL
 
 const DOCS = @__DIR__
 const ROOT = dirname(DOCS)
@@ -34,10 +34,10 @@ makedocs(;
   sitename = "FFTL.jl",
   authors = "Tobias Knopp and contributors",
   repo = Remotes.GitHub("JuliaMath", "FFTL.jl"),
-  format = Documenter.HTML(;
-    prettyurls = get(ENV, "CI", "false") == "true",
-    canonical = "https://JuliaMath.github.io/FFTL.jl",
-    size_threshold = 500_000,
+  format = DocumenterVitepress.MarkdownVitepress(;
+    repo = "https://github.com/JuliaMath/FFTL.jl",
+    devurl = "dev",
+    deploy_url = "JuliaMath.github.io/FFTL.jl",
   ),
   # Diátaxis, as in NFFT.jl: learn, do, understand, look up
   pages = [
@@ -87,4 +87,4 @@ makedocs(;
   checkdocs = :none,
 )
 
-deploydocs(repo = "github.com/JuliaMath/FFTL.jl.git", devbranch = "main", push_preview = true)
+DocumenterVitepress.deploydocs(; repo = "github.com/JuliaMath/FFTL.jl.git", devbranch = "main", push_preview = true)
