@@ -18,11 +18,16 @@ using CairoMakie, Statistics, Printf
 
 include(joinpath(@__DIR__, "overview.jl"))
 
-const COLOR = Dict("Float64" => colorant"#2C6FB7", "Float32" => colorant"#D9822B")
+# Plot palette: the Uni Lübeck corporate colours of the knopp-toolkit figure style
+# (tools/knopp-toolkit/tikz/svtikz.sty, uhl-*; copied here so the scripts stay standalone).
+# Float64 in Blau Ton 3, Float32 in Orange Ton 3; ink is figfg, muted is figmuted (60 % ink on
+# white), the shaded "faster" half is Blau Ton 1.
+const COLOR = Dict("Float64" => colorant"#0083AD", "Float32" => colorant"#CB5119")
 const KINDS = [("c2c", :circle, "c2c"), ("r2c", :rect, "r2c, c2r"), ("r2r", :diamond, "r2r (DCT, DST, DHT)")]
 const MARKER = Dict(k => m for (k, m, _) in KINDS)
 kindgroup(k) = k == "c2c" ? "c2c" : k in ("r2c", "c2r") ? "r2c" : startswith(k, "r2r") ? "r2r" : error("unknown kind $k")
-const INK, MUTED, FASTER = colorant"#222222", colorant"#5B6770", colorant"#f1f0ec"
+const INK, MUTED = colorant"#222222", colorant"#7A7A7A"
+const FASTER = (colorant"#C2D9E6", 0.4)
 const YMIN, YMAX = 0.25, 8.0
 const OUT = normpath(joinpath(BENCH, "..", "docs", "src", "generated", "benchmarks"))
 

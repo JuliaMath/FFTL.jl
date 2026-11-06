@@ -63,10 +63,13 @@ function box!(ax, x, vals; width = 0.16, col, stroke = colorant"#222222")
     linesegments!(ax, [Point2f(x0, med) => Point2f(x1, med)]; color = stroke, linewidth = 1.0)
 end
 
-const LIBCOLOR = Dict("fftl" => colorant"#2a78d6", "fftw_measure" => colorant"#eb6834",
-                      "ducc" => colorant"#eda100", "vdsp" => colorant"#e87ba4",
-                      "metal" => colorant"#1baf7a", "cufft" => colorant"#8a5fbf",
-                      "vkfft" => colorant"#6a6a6a")
+# Plot palette: the Uni Lübeck corporate colours of the knopp-toolkit figure style
+# (tools/knopp-toolkit/tikz/svtikz.sty, uhl-*; copied here so the scripts stay standalone).
+# FFTL in the house colour Ozeangrün, one Uni Lübeck family per library (Ton 3), VkFFT in grey.
+const LIBCOLOR = Dict("fftl" => colorant"#004B5A", "fftw_measure" => colorant"#CB5119",
+                      "ducc" => colorant"#BF8614", "vdsp" => colorant"#B51621",
+                      "metal" => colorant"#248F85", "cufft" => colorant"#0083AD",
+                      "vkfft" => colorant"#595959")
 const LIBNAME = merge(COMPNAME, Dict("fftl" => "FFTL"))
 const OUT = normpath(joinpath(BENCH, "..", "docs", "src", "generated", "benchmarks"))
 
