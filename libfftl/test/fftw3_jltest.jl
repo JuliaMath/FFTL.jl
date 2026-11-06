@@ -998,6 +998,51 @@ function test_fftl_h()
   @CHECK tid == Threads.threadid() || lasterr() == "a message of 22 bytes!", "fftl_last_error is per thread"
 end
 
+# --- the legacy Fortran entry points (by reference, dimensions in Fortran order) ------------
+
+function test_fortran_legacy(T)
+  pre = T == Float64 ? "dfftw_" : "sfftw_"
+  L(name, suffix = "_") = getfield(Main, Symbol(pre, name, suffix))
+  ri(v) = Ref(Cint(v))
+  for suffix in ("_", "__")
+    plan = Ref(Int64(0)); n0 = ri(5); n1 = ri(6); sg = ri(-1); fl = ri(Cint(FFTW.ESTIMATE))
+    x = randn(Complex{T}, 5, 6); y = similar(x)
+    GC.@preserve x y plan n0 n1 sg fl begin
+      L(:plan_dft_2d, suffix)(Base.unsafe_convert(Ptr{Int64}, plan), Base.unsafe_convert(Ptr{Cint}, n0),
+          Base.unsafe_convert(Ptr{Cint}, n1), vp(x), vp(y), Base.unsafe_convert(Ptr{Cint}, sg),
+          Base.unsafe_convert(Ptr{Cint}, fl))
+    end
+    @CHECK plan[] != 0, "$pre plan_dft_2d$suffix: plan"
+    GC.@preserve x y plan L(:execute_dft, suffix)(Base.unsafe_convert(Ptr{Int64}, plan), vp(x), vp(y))
+    @CHECK close(y, FFTW.fft(ComplexF64.(x)), T), "$pre plan_dft_2d$suffix: Fortran order vs FFTW.jl"
+    GC.@preserve plan L(:destroy_plan, suffix)(Base.unsafe_convert(Ptr{Int64}, plan))
+  end
+  # r2r_2d: kind0 along the first Fortran dimension; guru_r2r: the kind array reversed
+  let x = randn(T, 5, 6), y = similar(x), plan = Ref(Int64(0)), k0 = ri(FFTW.REDFT10), k1 = ri(FFTW.RODFT11)
+    n0 = ri(5); n1 = ri(6); fl = ri(Cint(FFTW.ESTIMATE))
+    GC.@preserve x y plan n0 n1 k0 k1 fl L(:plan_r2r_2d)(Base.unsafe_convert(Ptr{Int64}, plan), Base.unsafe_convert(Ptr{Cint}, n0),
+        Base.unsafe_convert(Ptr{Cint}, n1), vp(x), vp(y), Base.unsafe_convert(Ptr{Cint}, k0), Base.unsafe_convert(Ptr{Cint}, k1),
+        Base.unsafe_convert(Ptr{Cint}, fl))
+    GC.@preserve x y plan L(:execute_r2r)(Base.unsafe_convert(Ptr{Int64}, plan), vp(x), vp(y))
+    @CHECK close(y, r2r_ref(x, (FFTW.REDFT10, FFTW.RODFT11), 1:2), T), "$pre plan_r2r_2d: kinds in Fortran order"
+    GC.@preserve plan L(:destroy_plan)(Base.unsafe_convert(Ptr{Int64}, plan))
+    nn = Cint[6, 5]; is = Cint[5, 1]; ks = Cint[FFTW.DHT, FFTW.REDFT01]; rank = ri(2); h = ri(0)
+    GC.@preserve x y plan nn is ks rank h fl L(:plan_guru_r2r)(Base.unsafe_convert(Ptr{Int64}, plan), Base.unsafe_convert(Ptr{Cint}, rank),
+        pointer(nn), pointer(is), pointer(is), Base.unsafe_convert(Ptr{Cint}, h), pointer(nn), pointer(is), pointer(is),
+        vp(x), vp(y), pointer(ks), Base.unsafe_convert(Ptr{Cint}, fl))
+    GC.@preserve x y plan L(:execute_r2r)(Base.unsafe_convert(Ptr{Int64}, plan), vp(x), vp(y))
+    @CHECK close(y, r2r_ref(x, (FFTW.DHT, FFTW.REDFT01), 1:2), T), "$pre plan_guru_r2r: kind array reversed"
+    GC.@preserve plan L(:destroy_plan)(Base.unsafe_convert(Ptr{Int64}, plan))
+  end
+  # a failed plan is 0, with a message
+  let x = zeros(Complex{T}, 4), plan = Ref(Int64(99)), n = ri(0), s = ri(-1), fl = ri(0)
+    set_error!("")
+    GC.@preserve x plan n s fl L(:plan_dft_1d)(Base.unsafe_convert(Ptr{Int64}, plan), Base.unsafe_convert(Ptr{Cint}, n), vp(x), vp(x),
+        Base.unsafe_convert(Ptr{Cint}, s), Base.unsafe_convert(Ptr{Cint}, fl))
+    @CHECK plan[] == 0 && !isempty(lasterr()), "$pre plan_dft_1d n = 0: plan 0 and message"
+  end
+end
+
 # Export through the callback: collect the characters into a Julia vector
 const WCHARS = UInt8[]
 wcollect(c::Cchar, ::Ptr{Cvoid}) = (push!(WCHARS, c % UInt8); nothing)
@@ -1027,6 +1072,7 @@ for T in (Float64, Float32)
   test_misc(T)
   test_errors(T)
   test_threads_sizes(T)
+  test_fortran_legacy(T)
   empty!(WCHARS)
   F(pre, :export_wisdom)(@cfunction(wcollect, Cvoid, (Cchar, Ptr{Cvoid})), C_NULL)
   @CHECK String(copy(WCHARS)) == W_WISDOM, "$pre export_wisdom through the callback"

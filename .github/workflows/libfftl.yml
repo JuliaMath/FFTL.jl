@@ -42,6 +42,19 @@ jobs:
         run: libfftl/test/fftw3_symbols.sh
       - name: FFTW3 differential C test (against FFTW_jll)
         run: libfftl/test/fftw3_ctest.sh
+      - name: FFTW3 Fortran test (against FFTW_jll)
+        run: |
+          FC=$(command -v gfortran || command -v gfortran-15 || command -v gfortran-14 || command -v gfortran-13 || true)
+          if [ -z "$FC" ]; then
+            if [ "$RUNNER_OS" = macOS ]; then
+              brew install gcc
+              FC=$(ls "$(brew --prefix)"/bin/gfortran-* | head -1)
+            else
+              sudo apt-get update && sudo apt-get install -y gfortran
+              FC=gfortran
+            fi
+          fi
+          FC="$FC" libfftl/test/fftw3_ftest.sh
       - name: Bundle size
         run: |
           {
