@@ -82,11 +82,14 @@ Conversation with Tobias is in German; everything in this folder is written in E
   with juliac), build variables (`FFTL_THREADS`, `FFTL_TRIM`, `JULIA_CPU_TARGET`), baked thread pool,
   column-major data, unnormalised backward transform, error handling via `fftl_last_error`, concurrency
   rules. The C example in the how-to was compiled and run against the build in `FFTL.jl/libfftl`.
-- **Logo:** hand-built SVGs in `docs/assets/` (`fftl-logo.svg`, `fftl-logo-dark.svg`,
-  `fftl-favicon-spectrum.svg`; conventions in the workspace `AGENTS.md`), copied to
-  `docs/src/assets/` as `logo.svg` and `logo-dark.svg`. Documenter's sidebar picks them up
-  automatically, including the dark-theme switch; there is no PNG. If the SVGs change, copy them
-  over (the README links `docs/assets/fftl-logo.svg` directly).
+- **Logo:** three hand-built SVGs in `docs/assets/`, each by size of the place it sits in:
+  `fftl-main.svg` (wordmark with spectrum underline, everyday use), `fftl-icon.svg` (bars only,
+  16-48 px), `fftl-logo.svg` (wide: butterfly, wordmark and spectrum, for headers with room; the
+  README links it). `fftl-main-dark.svg` and `fftl-logo-dark.svg` are the dark-ground variants.
+  Copies in `docs/src/assets/`: `logo.svg` and `logo-dark.svg` (main; Documenter's sidebar picks
+  them up, including the dark-theme switch), `fftl-wide.svg` (home page header), `favicon.ico`
+  (from `fftl-icon.svg`: `rsvg-convert` to 16, 32 and 48 px PNGs, then `magick` to combine them;
+  `magick` alone drops the stems). No other raster images. If the SVGs change, copy them over.
 
 ## Verification rules
 
