@@ -258,16 +258,6 @@ function test_many(T)
     @CHECK close(b, ref, T), "$name: vs FFTW.jl"
     F(pre, :destroy_plan)(p)
   end
-  # rejected layouts: gaps (stride 2, larger embed, larger dist), different in/out dist
-  buf = zeros(Complex{T}, 1000); out = zeros(Complex{T}, 1000)
-  n = Cint[4, 5]; big = Cint[4, 6]
-  for (what, ie, is, id, od) in (("stride 2", C_NULL, 2, 40, 40), ("embed larger than n", pointer(big), 1, 24, 24),
-                                 ("dist with a gap", C_NULL, 1, 21, 21), ("in and out dist differ", C_NULL, 1, 20, 40))
-    p = GC.@preserve buf out n big F(pre, :plan_many_dft)(Cint(2), pointer(n), Cint(3), vp(buf), Ptr{Cint}(ie),
-          Cint(is), Cint(id), vp(out), Ptr{Cint}(ie), Cint(is), Cint(od), Cint(-1), flag())
-    @CHECK p == C_NULL, "$pre many_dft rejects $what"
-    @CHECK occursin("FFTW interface", lasterr()), "$pre many_dft $what: message"
-  end
   # howmany = 0: a valid plan that computes nothing
   let x = randn(Complex{T}, 8), y = zeros(Complex{T}, 8), n = Cint[8]
     p = GC.@preserve x y n F(pre, :plan_many_dft)(Cint(1), pointer(n), Cint(0), vp(x), Ptr{Cint}(C_NULL),
@@ -331,7 +321,7 @@ function test_guru(T, I, tag)
       @CHECK close(b, ref, T), "$name: vs FFTW.jl"
       F(pre, :destroy_plan)(p)
     end
-    # r2c / c2r out of place; FFTL needs the halved dimension to be the lowest transformed one
+    # r2c / c2r out of place, with the halved dimension the lowest transformed one (dense)
     k >= 1 || continue
     hj = minimum(tj)
     tjr = [setdiff(tj, hj); hj]
@@ -361,30 +351,286 @@ function test_guru(T, I, tag)
       F(pre, :destroy_plan)(q)
     end
   end
-  # rejected: halved dimension not the fastest-varying transformed one, transposed output,
-  # split arrays
-  let x = zeros(T, 6, 8), y = zeros(Complex{T}, 6, 5)
-    td = [I(6, 1, 1), I(8, 6, 6)]                      # FFTW's last dimension (halved) is Julia's 2nd
-    p = GC.@preserve x y td F(pre, Symbol(:plan_, tag, :_dft_r2c))(Cint(2), pointer(td), Cint(0),
-          Ptr{I}(C_NULL), vp(x), vp(y), flag())
-    @CHECK p == C_NULL, "$pre $tag r2c with the halved dimension not fastest: rejected"
-    @CHECK occursin("halved", lasterr()), "$pre $tag r2c halved dimension: message"
+end
+
+# --- every layout: strided, embedded, split (the copy fallback) ------------------------------
+
+# One side (input or output) of a transform in a user layout. kind: :real (real numbers),
+# :inter (interleaved complex), :split (separate real and imaginary arrays), :splitinter
+# (an interleaved array passed to the split interface: stride 2, imaginary part one real
+# further). Strides and base are in elements of the side (complex numbers for :inter and
+# :splitinter, real numbers otherwise); wstrides gives the strides FFTW sees.
+struct Side{T}
+  kind::Symbol
+  bufs::Vector{Vector{T}}
+  base::Int
+  strides::Vector{Int}
+  counts::Vector{Int}
+end
+
+cplx(s::Side) = s.kind != :real
+wunit(s::Side) = s.kind == :splitinter ? 2 : 1
+wstrides(s::Side) = wunit(s) .* s.strides
+function ptrs(s::Side{T}) where {T}
+  if s.kind == :real || s.kind == :split
+    p1 = Ptr{Cvoid}(pointer(s.bufs[1])) + s.base * sizeof(T)
+    p2 = s.kind == :split ? Ptr{Cvoid}(pointer(s.bufs[2])) + s.base * sizeof(T) : Ptr{Cvoid}(C_NULL)
+  else
+    p1 = Ptr{Cvoid}(pointer(s.bufs[1])) + 2s.base * sizeof(T)
+    p2 = s.kind == :splitinter ? p1 + sizeof(T) : Ptr{Cvoid}(C_NULL)
   end
-  let x = zeros(Complex{T}, 4, 6), y = zeros(Complex{T}, 6, 4)
-    td = [I(4, 1, 6), I(6, 4, 1)]
-    p = GC.@preserve x y td F(pre, Symbol(:plan_, tag, :_dft))(Cint(2), pointer(td), Cint(0),
-          Ptr{I}(C_NULL), vp(x), vp(y), Cint(-1), flag())
-    @CHECK p == C_NULL, "$pre $tag dft with transposed output: rejected"
+  p1, p2
+end
+offset(s::Side, I) = s.base + sum((I[d] - 1) * s.strides[d] for d in eachindex(s.strides); init = 0)
+function getv(s::Side{T}, I) where {T}
+  o = offset(s, I)
+  s.kind == :real ? s.bufs[1][o + 1] :
+  s.kind == :split ? Complex(s.bufs[1][o + 1], s.bufs[2][o + 1]) :
+                     Complex(s.bufs[1][2o + 1], s.bufs[1][2o + 2])
+end
+function setv!(s::Side, I, v)
+  o = offset(s, I)
+  if s.kind == :real
+    s.bufs[1][o + 1] = real(v)
+  elseif s.kind == :split
+    s.bufs[1][o + 1] = real(v); s.bufs[2][o + 1] = imag(v)
+  else
+    s.bufs[1][2o + 1] = real(v); s.bufs[1][2o + 2] = imag(v)
   end
-  let x = zeros(T, 16), td = [I(8, 2, 2)]
-    p = GC.@preserve x td F(pre, Symbol(:plan_, tag, :_split_dft))(Cint(1), pointer(td), Cint(0),
-          Ptr{I}(C_NULL), vp(x), vp(x) + sizeof(T), vp(x), vp(x) + sizeof(T), flag())
-    @CHECK p == C_NULL, "$pre $tag split_dft: rejected"
-    @CHECK occursin("split", lasterr()), "$pre $tag split_dft: message"
-    for s in (:_split_dft_r2c, :_split_dft_c2r)
-      @CHECK F(pre, Symbol(:plan_, tag, s))(Cint(1), pointer(td), Cint(0), Ptr{I}(C_NULL), vp(x), vp(x),
-               vp(x), flag()) == C_NULL, "$pre $tag $s: rejected"
+end
+logical(s::Side) = [getv(s, Tuple(I)) for I in CartesianIndices(Tuple(s.counts))]
+
+# Random strides for counts: dimensions in a random order (first: the one at `first`, if
+# given), a gap of 0-2 elements after each, some strides negative (neg). Returns the strides,
+# the base offset (the position of element 0) and the number of elements spanned.
+function rand_strides(counts::Vector{Int}; first::Int = 0, neg::Bool = false)
+  k = length(counts)
+  order = shuffle(1:k)
+  first > 0 && (order = [first; setdiff(order, first)])
+  st = zeros(Int, k); acc = 1
+  for d in order
+    st[d] = acc
+    acc *= counts[d] + rand(0:2)
+  end
+  base = 0
+  if neg
+    for d in 1:k
+      if rand() < 0.4
+        base += (counts[d] - 1) * st[d]; st[d] = -st[d]
+      end
     end
+  end
+  st, base, acc
+end
+
+newside(::Type{T}, kind, st, base, len, counts) where {T} =
+  Side{T}(kind, kind == :split ? [randn(T, len), randn(T, len)] :
+                kind == :real ? [randn(T, len)] : [randn(T, 2len)], base, st, counts)
+
+# The transform of one random layout through the guru interface (I: WIodim or WIodim64):
+# transform dimensions ns (FFTW's order; the last one is the halved one of r2c/c2r), vector
+# dimensions nv, the sides' kinds ikind/okind. mode :oop (random order and gaps), :neg (also
+# negative strides) or :inplace (one buffer: the same strides for c2c and r2r; for r2c/c2r
+# FFTW's padded layout with the halved dimension fastest and gaps in the others).
+function check_layout(T, I, typ::Symbol, ns::Vector{Int}, nv::Vector{Int}, ikind::Symbol,
+                      okind::Symbol, mode::Symbol, name::String; newarrays::Bool = false)
+  pre = pfx(T); k = length(ns)
+  n = [ns; nv]
+  h = k >= 1 ? ns[k] ÷ 2 + 1 : 1
+  cn = copy(n); (typ == :r2c || typ == :c2r) && k >= 1 && (cn[k] = h)
+  incnt = typ == :c2r ? cn : n
+  outcnt = typ == :r2c ? cn : n
+  if mode == :inplace
+    if typ == :c2c || typ == :r2r
+      st, base, len = rand_strides(n)
+      isd = newside(T, ikind, st, base, len, incnt)
+      osd = Side{T}(okind, isd.bufs, base, st, outcnt)
+    else
+      cst, _, len = rand_strides(cn; first = k)
+      rst = [d == k ? 1 : 2cst[d] for d in eachindex(cst)]
+      bufs = [randn(T, 2len)]
+      rs = Side{T}(:real, bufs, 0, rst, n)
+      cs = Side{T}(typ == :r2c ? okind : ikind, bufs, 0, cst, cn)
+      isd, osd = typ == :r2c ? (rs, cs) : (cs, rs)
+    end
+  else
+    ist, ib, il = rand_strides(incnt; neg = mode == :neg)
+    ost, ob, ol = rand_strides(outcnt; neg = mode == :neg)
+    isd = newside(T, ikind, ist, ib, il, incnt)
+    osd = newside(T, okind, ost, ob, ol, outcnt)
+  end
+  kinds = Cint[ns[j] == 1 ? rand(setdiff(ALLKINDS, (FFTW.REDFT00,))) : rand(ALLKINDS) for j in 1:k]
+  split = ikind in (:split, :splitinter) || okind in (:split, :splitinter)
+  sfx = I == WIodim ? "guru_" : "guru64_"
+  iws = wstrides(isd); ows = wstrides(osd)
+  td = [I(n[j], iws[j], ows[j]) for j in 1:k]
+  vd = [I(n[j], iws[j], ows[j]) for j in k+1:length(n)]
+  plan = (i1, i2, o1, o2) -> GC.@preserve td vd kinds begin
+    tdp = isempty(td) ? Ptr{I}(C_NULL) : pointer(td); vdp = isempty(vd) ? Ptr{I}(C_NULL) : pointer(vd)
+    if typ == :c2c
+      split ? F(pre, Symbol(:plan_, sfx, :split_dft))(Cint(k), tdp, Cint(length(vd)), vdp, i1, i2, o1, o2, flag()) :
+              F(pre, Symbol(:plan_, sfx, :dft))(Cint(k), tdp, Cint(length(vd)), vdp, i1, o1, Cint(-1), flag())
+    elseif typ == :r2c
+      split ? F(pre, Symbol(:plan_, sfx, :split_dft_r2c))(Cint(k), tdp, Cint(length(vd)), vdp, i1, o1, o2, flag()) :
+              F(pre, Symbol(:plan_, sfx, :dft_r2c))(Cint(k), tdp, Cint(length(vd)), vdp, i1, o1, flag())
+    elseif typ == :c2r
+      split ? F(pre, Symbol(:plan_, sfx, :split_dft_c2r))(Cint(k), tdp, Cint(length(vd)), vdp, i1, i2, o1, flag()) :
+              F(pre, Symbol(:plan_, sfx, :dft_c2r))(Cint(k), tdp, Cint(length(vd)), vdp, i1, o1, flag())
+    else
+      F(pre, Symbol(:plan_, sfx, :r2r))(Cint(k), tdp, Cint(length(vd)), vdp, i1, o1, pointer(kinds), flag())
+    end
+  end
+  verify_layout(T, typ, ns, nv, isd, osd, kinds, mode == :inplace, plan, name; newarrays = newarrays)
+end
+
+# Runs plan(i1, i2, o1, o2) (pointers of the sides; the imaginary parts for split sides) and
+# checks the result against FFTW.jl on the logical arrays: the transform dimensions ns first
+# (FFTW's order, the last one halved for r2c/c2r), then the vector dimensions nv. c2r: the input
+# is replaced by the half spectrum of a real array.
+function verify_layout(T, typ::Symbol, ns::Vector{Int}, nv::Vector{Int}, isd::Side, osd::Side,
+                       kinds::Vector{Cint}, inplace::Bool, plan, name::String; newarrays::Bool = false)
+  pre = pfx(T); k = length(ns); n = [ns; nv]
+  split = isd.kind in (:split, :splitinter) || osd.kind in (:split, :splitinter)
+  mode = inplace ? :inplace : :oop
+  x = logical(isd)
+  typ == :r2c || typ == :r2r ? (x = real.(x)) : nothing
+  # c2r: the input must be the half spectrum of a real array
+  if typ == :c2r
+    k >= 1 || return
+    xr = randn(Float64, n...)
+    x = Complex{T}.(FFTW.rfft(xr, [k; 1:k-1]))
+    for J in CartesianIndices(Tuple(isd.counts))
+      setv!(isd, Tuple(J), x[J])
+    end
+  end
+  ref = typ == :c2c ? (k == 0 ? ComplexF64.(x) : FFTW.fft(ComplexF64.(x), 1:k)) :
+        typ == :r2c ? FFTW.rfft(Float64.(x), [k; 1:k-1]) :
+        typ == :c2r ? FFTW.brfft(ComplexF64.(x), n[k], [k; 1:k-1]) :
+                      (k == 0 ? Float64.(x) : FFTW.r2r(Float64.(x), Tuple(Int.(kinds)), 1:k))
+  outbefore = [copy(b) for b in osd.bufs]
+  GC.@preserve isd osd begin
+    i1, i2 = ptrs(isd); o1, o2 = ptrs(osd)
+    p = plan(i1, i2, o1, o2)
+    @CHECK p != C_NULL, "$name: plan ($(lasterr()))"
+    p == C_NULL && return
+    if newarrays
+      # the same layout in fresh buffers, through the new-array execute function
+      isd2 = Side{T}(isd.kind, [copy(b) for b in isd.bufs], isd.base, isd.strides, isd.counts)
+      osd2 = mode == :inplace ? Side{T}(osd.kind, isd2.bufs, osd.base, osd.strides, osd.counts) :
+                                Side{T}(osd.kind, [copy(b) for b in osd.bufs], osd.base, osd.strides, osd.counts)
+      GC.@preserve isd2 osd2 begin
+        j1, j2 = ptrs(isd2); q1, q2 = ptrs(osd2)
+        if typ == :c2c
+          split ? F(pre, :execute_split_dft)(p, j1, j2, q1, q2) : F(pre, :execute_dft)(p, j1, q1)
+        elseif typ == :r2c
+          split ? F(pre, :execute_split_dft_r2c)(p, j1, q1, q2) : F(pre, :execute_dft_r2c)(p, j1, q1)
+        elseif typ == :c2r
+          split ? F(pre, :execute_split_dft_c2r)(p, j1, j2, q1) : F(pre, :execute_dft_c2r)(p, j1, q1)
+        else
+          F(pre, :execute_r2r)(p, j1, q1)
+        end
+      end
+      osd = osd2           # its buffers started as copies of outbefore
+    else
+      F(pre, :execute)(p)
+    end
+    F(pre, :destroy_plan)(p)
+  end
+  y = logical(osd)
+  got = typ == :c2r || typ == :r2r ? real.(y) : y
+  @CHECK close(got, ref, T), "$name: vs FFTW.jl (rel err $(relerr(ComplexF64.(got), ComplexF64.(ref))))"
+  # out of place: the gaps of the output keep their values
+  if mode != :inplace
+    touched = falses(sum(length, osd.bufs))
+    lens = length(osd.bufs[1])
+    for J in CartesianIndices(Tuple(osd.counts))
+      o = offset(osd, Tuple(J))
+      if osd.kind == :real
+        touched[o + 1] = true
+      elseif osd.kind == :split
+        touched[o + 1] = true; touched[lens + o + 1] = true
+      else
+        touched[2o + 1] = true; touched[2o + 2] = true
+      end
+    end
+    after = reduce(vcat, osd.bufs); before = reduce(vcat, outbefore)
+    @CHECK after[.!touched] == before[.!touched], "$name: gaps of the output untouched"
+  end
+end
+
+function test_layouts(T, I, tag)
+  pre = pfx(T)
+  sizes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 16]
+  for trial in 1:40
+    k = rand(0:3); v = rand(0:2)
+    ns = rand(sizes, k); nv = rand(sizes, v)
+    for typ in (:c2c, :r2c, :c2r, :r2r)
+      (typ == :r2c || typ == :c2r) && k == 0 && continue
+      for mode in (:oop, :neg, :inplace)
+        ck = rand([:inter, :split, :splitinter])
+        ik, ok = typ == :c2c ? (ck, ck) : typ == :r2c ? (:real, ck) : typ == :c2r ? (ck, :real) : (:real, :real)
+        # in place, a real array shares its storage with an interleaved complex one
+        mode == :inplace && (typ == :r2c || typ == :c2r) && ck == :split && continue
+        nw = rand(Bool)
+        check_layout(T, I, typ, ns, nv, ik, ok, mode,
+                     "$pre $tag layout $typ ns=$ns nv=$nv $ik→$ok $mode newarrays=$nw"; newarrays = nw)
+      end
+    end
+  end
+  # one copied plan on 8 tasks at once: every execution has its own buffer
+  let n = Cint[48], x = zeros(Complex{T}, 3, 48), y = zeros(Complex{T}, 3, 48)
+    p = GC.@preserve x y n F(pre, :plan_many_dft)(Cint(1), pointer(n), Cint(2), vp(x), Ptr{Cint}(C_NULL),
+          Cint(3), Cint(1), vp(y), Ptr{Cint}(C_NULL), Cint(3), Cint(1), Cint(-1), flag())
+    @CHECK occursin("copied", unsafe_string(F(pre, :sprint_plan)(p))), "$pre $tag stride 3: copy fallback"
+    runs = [Tuple{Matrix{Complex{T}},Matrix{Complex{T}}}[] for _ in 1:8]
+    tasks = map(1:8) do t
+      Threads.@spawn for _ in 1:10
+        local u = randn(Complex{T}, 3, 48)
+        local v = zeros(Complex{T}, 3, 48)
+        GC.@preserve u v F(pre, :execute_dft)(p, vp(u), vp(v))
+        push!(runs[t], (u, v))
+      end
+    end
+    foreach(wait, tasks)
+    good = count(((u, v),) -> close(v[1:2, :], cref(u[1:2, :], 2, -1), T) && all(iszero, v[3, :]), reduce(vcat, runs))
+    @CHECK good == 80, "$pre $tag one copied plan on 8 tasks: $good of 80 correct"
+    F(pre, :destroy_plan)(p)
+  end
+end
+
+# The advanced interface with embedded arrays: rank, n, howmany, inembed/onembed larger than
+# the (real or complex) extents, strides and distances with gaps; out of place.
+function test_many_layouts(T)
+  pre = pfx(T)
+  for trial in 1:30, typ in (:c2c, :r2c, :c2r, :r2r)
+    rank = rand(1:3); ns = rand([1, 2, 3, 5, 6, 8, 9], rank); howmany = rand(1:3)
+    h = ns[rank] ÷ 2 + 1
+    cn = copy(ns); typ in (:r2c, :c2r) && (cn[rank] = h)
+    icnt = typ == :c2r ? cn : ns; ocnt = typ == :r2c ? cn : ns
+    emb(c) = [c[1]; [c[i] + rand(0:2) for i in 2:length(c)]]
+    ie = emb(icnt); oe = emb(ocnt)
+    is = rand(1:3); os = rand(1:3)
+    ist = [is * prod(ie[j+1:end]; init = 1) for j in 1:rank]
+    ost = [os * prod(oe[j+1:end]; init = 1) for j in 1:rank]
+    idist = is * prod(ie) + rand(0:3); odist = os * prod(oe) + rand(0:3)
+    ik = typ in (:c2c, :c2r) ? :inter : :real
+    ok = typ in (:c2c, :r2c) ? :inter : :real
+    il = idist * howmany; ol = odist * howmany
+    isd = newside(T, ik, [ist; idist], 0, il, [icnt; howmany])
+    osd = newside(T, ok, [ost; odist], 0, ol, [ocnt; howmany])
+    kinds = Cint[ns[j] == 1 ? rand(setdiff(ALLKINDS, (FFTW.REDFT00,))) : rand(ALLKINDS) for j in 1:rank]
+    nn = Cint.(ns); iec = Cint.(ie); oec = Cint.(oe)
+    plan = (i1, i2, o1, o2) -> GC.@preserve nn iec oec kinds begin
+      args = (Cint(rank), pointer(nn), Cint(howmany), i1, pointer(iec), Cint(is), Cint(idist),
+              o1, pointer(oec), Cint(os), Cint(odist))
+      typ == :c2c ? F(pre, :plan_many_dft)(args..., Cint(-1), flag()) :
+      typ == :r2c ? F(pre, :plan_many_dft_r2c)(args..., flag()) :
+      typ == :c2r ? F(pre, :plan_many_dft_c2r)(args..., flag()) :
+                    F(pre, :plan_many_r2r)(args..., pointer(kinds), flag())
+    end
+    verify_layout(T, typ, ns, [howmany], isd, osd, kinds, false, plan,
+                  "$pre many layout $typ n=$ns howmany=$howmany inembed=$ie onembed=$oe stride=$is,$os dist=$idist,$odist";
+                  newarrays = rand(Bool))
   end
 end
 
@@ -575,6 +821,9 @@ for T in (Float64, Float32)
   test_many(T)
   test_guru(T, WIodim, :guru)
   test_guru(T, WIodim64, :guru64)
+  test_layouts(T, WIodim, :guru)
+  test_layouts(T, WIodim64, :guru64)
+  test_many_layouts(T)
   test_execute(T)
   test_misc(T)
   empty!(WCHARS)

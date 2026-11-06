@@ -1,7 +1,7 @@
 /* Differential test of the FFTW3 interface: one program, written against libfftl's fftw3.h,
  * built and run twice by fftw3_ctest.sh, once linked against FFTW itself (FFTW_jll) and once
  * against libfftl's libfftw3/libfftw3f links. Every case is checked here against a direct
- * DFT or r2r sum in long double; the outputs go to binary files that fftw3_compare.jl
+ * DFT or r2r sum in long double, including strided, embedded and split layouts; the outputs go to binary files that fftw3_compare.jl
  * compares between the two builds (this also covers sizes beyond the direct sums).
  *
  * The FFTW build passing shows that fftw3.h (prototypes, fftw_iodim, kind and flag values)
@@ -175,6 +175,29 @@ static void ref_r2r_dim(LD *a, int rank, const int *n, int d, int kind) {
   }
   free(x);
   free(y);
+}
+
+/* The position of element idx (row-major index into an array of size counts) in a layout with
+ * the given strides per dimension */
+static long lay_off(int k, const int *counts, const long *strides, long idx) {
+  long o = 0;
+  for (int d = k - 1; d >= 0; d--) {
+    o += (idx % counts[d]) * strides[d];
+    idx /= counts[d];
+  }
+  return o;
+}
+
+/* The row-major index into an array of size to of the element with the same subscripts as
+ * element idx of an array of size from */
+static long lay_remap(int k, const int *from, const int *to, long idx) {
+  long r = 0, m = 1;
+  for (int d = k - 1; d >= 0; d--) {
+    r += (idx % from[d]) * m;
+    m *= to[d];
+    idx /= from[d];
+  }
+  return r;
 }
 
 /* Relative maximum error of a computed array (stride 1, count values) against a reference */
