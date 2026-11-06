@@ -37,7 +37,6 @@ makedocs(;
   format = DocumenterVitepress.MarkdownVitepress(;
     repo = "https://github.com/JuliaMath/FFTL.jl",
     devurl = "dev",
-    deploy_url = "JuliaMath.github.io/FFTL.jl",
   ),
   # Diátaxis, as in NFFT.jl: learn, do, understand, look up
   pages = [
