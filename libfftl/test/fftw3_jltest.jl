@@ -547,7 +547,7 @@ function test_misc(T)
   rm(fn)
   @CHECK cs(F(pre, :import_wisdom_from_filename), fn) == 0, "$pre import_wisdom_from_filename of a missing file: 0"
   @CHECK cs(F(pre, :export_wisdom_to_filename), "/nonexistent-dir/wisdom") == 0, "$pre export_wisdom_to_filename unwritable: 0"
-  @CHECK F(pre, :import_system_wisdom)() == 1, "$pre import_system_wisdom"
+  @CHECK F(pre, :import_system_wisdom)() == 0, "$pre import_system_wisdom"
   F(pre, :forget_wisdom)()
   F(pre, :cleanup)()
   F(pre, :cleanup_threads)()

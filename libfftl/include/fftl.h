@@ -190,9 +190,9 @@ size_t fftl_last_error(char *buf, size_t buf_len);
  * the library is one of the workers: a runtime baked with 4 runs a threads = 4 plan on all
  * 4, while the calling thread waits for them inside fftl_plan_execute.
  *
- * All entry points may be called from the loading thread (and, with the usual care for
- * embedded runtimes, from other host threads that the Julia runtime knows about; the plain
- * case is a single caller thread). Plans are created and destroyed under the library's
+ * All entry points may be called from any thread of the host program, including threads it
+ * created itself, and from several threads at once (the Julia runtime adopts a foreign
+ * thread on its first call). Plans are created and destroyed under the library's
  * registry lock; a single plan must not execute on two threads at the same time; different
  * plans can run in parallel. Destroying a plan while it executes is not allowed (the
  * executing thread keeps its own reference until fftl_plan_execute returns, but the handle

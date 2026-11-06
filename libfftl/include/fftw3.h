@@ -19,7 +19,7 @@
  *   wisdom, so such a plan is NULL. Planning never reads or writes the arrays; c2r keeps
  *   its input out of place.
  * - Wisdom export writes a placeholder, import accepts anything and returns 1 (0 if a named
- *   file cannot be opened).
+ *   file cannot be opened); fftw_import_system_wisdom returns 0 (there is no system wisdom).
  * - fftw_cost and fftw_flops return an estimate (5 N log2 N for a complex DFT of N points,
  *   half of it for real transforms), not a count of the operations FFTL performs.
  * - Any alignment is fine; fftw_alignment_of returns 0 for every pointer. fftw_malloc

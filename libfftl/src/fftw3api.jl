@@ -813,8 +813,9 @@ for (T, pre) in ((Float64, "fftw_"), (Float32, "fftwf_"))
     Base.@ccallable function $(wname(:export_wisdom))(write_char::Ptr{Cvoid}, data::Ptr{Cvoid})::Cvoid
       wexport_callback(write_char, data)
     end
+    # There is no system wisdom; FFTW returns 0 in that case as well.
     Base.@ccallable function $(wname(:import_system_wisdom))()::Cint
-      Cint(1)
+      Cint(0)
     end
     Base.@ccallable function $(wname(:import_wisdom_from_filename))(name::Cstring)::Cint
       wimport_filename(name)
