@@ -190,9 +190,9 @@ import{_ as i,o as a,c as n,ao as l}from"./chunks/framework.BPvdpnZ9.js";const o
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * the library is one of the workers: a runtime baked with 4 runs a threads = 4 plan on all</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * 4, while the calling thread waits for them inside fftl_plan_execute.</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> *</span></span>
-<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * All entry points may be called from the loading thread (and, with the usual care for</span></span>
-<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * embedded runtimes, from other host threads that the Julia runtime knows about; the plain</span></span>
-<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * case is a single caller thread). Plans are created and destroyed under the library&#39;s</span></span>
+<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * All entry points may be called from any thread of the host program, including threads it</span></span>
+<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * created itself, and from several threads at once (the Julia runtime adopts a foreign</span></span>
+<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * thread on its first call). Plans are created and destroyed under the library&#39;s</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * registry lock; a single plan must not execute on two threads at the same time; different</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * plans can run in parallel. Destroying a plan while it executes is not allowed (the</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * executing thread keeps its own reference until fftl_plan_execute returns, but the handle</span></span>
