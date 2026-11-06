@@ -1,0 +1,4 @@
+# The trimmed image keeps only what the entry points reach: the package precompile workload
+# would only lengthen the build.
+[FFTL]
+precompile_workload = "none"

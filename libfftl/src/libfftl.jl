@@ -314,3 +314,7 @@ end
 Base.@ccallable function fftl_version(buf::Ptr{UInt8}, len::Csize_t)::Csize_t
   copy_cstr(codeunits("0.1.0"), buf, Int(len))
 end
+
+# --- the FFTW3 interface (include/fftw3.h) --------------------------------------------
+
+include("fftw3api.jl")
