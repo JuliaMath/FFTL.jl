@@ -4,12 +4,19 @@
 # FFTW.jl (src/fft.jl). One generic implementation per entry point; the @ccallable methods at the
 # end instantiate it for Float64 and Float32.
 #
-# Covered: dense arrays through the basic, advanced (plan_many) and guru/guru64 planners,
-# fftw_execute and the new-array execute functions, plan copies, memory, wisdom (none is kept),
-# threads, plan information. Rejected with C NULL and a message in fftl_last_error: layouts that
-# are not one dense array in some order of dimensions (embedded subarrays, gaps, different input
-# and output layouts), r2c/c2r whose halved dimension is not the fastest-varying transformed one,
-# split complex arrays, and FFTW_WISDOM_ONLY (there is never wisdom).
+# Covered: every layout of the basic, advanced (plan_many) and guru/guru64 planners, interleaved
+# and split complex arrays, fftw_execute and the new-array execute functions, plan copies,
+# memory, wisdom (none is kept), threads, plan information. Planning returns C NULL with a
+# message in fftl_last_error for invalid arguments and for FFTW_WISDOM_ONLY (there is never
+# wisdom).
+#
+# Layouts. When the transform and vector dimensions form one dense array (in some order of
+# dimensions, with the same layout for input and output; r2c/c2r: FFTW's real and complex
+# layouts of that array, padded in place, with the halved dimension first among the transform
+# dimensions), the FFTL plan runs on the user's arrays. Every other layout (gaps, embedded
+# subarrays, different input and output layouts, negative strides, the halved dimension not
+# the fastest-varying one, split arrays) goes through the copy fallback: gather into a dense
+# buffer, run the plan in place there, scatter into the output layout.
 #
 # Mapping. FFTW arrays are row major (n[0] varies slowest), FFTL's column major; an iodim list is
 # turned into one FFTL array by sorting the dimensions by stride (solve_layout), so the basic
@@ -20,7 +27,7 @@
 # that it is never NULL. Each plan record keeps idle FFTL plans: an execution takes one (or
 # builds another when all are busy) and returns it afterwards, so that the new-array execute
 # functions can run one plan on several threads at once, as FFTW allows. FFTL plans own their
-# work buffers; the copies share the cached tables.
+# work buffers (and the buffer of the copy fallback); the copies share the cached tables.
 
 const W_C2C, W_R2C, W_C2R, W_R2R = 0, 1, 2, 3
 
@@ -47,29 +54,60 @@ struct WIodim64
   os::Int
 end
 
-# One FFTW plan. P is the FFTL plan type; `free` holds the idle FFTL plans of this record.
-mutable struct WPlan{P}
+# The copy fallback of a layout that is not one dense array: the user's arrays are gathered into
+# a dense column-major buffer, the FFTL plan runs in place there, and the result is scattered
+# into the output layout. Per buffer dimension: the counts on the input and output side (they
+# differ only along the halved dimension of r2c/c2r), the strides in the user's arrays (FFTW's
+# units: complex numbers for interleaved arrays, real numbers for real and split arrays), and
+# the strides in the buffer in the same units.
+struct WCopy
+  nin::Vector{Int}
+  nout::Vector{Int}
+  istr::Vector{Int}
+  ostr::Vector{Int}
+  bin::Vector{Int}
+  bout::Vector{Int}
+  buflen::Int                     # real numbers
+end
+WCopy() = WCopy(Int[], Int[], Int[], Int[], Int[], Int[], 0)
+
+# An idle FFTL plan of a plan record with its own buffer for the copy fallback (empty if the
+# record needs none), so that concurrent executions never share a buffer.
+struct WSlot{P,T}
+  plan::P
+  buf::Vector{T}
+end
+
+# One FFTW plan. P is the FFTL plan type, T its real type; `free` holds the idle FFTL plans of
+# this record. Split arrays: pin2/pout2 are the imaginary parts (C_NULL for interleaved and real
+# arrays).
+mutable struct WPlan{P,T}
   typ::Int
   inplace::Bool
+  split::Bool
   pin::Ptr{Cvoid}
+  pin2::Ptr{Cvoid}
   pout::Ptr{Cvoid}
+  pout2::Ptr{Cvoid}
   noop::Bool                      # a vector dimension of length 0: nothing to compute
   sz::Vector{Int}
   region::Vector{Int}
   kinds::Vector{FFTL.R2RKind}
   sign::Int
   threads::Int
-  free::Vector{P}
+  copy::Bool
+  cp::WCopy
+  free::Vector{WSlot{P,T}}
   lock::ReentrantLock
   refs::Int                       # fftw_copy_plan references
 end
 
-const WREG_C2C_F64 = Union{Nothing,WPlan{RPlan{Float64}}}[]
-const WREG_C2C_F32 = Union{Nothing,WPlan{RPlan{Float32}}}[]
-const WREG_RF_F64 = Union{Nothing,WPlan{RRFFTPlan{Float64}}}[]
-const WREG_RF_F32 = Union{Nothing,WPlan{RRFFTPlan{Float32}}}[]
-const WREG_RR_F64 = Union{Nothing,WPlan{RR2RPlan{Float64}}}[]
-const WREG_RR_F32 = Union{Nothing,WPlan{RR2RPlan{Float32}}}[]
+const WREG_C2C_F64 = Union{Nothing,WPlan{RPlan{Float64},Float64}}[]
+const WREG_C2C_F32 = Union{Nothing,WPlan{RPlan{Float32},Float32}}[]
+const WREG_RF_F64 = Union{Nothing,WPlan{RRFFTPlan{Float64},Float64}}[]
+const WREG_RF_F32 = Union{Nothing,WPlan{RRFFTPlan{Float32},Float32}}[]
+const WREG_RR_F64 = Union{Nothing,WPlan{RR2RPlan{Float64},Float64}}[]
+const WREG_RR_F32 = Union{Nothing,WPlan{RR2RPlan{Float32},Float32}}[]
 wreg_c2c(::Type{Float64}) = WREG_C2C_F64
 wreg_c2c(::Type{Float32}) = WREG_C2C_F32
 wreg_rf(::Type{Float64}) = WREG_RF_F64
@@ -116,12 +154,12 @@ function wdense(order::Vector{WDim}, h::Int, inplace::Bool)
   true
 end
 
-# Insertion sort by real stride (a handful of dimensions; sort! with `by` does not compile ahead
-# of time).
+# Sort by the magnitude of the real stride (a handful of dimensions; sort! with `by` does not
+# compile ahead of time).
 function wsort!(v::Vector{WDim})
   for i in 2:length(v)
     x = v[i]; j = i - 1
-    while j >= 1 && v[j].rs > x.rs
+    while j >= 1 && abs(v[j].rs) > abs(x.rs)
       v[j + 1] = v[j]; j -= 1
     end
     v[j + 1] = x
@@ -134,18 +172,22 @@ struct WLayout
   sz::Vector{Int}
   region::Vector{Int}
   tidx::Vector{Int}       # per region entry: the FFTW transform dimension (1-based)
+  copy::Bool
+  cp::WCopy
 end
 
 # The FFTL array for transform dimensions td and vector dimensions vd, given as (n, is, os)
-# with FFTW's units (r2c: is real, os complex; c2r: is complex, os real). Throws ArgumentError
-# for anything that is not a dense array.
-function solve_layout(td::Vector{NTuple{3,Int}}, vd::Vector{NTuple{3,Int}}, typ::Int, inplace::Bool)
+# with FFTW's units (r2c: is real, os complex; c2r: is complex, os real). If the dimensions form
+# one dense array (and dense_ok), the plan runs on the user's arrays; otherwise on a buffer
+# through the copy fallback (wcopy_layout).
+function solve_layout(td::Vector{NTuple{3,Int}}, vd::Vector{NTuple{3,Int}}, typ::Int, inplace::Bool,
+                      dense_ok::Bool)
   for x in td
     x[1] >= 1 || throw(ArgumentError("FFTW interface: transform sizes must be positive"))
   end
   for x in vd
     x[1] >= 0 || throw(ArgumentError("FFTW interface: vector sizes must be nonnegative"))
-    x[1] == 0 && return WLayout(true, Int[], Int[], Int[])
+    x[1] == 0 && return WLayout(true, Int[], Int[], Int[], false, WCopy())
   end
   real = typ == W_R2C || typ == W_C2R
   rank = length(td)
@@ -168,15 +210,10 @@ function solve_layout(td::Vector{NTuple{3,Int}}, vd::Vector{NTuple{3,Int}}, typ:
     rs, cs = typ == W_C2R ? (os, is) : (is, os)
     n > 1 && push!(dims, WDim(n, rs, cs, 0))
   end
-  if !real
-    for d in dims
-      d.rs == d.cs || throw(ArgumentError("FFTW interface: input and output layouts differ (not supported)"))
-    end
-  end
   wsort!(dims)
   order = WDim[]
   found = false
-  if real
+  if dense_ok && real
     # The halved dimension must come before the other transform dimensions (FFTL halves the
     # first dimension of the region); try each place up to there.
     ft = length(dims) + 1
@@ -201,11 +238,18 @@ function solve_layout(td::Vector{NTuple{3,Int}}, vd::Vector{NTuple{3,Int}}, typ:
         break
       end
     end
-  else
+  elseif dense_ok
     found = wdense(dims, 0, inplace)
     order = dims
   end
-  found || throw(ArgumentError("FFTW interface: the layout is not one dense array with the halved dimension first (not supported)"))
+  if !found
+    # Copy fallback: the halved dimension first, the others by input stride.
+    order = WDim[]
+    real && push!(order, hdim)
+    for d in dims
+      push!(order, d)
+    end
+  end
   for d in ones
     push!(order, d)
   end
@@ -217,8 +261,37 @@ function solve_layout(td::Vector{NTuple{3,Int}}, vd::Vector{NTuple{3,Int}}, typ:
       push!(tidx, order[i].t)
     end
   end
+  cp = found ? WCopy() : wcopy_layout(order, typ)
   isempty(sz) && push!(sz, 1)
-  WLayout(false, sz, region, tidx)
+  WLayout(false, sz, region, tidx, !found, cp)
+end
+
+# The gather and scatter of the copy fallback for the buffer dimensions `order`. The buffer is
+# the dense column-major array the FFTL plan runs on in place: complex numbers for c2c, real
+# numbers for r2r, and for r2c/c2r FFTW's padded in-place layout (the halved dimension first,
+# 2(n ÷ 2 + 1) real or n ÷ 2 + 1 complex numbers long).
+function wcopy_layout(order::Vector{WDim}, typ::Int)
+  real = typ == W_R2C || typ == W_C2R
+  k = length(order)
+  nr = Int[]; nc = Int[]; sr = Int[]; sc = Int[]; ur = Int[]; uc = Int[]
+  accr = 1; accc = 1
+  for i in 1:k
+    d = order[i]
+    nh = real && i == 1 ? d.n ÷ 2 + 1 : d.n
+    push!(nr, d.n); push!(nc, nh)
+    push!(ur, d.rs); push!(uc, d.cs)
+    push!(sr, accr); push!(sc, accc)
+    accr *= real && i == 1 ? 2nh : d.n
+    accc *= nh
+  end
+  buflen = typ == W_R2R ? accr : 2accc          # real numbers
+  if typ == W_C2R
+    WCopy(nc, nr, uc, ur, sc, sr, buflen)
+  elseif typ == W_R2C
+    WCopy(nr, nc, ur, uc, sr, sc, buflen)
+  else
+    WCopy(nr, nr, ur, uc, sr, sr, buflen)
+  end
 end
 
 # Advanced interface → iodims. nembed empty means NULL: the logical sizes, for r2c/c2r with the
@@ -261,15 +334,18 @@ new_fftl(::Type{RRFFTPlan{T}}, r::WPlan) where {T} =
   RRFFTPlan{T}(r.sz, r.region, r.typ == W_R2C ? -1 : 1; threads = r.threads)
 new_fftl(::Type{RR2RPlan{T}}, r::WPlan) where {T} = RR2RPlan{T}(r.sz, r.kinds, r.region; threads = r.threads)
 
-function wrecord(::Type{P}, typ::Int, lay::WLayout, kinds::Vector{FFTL.R2RKind}, sign::Int,
-                 threads::Int, pin::Ptr{Cvoid}, pout::Ptr{Cvoid}) where {P}
-  r = WPlan{P}(typ, pin == pout, pin, pout, lay.noop, lay.sz, lay.region, kinds, sign, threads,
-               P[], ReentrantLock(), 1)
-  lay.noop || push!(r.free, new_fftl(P, r))
+new_slot(r::WPlan{P,T}) where {P,T} = WSlot{P,T}(new_fftl(P, r), Vector{T}(undef, r.copy ? r.cp.buflen : 0))
+
+function wrecord(::Type{P}, ::Type{T}, typ::Int, lay::WLayout, kinds::Vector{FFTL.R2RKind}, sign::Int,
+                 threads::Int, pin::Ptr{Cvoid}, pin2::Ptr{Cvoid}, pout::Ptr{Cvoid}, pout2::Ptr{Cvoid},
+                 split::Bool) where {P,T}
+  r = WPlan{P,T}(typ, pin == pout, split, pin, pin2, pout, pout2, lay.noop, lay.sz, lay.region, kinds,
+                 sign, threads, lay.copy, lay.cp, WSlot{P,T}[], ReentrantLock(), 1)
+  lay.noop || push!(r.free, new_slot(r))
   r
 end
 
-function wregister!(reg::Vector{Union{Nothing,WPlan{P}}}, r::WPlan{P}, typ::Int, prec::Int) where {P}
+function wregister!(reg::Vector{Union{Nothing,WPlan{P,T}}}, r::WPlan{P,T}, typ::Int, prec::Int) where {P,T}
   idx = @lock REGISTRY_LOCK begin
     push!(reg, r)
     length(reg)
@@ -288,7 +364,7 @@ function wdecode(p::Ptr{Cvoid})
   (typ, prec, Int(h & 0xffffffff))
 end
 
-wlookup(reg::Vector{Union{Nothing,WPlan{P}}}, idx::Int) where {P} =
+wlookup(reg::Vector{Union{Nothing,WPlan{P,T}}}, idx::Int) where {P,T} =
   @lock REGISTRY_LOCK (0 <= idx <= length(reg) - 1 ? reg[idx + 1] : nothing)
 
 function read_kinds_fftw(p::Ptr{Cint}, n::Int)
@@ -301,13 +377,16 @@ function read_kinds_fftw(p::Ptr{Cint}, n::Int)
   v
 end
 
-# The common planner: iodims (FFTW order), kinds per transform dimension (r2r).
+# The common planner: iodims (FFTW order), kinds per transform dimension (r2r). Split arrays
+# (split = true): pin2/pout2 are the imaginary parts of the complex side; they always go through
+# the copy fallback.
 function wplan(::Type{T}, typ::Int, td::Vector{NTuple{3,Int}}, vd::Vector{NTuple{3,Int}},
-               kinds::Vector{Int}, pin::Ptr{Cvoid}, pout::Ptr{Cvoid}, sign::Int, flags::UInt32) where {T}
+               kinds::Vector{Int}, pin::Ptr{Cvoid}, pout::Ptr{Cvoid}, sign::Int, flags::UInt32;
+               split::Bool = false, pin2::Ptr{Cvoid} = C_NULL, pout2::Ptr{Cvoid} = C_NULL) where {T}
   flags & W_WISDOM_ONLY != 0 &&
     throw(ArgumentError("FFTW interface: FFTW_WISDOM_ONLY, and FFTL keeps no wisdom"))
   (typ != W_C2C || sign == -1 || sign == 1) || throw(ArgumentError("FFTW interface: sign must be -1 or +1"))
-  lay = solve_layout(td, vd, typ, pin == pout)
+  lay = solve_layout(td, vd, typ, pin == pout, !split)
   fk = FFTL.R2RKind[]
   if typ == W_R2R
     for t in lay.tidx
@@ -317,11 +396,11 @@ function wplan(::Type{T}, typ::Int, td::Vector{NTuple{3,Int}}, vd::Vector{NTuple
   nt = wthreads(T)[]
   prec = wprec(T)
   if typ == W_C2C
-    wregister!(wreg_c2c(T), wrecord(RPlan{T}, typ, lay, fk, sign, nt, pin, pout), typ, prec)
+    wregister!(wreg_c2c(T), wrecord(RPlan{T}, T, typ, lay, fk, sign, nt, pin, pin2, pout, pout2, split), typ, prec)
   elseif typ == W_R2R
-    wregister!(wreg_rr(T), wrecord(RR2RPlan{T}, typ, lay, fk, sign, nt, pin, pout), typ, prec)
+    wregister!(wreg_rr(T), wrecord(RR2RPlan{T}, T, typ, lay, fk, sign, nt, pin, pin2, pout, pout2, split), typ, prec)
   else
-    wregister!(wreg_rf(T), wrecord(RRFFTPlan{T}, typ, lay, fk, sign, nt, pin, pout), typ, prec)
+    wregister!(wreg_rf(T), wrecord(RRFFTPlan{T}, T, typ, lay, fk, sign, nt, pin, pin2, pout, pout2, split), typ, prec)
   end
 end
 
@@ -350,11 +429,12 @@ function wplan_many(::Type{T}, typ::Int, rank::Int, n::Ptr{Cint}, howmany::Int, 
 end
 
 function wplan_guru(::Type{T}, typ::Int, rank::Int, dims::Ptr{I}, hrank::Int, hdims::Ptr{I},
-                    pin::Ptr{Cvoid}, pout::Ptr{Cvoid}, kinds::Ptr{Cint}, sign::Int, flags::UInt32) where {T,I}
+                    pin::Ptr{Cvoid}, pout::Ptr{Cvoid}, kinds::Ptr{Cint}, sign::Int, flags::UInt32;
+                    split::Bool = false, pin2::Ptr{Cvoid} = C_NULL, pout2::Ptr{Cvoid} = C_NULL) where {T,I}
   td = read_iodims(dims, rank)
   vd = read_iodims(hdims, hrank)
   ks = typ == W_R2R ? read_kinds_fftw(kinds, rank) : Int[]
-  wplan(T, typ, td, vd, ks, pin, pout, sign, flags)
+  wplan(T, typ, td, vd, ks, pin, pout, sign, flags; split = split, pin2 = pin2, pout2 = pout2)
 end
 
 # --- execution --------------------------------------------------------------------------
@@ -367,20 +447,84 @@ wrun!(p::RRFFTPlan{T}, typ::Int, out::Ptr{Cvoid}, in_::Ptr{Cvoid}) where {T} =
 wrun!(p::RR2RPlan{T}, ::Int, out::Ptr{Cvoid}, in_::Ptr{Cvoid}) where {T} =
   execute_r2r!(p, Ptr{T}(out), Ptr{T}(in_))
 
-function wexec(r::WPlan{P}, in_::Ptr{Cvoid}, out::Ptr{Cvoid}) where {P}
+# Copies the strided array src (counts n, strides ss) to dst (strides ds); strides in elements
+# of E. The first dimension is the inner loop. No dimensions: one element.
+function wstrided_copy!(dst::Ptr{E}, ds::Vector{Int}, src::Ptr{E}, ss::Vector{Int}, n::Vector{Int}) where {E}
+  k = length(n)
+  if k == 0
+    unsafe_store!(dst, unsafe_load(src))
+    return nothing
+  end
+  for x in n
+    x == 0 && return nothing
+  end
+  idx = zeros(Int, k)
+  n1 = n[1]; d1 = ds[1]; s1 = ss[1]
+  doff = 0; soff = 0
+  while true
+    for i in 0:n1-1
+      unsafe_store!(dst, unsafe_load(src, soff + i * s1 + 1), doff + i * d1 + 1)
+    end
+    j = 2
+    while j <= k
+      idx[j] += 1; doff += ds[j]; soff += ss[j]
+      idx[j] < n[j] && break
+      doff -= ds[j] * n[j]; soff -= ss[j] * n[j]; idx[j] = 0
+      j += 1
+    end
+    j > k && return nothing
+  end
+end
+
+# One side of the copy fallback between the user's array (p, imaginary part p2 if split) and the
+# buffer b. complex: the user's array is complex. gather: user → buffer.
+function wcopy_side!(b::Ptr{T}, bs::Vector{Int}, p::Ptr{Cvoid}, p2::Ptr{Cvoid}, us::Vector{Int},
+                     n::Vector{Int}, complex::Bool, split::Bool, gather::Bool) where {T}
+  if !complex
+    gather ? wstrided_copy!(b, bs, Ptr{T}(p), us, n) : wstrided_copy!(Ptr{T}(p), us, b, bs, n)
+  elseif !split
+    cb = Ptr{Complex{T}}(b); cu = Ptr{Complex{T}}(p)
+    gather ? wstrided_copy!(cb, bs, cu, us, n) : wstrided_copy!(cu, us, cb, bs, n)
+  else
+    # split: real and imaginary parts as real arrays; the buffer holds them interleaved
+    bs2 = Int[2s for s in bs]
+    re = Ptr{T}(p); im = Ptr{T}(p2); bi = b + sizeof(T)
+    if gather
+      wstrided_copy!(b, bs2, re, us, n); wstrided_copy!(bi, bs2, im, us, n)
+    else
+      wstrided_copy!(re, us, b, bs2, n); wstrided_copy!(im, us, bi, bs2, n)
+    end
+  end
+  nothing
+end
+
+function wexec(r::WPlan{P,T}, in_::Ptr{Cvoid}, in2::Ptr{Cvoid}, out::Ptr{Cvoid}, out2::Ptr{Cvoid}) where {P,T}
   r.noop && return nothing
-  p = @lock r.lock (isempty(r.free) ? nothing : pop!(r.free))
-  q = p === nothing ? new_fftl(P, r) : p
+  s = @lock r.lock (isempty(r.free) ? nothing : pop!(r.free))
+  q = s === nothing ? new_slot(r) : s
   try
-    GC.@preserve q wrun!(q, r.typ, out, in_)
+    if r.copy
+      c = r.cp
+      GC.@preserve q begin
+        b = pointer(q.buf)
+        vb = Ptr{Cvoid}(b)
+        wcopy_side!(b, c.bin, in_, in2, c.istr, c.nin, r.typ == W_C2C || r.typ == W_C2R, r.split, true)
+        wrun!(q.plan, r.typ, vb, vb)
+        wcopy_side!(b, c.bout, out, out2, c.ostr, c.nout, r.typ == W_C2C || r.typ == W_R2C, r.split, false)
+      end
+    else
+      GC.@preserve q wrun!(q.plan, r.typ, out, in_)
+    end
   finally
     @lock r.lock push!(r.free, q)
   end
   nothing
 end
 
-# want: the plan type an execute function requires (-1: any, fftw_execute)
-function wexecute(::Type{T}, p::Ptr{Cvoid}, want::Int, in_::Ptr{Cvoid}, out::Ptr{Cvoid}, newarrays::Bool) where {T}
+# want: the plan type an execute function requires (-1: any, fftw_execute); split: whether
+# the execute function takes split arrays.
+function wexecute(::Type{T}, p::Ptr{Cvoid}, want::Int, split::Bool, in_::Ptr{Cvoid}, in2::Ptr{Cvoid},
+                  out::Ptr{Cvoid}, out2::Ptr{Cvoid}, newarrays::Bool) where {T}
   typ, prec, idx = wdecode(p)
   if typ < 0 || prec != wprec(T)
     set_error!("FFTW interface: invalid plan")
@@ -391,27 +535,30 @@ function wexecute(::Type{T}, p::Ptr{Cvoid}, want::Int, in_::Ptr{Cvoid}, out::Ptr
     return nothing
   end
   if typ == W_C2C
-    wexec_reg(wreg_c2c(T), idx, in_, out, newarrays)
+    wexec_reg(wreg_c2c(T), idx, split, in_, in2, out, out2, newarrays)
   elseif typ == W_R2R
-    wexec_reg(wreg_rr(T), idx, in_, out, newarrays)
+    wexec_reg(wreg_rr(T), idx, split, in_, in2, out, out2, newarrays)
   else
-    wexec_reg(wreg_rf(T), idx, in_, out, newarrays)
+    wexec_reg(wreg_rf(T), idx, split, in_, in2, out, out2, newarrays)
   end
 end
 
-function wexec_reg(reg::Vector{Union{Nothing,WPlan{P}}}, idx::Int, in_::Ptr{Cvoid}, out::Ptr{Cvoid},
-                   newarrays::Bool) where {P}
+function wexec_reg(reg::Vector{Union{Nothing,WPlan{P,T}}}, idx::Int, split::Bool, in_::Ptr{Cvoid},
+                   in2::Ptr{Cvoid}, out::Ptr{Cvoid}, out2::Ptr{Cvoid}, newarrays::Bool) where {P,T}
   r = wlookup(reg, idx)
   if r === nothing
     set_error!("FFTW interface: invalid plan")
     return nothing
   end
   if !newarrays
-    wexec(r, r.pin, r.pout)
+    wexec(r, r.pin, r.pin2, r.pout, r.pout2)
+  elseif split != r.split
+    set_error!(split ? "FFTW interface: split execute function on a plan for interleaved arrays" :
+                       "FFTW interface: the plan is for split arrays; use the split execute function")
   elseif (in_ == out) != r.inplace
     set_error!("FFTW interface: new arrays must be in place exactly when the plan is")
   else
-    wexec(r, in_, out)
+    wexec(r, in_, in2, out, out2)
   end
   nothing
 end
@@ -425,7 +572,7 @@ function wdestroy(::Type{T}, p::Ptr{Cvoid}, copy::Bool) where {T}
   typ == W_R2R ? wrefs!(wreg_rr(T), idx, copy) : wrefs!(wreg_rf(T), idx, copy)
 end
 
-function wrefs!(reg::Vector{Union{Nothing,WPlan{P}}}, idx::Int, up::Bool) where {P}
+function wrefs!(reg::Vector{Union{Nothing,WPlan{P,T}}}, idx::Int, up::Bool) where {P,T}
   @lock REGISTRY_LOCK begin
     0 <= idx <= length(reg) - 1 || return false
     r = reg[idx + 1]
@@ -475,7 +622,8 @@ function wdesc(r::WPlan)
       s *= " " * string(Int(k))
     end
   end
-  s * " threads " * string(r.threads) * (r.noop ? " empty" : "") * ")"
+  s * " threads " * string(r.threads) * (r.split ? " split" : "") * (r.copy ? " copied" : "") *
+    (r.noop ? " empty" : "") * ")"
 end
 
 function winfo(::Type{T}, p::Ptr{Cvoid}) where {T}
@@ -485,7 +633,7 @@ function winfo(::Type{T}, p::Ptr{Cvoid}) where {T}
   typ == W_R2R ? winfo_reg(wreg_rr(T), idx) : winfo_reg(wreg_rf(T), idx)
 end
 
-function winfo_reg(reg::Vector{Union{Nothing,WPlan{P}}}, idx::Int) where {P}
+function winfo_reg(reg::Vector{Union{Nothing,WPlan{P,T}}}, idx::Int) where {P,T}
   r = wlookup(reg, idx)
   r === nothing && return ("", (0.0, 0.0), false)
   (wdesc(r), wops(r), true)
@@ -562,9 +710,6 @@ macro wfailed(e)
     C_NULL
   end
 end
-
-const W_SPLIT_MSG = "FFTW interface: split complex arrays are not supported"
-wsplit_rejected() = (set_error!(W_SPLIT_MSG); C_NULL)
 
 dense_iodims(n::Vector{Int}, typ::Int, inplace::Bool) =
   many_dims(n, 1, Int[], 1, 0, Int[], 1, 0, typ, inplace)
@@ -694,15 +839,25 @@ for (T, pre) in ((Float64, "fftw_"), (Float32, "fftwf_"))
       end
       Base.@ccallable function $(wname(Symbol(:plan_, g, :split_dft)))(rank::Cint, dims::Ptr{$I}, hrank::Cint, hdims::Ptr{$I},
           ri::Ptr{Cvoid}, ii::Ptr{Cvoid}, ro::Ptr{Cvoid}, io::Ptr{Cvoid}, flags::Cuint)::Ptr{Cvoid}
-        wsplit_rejected()
+        # always forward, as in FFTW (backward: swap the real and imaginary parts)
+        try
+          wplan_guru($T, W_C2C, Int(rank), dims, Int(hrank), hdims, ri, ro, Ptr{Cint}(C_NULL), -1, UInt32(flags);
+                     split = true, pin2 = ii, pout2 = io)
+        catch e; @wfailed(e) end
       end
       Base.@ccallable function $(wname(Symbol(:plan_, g, :split_dft_r2c)))(rank::Cint, dims::Ptr{$I}, hrank::Cint, hdims::Ptr{$I},
           in_::Ptr{Cvoid}, ro::Ptr{Cvoid}, io::Ptr{Cvoid}, flags::Cuint)::Ptr{Cvoid}
-        wsplit_rejected()
+        try
+          wplan_guru($T, W_R2C, Int(rank), dims, Int(hrank), hdims, in_, ro, Ptr{Cint}(C_NULL), -1, UInt32(flags);
+                     split = true, pout2 = io)
+        catch e; @wfailed(e) end
       end
       Base.@ccallable function $(wname(Symbol(:plan_, g, :split_dft_c2r)))(rank::Cint, dims::Ptr{$I}, hrank::Cint, hdims::Ptr{$I},
           ri::Ptr{Cvoid}, ii::Ptr{Cvoid}, out::Ptr{Cvoid}, flags::Cuint)::Ptr{Cvoid}
-        wsplit_rejected()
+        try
+          wplan_guru($T, W_C2R, Int(rank), dims, Int(hrank), hdims, ri, out, Ptr{Cint}(C_NULL), 1, UInt32(flags);
+                     split = true, pin2 = ii)
+        catch e; @wfailed(e) end
       end
     end
   end
@@ -710,33 +865,33 @@ for (T, pre) in ((Float64, "fftw_"), (Float32, "fftwf_"))
   @eval begin
     # --- execution
     Base.@ccallable function $(wname(:execute))(p::Ptr{Cvoid})::Cvoid
-      try wexecute($T, p, -1, C_NULL, C_NULL, false) catch; set_error!("FFTW interface: execution failed") end
+      try wexecute($T, p, -1, false, C_NULL, C_NULL, C_NULL, C_NULL, false) catch; set_error!("FFTW interface: execution failed") end
       nothing
     end
     Base.@ccallable function $(wname(:execute_dft))(p::Ptr{Cvoid}, in_::Ptr{Cvoid}, out::Ptr{Cvoid})::Cvoid
-      try wexecute($T, p, W_C2C, in_, out, true) catch; set_error!("FFTW interface: execution failed") end
+      try wexecute($T, p, W_C2C, false, in_, C_NULL, out, C_NULL, true) catch; set_error!("FFTW interface: execution failed") end
       nothing
     end
     Base.@ccallable function $(wname(:execute_dft_r2c))(p::Ptr{Cvoid}, in_::Ptr{Cvoid}, out::Ptr{Cvoid})::Cvoid
-      try wexecute($T, p, W_R2C, in_, out, true) catch; set_error!("FFTW interface: execution failed") end
+      try wexecute($T, p, W_R2C, false, in_, C_NULL, out, C_NULL, true) catch; set_error!("FFTW interface: execution failed") end
       nothing
     end
     Base.@ccallable function $(wname(:execute_dft_c2r))(p::Ptr{Cvoid}, in_::Ptr{Cvoid}, out::Ptr{Cvoid})::Cvoid
-      try wexecute($T, p, W_C2R, in_, out, true) catch; set_error!("FFTW interface: execution failed") end
+      try wexecute($T, p, W_C2R, false, in_, C_NULL, out, C_NULL, true) catch; set_error!("FFTW interface: execution failed") end
       nothing
     end
     Base.@ccallable function $(wname(:execute_r2r))(p::Ptr{Cvoid}, in_::Ptr{Cvoid}, out::Ptr{Cvoid})::Cvoid
-      try wexecute($T, p, W_R2R, in_, out, true) catch; set_error!("FFTW interface: execution failed") end
+      try wexecute($T, p, W_R2R, false, in_, C_NULL, out, C_NULL, true) catch; set_error!("FFTW interface: execution failed") end
       nothing
     end
     Base.@ccallable function $(wname(:execute_split_dft))(p::Ptr{Cvoid}, ri::Ptr{Cvoid}, ii::Ptr{Cvoid}, ro::Ptr{Cvoid}, io::Ptr{Cvoid})::Cvoid
-      set_error!(W_SPLIT_MSG); nothing
+      try wexecute($T, p, W_C2C, true, ri, ii, ro, io, true) catch; set_error!("FFTW interface: execution failed") end; nothing
     end
     Base.@ccallable function $(wname(:execute_split_dft_r2c))(p::Ptr{Cvoid}, in_::Ptr{Cvoid}, ro::Ptr{Cvoid}, io::Ptr{Cvoid})::Cvoid
-      set_error!(W_SPLIT_MSG); nothing
+      try wexecute($T, p, W_R2C, true, in_, C_NULL, ro, io, true) catch; set_error!("FFTW interface: execution failed") end; nothing
     end
     Base.@ccallable function $(wname(:execute_split_dft_c2r))(p::Ptr{Cvoid}, ri::Ptr{Cvoid}, ii::Ptr{Cvoid}, out::Ptr{Cvoid})::Cvoid
-      set_error!(W_SPLIT_MSG); nothing
+      try wexecute($T, p, W_C2R, true, ri, ii, out, C_NULL, true) catch; set_error!("FFTW interface: execution failed") end; nothing
     end
 
     # --- plans

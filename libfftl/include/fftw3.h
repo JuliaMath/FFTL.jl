@@ -7,14 +7,16 @@
  * This is not FFTW's header and contains no FFTW code.
  *
  * What differs from FFTW:
- * - Layouts: the planners accept arrays that are dense, i.e. the transform and vector
- *   dimensions (in any order) form one contiguous array without gaps, with the same layout
- *   for input and output (r2c/c2r: FFTW's real and complex layouts of that array, padded
- *   in place). For r2c/c2r the halved dimension (the last transform dimension) must be the
- *   fastest-varying one of the transform dimensions. Everything else (embedded subarrays,
- *   strides with gaps, different input and output layouts, split complex arrays) returns NULL;
- *   the reason is in fftl_last_error (fftl.h). Long double, quad precision and the Fortran
- *   interface are not provided.
+ * - Layouts: every layout the manual describes is accepted, including strides with gaps,
+ *   embedded arrays, negative strides, different input and output layouts and split complex
+ *   arrays. When the transform and vector dimensions (in any order) form one contiguous array
+ *   without gaps, with the same layout for input and output (r2c/c2r: FFTW's real and complex
+ *   layouts of that array, padded in place, the halved dimension the fastest-varying of the
+ *   transform dimensions), the transform runs on the arrays themselves. Any other layout, and
+ *   every split array, is copied into a contiguous buffer of the plan and back, which costs one
+ *   pass over the input and one over the output. In-place split r2c/c2r of rank above 1 (NULL
+ *   in FFTW) are planned as well. Long double, quad precision and MPI are not provided.
+ * - Failed plans return NULL with the reason in fftl_last_error (fftl.h).
  * - Planner flags are accepted and change nothing, except FFTW_WISDOM_ONLY: there is never
  *   wisdom, so such a plan is NULL. Planning never reads or writes the arrays; c2r keeps
  *   its input out of place.
@@ -130,7 +132,7 @@ fftw_plan fftw_plan_many_dft_r2c(int rank, const int *n, int howmany, double *in
 fftw_plan fftw_plan_many_dft_c2r(int rank, const int *n, int howmany, fftw_complex *in, const int *inembed, int istride, int idist, double *out, const int *onembed, int ostride, int odist, unsigned flags);
 fftw_plan fftw_plan_many_r2r(int rank, const int *n, int howmany, double *in, const int *inembed, int istride, int idist, double *out, const int *onembed, int ostride, int odist, const fftw_r2r_kind *kind, unsigned flags);
 
-/* Planner: guru interface (split arrays: always NULL) */
+/* Planner: guru interface */
 fftw_plan fftw_plan_guru_dft(int rank, const fftw_iodim *dims, int howmany_rank, const fftw_iodim *howmany_dims, fftw_complex *in, fftw_complex *out, int sign, unsigned flags);
 fftw_plan fftw_plan_guru_split_dft(int rank, const fftw_iodim *dims, int howmany_rank, const fftw_iodim *howmany_dims, double *ri, double *ii, double *ro, double *io, unsigned flags);
 fftw_plan fftw_plan_guru_dft_r2c(int rank, const fftw_iodim *dims, int howmany_rank, const fftw_iodim *howmany_dims, double *in, fftw_complex *out, unsigned flags);
@@ -148,7 +150,7 @@ fftw_plan fftw_plan_guru64_dft_c2r(int rank, const fftw_iodim64 *dims, int howma
 fftw_plan fftw_plan_guru64_split_dft_c2r(int rank, const fftw_iodim64 *dims, int howmany_rank, const fftw_iodim64 *howmany_dims, double *ri, double *ii, double *out, unsigned flags);
 fftw_plan fftw_plan_guru64_r2r(int rank, const fftw_iodim64 *dims, int howmany_rank, const fftw_iodim64 *howmany_dims, double *in, double *out, const fftw_r2r_kind *kind, unsigned flags);
 
-/* Execution (the split variants do nothing) */
+/* Execution */
 void fftw_execute(const fftw_plan plan);
 void fftw_execute_dft(const fftw_plan p, fftw_complex *in, fftw_complex *out);
 void fftw_execute_split_dft(const fftw_plan p, double *ri, double *ii, double *ro, double *io);
@@ -220,7 +222,7 @@ fftwf_plan fftwf_plan_many_dft_r2c(int rank, const int *n, int howmany, float *i
 fftwf_plan fftwf_plan_many_dft_c2r(int rank, const int *n, int howmany, fftwf_complex *in, const int *inembed, int istride, int idist, float *out, const int *onembed, int ostride, int odist, unsigned flags);
 fftwf_plan fftwf_plan_many_r2r(int rank, const int *n, int howmany, float *in, const int *inembed, int istride, int idist, float *out, const int *onembed, int ostride, int odist, const fftwf_r2r_kind *kind, unsigned flags);
 
-/* Planner: guru interface (split arrays: always NULL) */
+/* Planner: guru interface */
 fftwf_plan fftwf_plan_guru_dft(int rank, const fftwf_iodim *dims, int howmany_rank, const fftwf_iodim *howmany_dims, fftwf_complex *in, fftwf_complex *out, int sign, unsigned flags);
 fftwf_plan fftwf_plan_guru_split_dft(int rank, const fftwf_iodim *dims, int howmany_rank, const fftwf_iodim *howmany_dims, float *ri, float *ii, float *ro, float *io, unsigned flags);
 fftwf_plan fftwf_plan_guru_dft_r2c(int rank, const fftwf_iodim *dims, int howmany_rank, const fftwf_iodim *howmany_dims, float *in, fftwf_complex *out, unsigned flags);
@@ -238,7 +240,7 @@ fftwf_plan fftwf_plan_guru64_dft_c2r(int rank, const fftwf_iodim64 *dims, int ho
 fftwf_plan fftwf_plan_guru64_split_dft_c2r(int rank, const fftwf_iodim64 *dims, int howmany_rank, const fftwf_iodim64 *howmany_dims, float *ri, float *ii, float *out, unsigned flags);
 fftwf_plan fftwf_plan_guru64_r2r(int rank, const fftwf_iodim64 *dims, int howmany_rank, const fftwf_iodim64 *howmany_dims, float *in, float *out, const fftwf_r2r_kind *kind, unsigned flags);
 
-/* Execution (the split variants do nothing) */
+/* Execution */
 void fftwf_execute(const fftwf_plan plan);
 void fftwf_execute_dft(const fftwf_plan p, fftwf_complex *in, fftwf_complex *out);
 void fftwf_execute_split_dft(const fftwf_plan p, float *ri, float *ii, float *ro, float *io);
