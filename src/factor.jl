@@ -134,10 +134,27 @@ function heuristic_radices(n::Int, S::Int)
   # largest radix last is the fastest order (39 as (3, 13) takes 0.65–0.75 of (13, 3)): measured on
   # Zen 2 and on the M1 Max up to 1024. Batches keep the order of the merged rule (not measured).
   if S == 1
-    return vcat(sort(pow2; rev = true), sort!(r))
+    return vcat(pow2, sortasc!(r))
   end
   if isempty(pow2)
-    return reverse!(sort(r))
+    return reverse!(sortasc!(r))
   end
   vcat(pow2[1], r, pow2[2:end])
+end
+
+# Insertion sort for the small radix lists: Base.Sort's internals do not resolve under
+# juliac --trim=safe (the sort! of the radix tables left unresolved _sort!, By, Lt and
+# setindex! calls and broke the libfftl CI build). pow2 is built in descending order
+# already, so it needs no sort.
+function sortasc!(r::AbstractVector{Int})
+  for i in 2:length(r)
+    v = r[i]
+    j = i - 1
+    while j > 0 && r[j] > v
+      r[j + 1] = r[j]
+      j -= 1
+    end
+    r[j + 1] = v
+  end
+  return r
 end

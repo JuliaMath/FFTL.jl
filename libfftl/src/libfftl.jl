@@ -127,7 +127,9 @@ function read_kinds(p::Ptr{Int32}, trank::Int)
   for i in 1:trank
     k = Int(unsafe_load(p, i))
     0 <= k < length(KINDS) || throw(ArgumentError("unknown real-to-real kind"))
-    v[i] = KINDS[k + 1]
+    # R2RKind(k), not KINDS[k + 1]: indexing the KINDS tuple with the dynamic k is type
+    # unstable and left setindex! unresolved under juliac --trim=safe.
+    v[i] = FFTL.R2RKind(k)
   end
   v
 end

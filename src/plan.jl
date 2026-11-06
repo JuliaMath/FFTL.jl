@@ -32,28 +32,34 @@ Base.hash(k::CacheKey, h::UInt) = hash(k.rs, hash(k.σ, hash(k.n, hash(k.T, hash
 Base.:(==)(a::CacheKey, b::CacheKey) = a.kind === b.kind && a.T === b.T && a.n == b.n && a.σ == b.σ && a.rs == b.rs
 
 # Entries carry the tick of their last use; a full cache drops the least recently used one.
+# The ticks live in their own concrete dict: the cache hit must not pass the plan element
+# (typed Any) to any call, which juliac --trim=safe leaves unresolved. The plans are stored
+# once per miss (a concrete value per call site) and read through the caller's type
+# assertion.
 const KCACHE = Dict{CacheKey,Tuple{Int,Any}}()
+const KTICK = Dict{CacheKey,Int}()
 const KCACHE_LOCK = ReentrantLock()
 const KCACHE_MAX = 128   # a chain and its tables are two entries
 const KCACHE_TICK = Ref(0)
 
 function cached(f::F, key::CacheKey) where {F}
   @lock KCACHE_LOCK begin
-    e = get(KCACHE, key, nothing)
-    if e !== nothing
+    if haskey(KCACHE, key)
       KCACHE_TICK[] += 1
-      KCACHE[key] = (KCACHE_TICK[], e[2])
-      return e[2]
+      KTICK[key] = KCACHE_TICK[]
+      return KCACHE[key][2]
     end
     if length(KCACHE) >= KCACHE_MAX
-      oldest, tick = first(KCACHE)[1], typemax(Int)
-      for (k, e) in KCACHE
-        e[1] < tick && ((oldest, tick) = (k, e[1]))
+      oldest, tick = first(KTICK)[1], typemax(Int)
+      for (k, t) in KTICK
+        t < tick && ((oldest, tick) = (k, t))
       end
+      delete!(KTICK, oldest)
       delete!(KCACHE, oldest)
     end
     w = f()
     KCACHE_TICK[] += 1
+    KTICK[key] = KCACHE_TICK[]
     KCACHE[key] = (KCACHE_TICK[], w)
     w
   end
