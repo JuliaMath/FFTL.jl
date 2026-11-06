@@ -15,6 +15,11 @@ module FFTL
 using SIMD
 using LinearAlgebra
 import AbstractFFTs
+# The transform and planning functions are AbstractFFTs's functions: FFTL adds methods to them
+# (less specific than FFTW.jl's) and re-exports the same bindings, so `using FFTL` is a drop-in
+# replacement for `using FFTW` and both packages can be loaded together without conflicts.
+using AbstractFFTs: fft, bfft, ifft, rfft, brfft, irfft
+import AbstractFFTs: plan_fft, plan_bfft, plan_ifft, plan_rfft, plan_brfft, plan_irfft
 
 include("limits.jl")
 include("tuning.jl")
@@ -35,10 +40,13 @@ include("generic.jl")
 include("ka.jl")
 include("precompile.jl")
 
-# The API (not exported: FFTL is used qualified next to FFTW.jl). `public` exists from Julia 1.11.
+# The drop-in surface is exported (Variant A): the DFT names are AbstractFFTs's functions with
+# FFTL's methods (re-exported above), so `using FFTL` replaces `using FFTW` and both packages
+# can be loaded together. The internals stay public-not-exported. `public` exists from Julia 1.11.
+export fft, bfft, ifft, rfft, brfft, irfft,
+       plan_fft, plan_bfft, plan_ifft, plan_rfft, plan_brfft, plan_irfft
 @static if VERSION >= v"1.11"
-  eval(Expr(:public, :fft, :bfft, :ifft, :rfft, :brfft, :irfft, :r2r, :dct, :idct,
-            :plan_fft, :plan_bfft, :plan_ifft, :plan_rfft, :plan_brfft, :plan_irfft, :plan_r2r,
+  eval(Expr(:public, :r2r, :dct, :idct, :plan_r2r,
             :R2RKind, :REDFT00, :REDFT10, :REDFT01, :REDFT11, :RODFT00, :RODFT10, :RODFT01, :RODFT11,
             :DHT, :R2HC, :HC2R,
             :plan_pass, :plan_r2r_pass, :apply!,

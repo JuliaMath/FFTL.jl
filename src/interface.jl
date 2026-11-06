@@ -122,15 +122,30 @@ Plans for the forward, unnormalised backward and normalised inverse DFT along th
 transforms large enough to profit run on up to `threads` threads. Other floating-point types
 (BigFloat, Double64, Float128, …) are transformed in their own precision by a generic,
 single-threaded path; Float16, integers and other numbers are converted to ComplexF64.
+
+The methods are on AbstractFFTs's functions (Variant A): with FFTW.jl loaded, FFTW's methods
+win for StridedArrays and FFTL catches the rest of its float range; FFTL stays reachable
+qualified (`FFTL.plan_fft`).
 """
-plan_fft(x::AbstractArray, region = 1:ndims(x); kw...) =
-  generic_float(elreal(x)) ? GPlan{elreal(x)}(size(x), region, -1) : FFTLPlan{plan_type(x)}(size(x), region, -1; kw...)
-plan_bfft(x::AbstractArray, region = 1:ndims(x); kw...) =
-  generic_float(elreal(x)) ? GPlan{elreal(x)}(size(x), region, 1) : FFTLPlan{plan_type(x)}(size(x), region, 1; kw...)
+plan_fft(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); kws...) =
+  FFTLPlan{plan_type(x)}(size(x), region, -1; kws...)
+plan_bfft(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); kws...) =
+  FFTLPlan{plan_type(x)}(size(x), region, 1; kws...)
 # the normalisation over the plan's dimensions (the region without duplicates)
-function plan_ifft(x::AbstractArray, region = 1:ndims(x); kw...)
-  p = plan_bfft(x, region; kw...)
-  AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(generic_float(elreal(x)) ? elreal(x) : plan_type(x), size(x), AbstractFFTs.fftdims(p)))
+function plan_ifft(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); kws...)
+  p = plan_bfft(x, region; kws...)
+  AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(plan_type(x), size(x), AbstractFFTs.fftdims(p)))
+end
+# The generic-float path: BigFloat, Double64, Float128, … in their own precision,
+# single-threaded. These methods keep FFTL.plan_fft working for the wider float types; they
+# are not part of the FFTW drop-in surface (FFTW does not handle these types).
+plan_fft(x::AbstractArray{<:Complex{<:AbstractFloat}}, region = 1:ndims(x); kws...) =
+  GPlan{elreal(x)}(size(x), region, -1)
+plan_bfft(x::AbstractArray{<:Complex{<:AbstractFloat}}, region = 1:ndims(x); kws...) =
+  GPlan{elreal(x)}(size(x), region, 1)
+function plan_ifft(x::AbstractArray{<:Complex{<:AbstractFloat}}, region = 1:ndims(x); kws...)
+  p = plan_bfft(x, region; kws...)
+  AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(elreal(x), size(x), AbstractFFTs.fftdims(p)))
 end
 
 elreal(x::AbstractArray) = real(eltype(x))
@@ -139,25 +154,6 @@ plan_type(::AbstractArray{Complex{T}}) where {T<:FFTLFloat} = T
 plan_type(::AbstractArray{T}) where {T<:FFTLFloat} = T
 plan_type(::AbstractArray) = Float64
 
-"""
-    fft(x, region = 1:ndims(x))
-
-Forward DFT of `x` along `region` (all dimensions by default), unnormalised. Equal to
-`plan_fft(x, region) * x`.
-"""
-fft(x::AbstractArray, region = 1:ndims(x)) = plan_fft(x, region) * x
-
-"""
-    bfft(x, region = 1:ndims(x))
-
-Backward DFT along `region`, unnormalised: applying `bfft` to `fft(x)` multiplies `x` by the
-number of transformed elements.
-"""
-bfft(x::AbstractArray, region = 1:ndims(x)) = plan_bfft(x, region) * x
-
-"""
-    ifft(x, region = 1:ndims(x))
-
-Normalised inverse DFT along `region`: `ifft(fft(x)) ≈ x`.
-"""
-ifft(x::AbstractArray, region = 1:ndims(x)) = plan_ifft(x, region) * x
+# The transform functions fft/bfft/ifft/rfft/brfft/irfft are AbstractFFTs's: its generic
+# definitions call plan_fft/plan_bfft/plan_ifft/plan_rfft (the methods above) and re-exported
+# from AbstractFFTs in FFTL.jl, so `using FFTL` provides them without own definitions.
