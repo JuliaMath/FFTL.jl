@@ -49,8 +49,9 @@ these, FFTL takes:
 - **The real-to-real transforms.** The eleven kinds, their names (`REDFT10`, `RODFT00`, …), their
   unnormalised definitions and the halfcomplex order are FFTW's, so that code and formulas
   written for FFTW carry over unchanged.
-- **The interface.** Signs, scalings and function names follow FFTW.jl, and libfftl's in-place
-  real transforms use FFTW's padded layout.
+- **The interface.** Signs, scalings and function names follow FFTW.jl. libfftl, the C library,
+  implements FFTW3's C and Fortran interfaces from the FFTW manual; the interface is FFTW's
+  design.
 
 ## Where FFTL goes another way
 

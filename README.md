@@ -91,11 +91,13 @@ yd = fft(MtlArray(randn(ComplexF32, 1024, 1024)))
   transforms are tuned; the real-to-real kinds work, and their speed depends on the kind.
 
 **A C library made from the Julia code.** `libfftl/` compiles the package with
-`juliac --trim=safe` (Julia ≥ 1.12) into a shared library with a C interface
-(`libfftl/include/fftl.h`): complex DFT, r2c/c2r (also in place, in FFTW's padded layout) and all
-real-to-real kinds, any rank, both precisions, threads. No transform is written in C: the
-library is the trimmed Julia code. A program that links it needs no Julia installation; its
-only dependency is the Julia runtime shipped next to it. On macOS arm64 the library is 14 MB and
+`juliac --trim=safe` (Julia ≥ 1.12) into a shared library whose interface is FFTW3's, as the
+FFTW manual describes it: the C functions in both precisions (`libfftl/include/fftw3.h`), the
+legacy Fortran routines and the Fortran 2003 interface. Programs written for FFTW3 link against
+it without source changes (`-lfftw3`, `-lfftw3f`; the library carries FFTW's library names as
+links); `libfftl/include/fftw3.h` lists what differs from FFTW. No transform is written in C:
+the library is the trimmed Julia code. A program that links it needs no Julia installation; its
+only dependency is the Julia runtime shipped next to it. On macOS arm64 the library is 15 MB and
 the runtime 10 MB. The run-time plans the library uses (`FFTL.RPlan`, `FFTL.RRFFTPlan`,
 `FFTL.RR2RPlan`) are public, so Julia programs that use them can be trimmed the same way.
 

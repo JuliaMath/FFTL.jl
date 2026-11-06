@@ -79,7 +79,7 @@ The [Performance](@ref "Performance") page describes the protocol.
 | `src/ka.jl`, `ext/` | GPU through KernelAbstractions |
 | `src/precompile.jl` | the precompile workload |
 | `src/limits.jl`, `src/tuning.jl` | cache sizes and thresholds |
-| `libfftl/` | the C library |
+| `libfftl/` | the C library: FFTW3's C and Fortran interfaces over the run-time plans |
 
 The thresholds in `src/tuning.jl` are numbers measured on two machines. A change to them needs a
 measurement on at least one machine, reported with the change.

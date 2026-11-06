@@ -38,6 +38,6 @@ out ≈ FFTL.r2r(r, FFTL.REDFT10)
 ```
 
 The pointer functions expect column-major arrays of the plan's size, which the caller keeps
-alive (`GC.@preserve`). The source of libfftl (`libfftl/src/libfftl.jl`) shows the rules the
-calling code follows to stay trimmable: no closures that capture types, concrete element types
+alive (`GC.@preserve`). The source of libfftl (`libfftl/src/libfftl.jl` and the FFTW3 interface in
+`libfftl/src/fftw3api.jl`) shows the rules the calling code follows to stay trimmable: no closures that capture types, concrete element types
 at every call, error messages as literal strings.

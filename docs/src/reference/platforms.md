@@ -9,7 +9,7 @@ available.
 | transform | CPU, `Float32`/`Float64` | CPU, other `AbstractFloat`s (`BigFloat`, `Double64`, `Float128`) | GPU (KernelAbstractions) | libfftl |
 |:--|:--|:--|:--|:--|
 | complex DFT (`fft`, `bfft`, `ifft`) | ✓ threads, SIMD | ✓ one thread | ✓ tuned on Metal, measured on CUDA | ✓ |
-| real input `rfft`, `irfft`, `brfft` | ✓ | ✓ | ✓ at about complex speed | ✓ `r2c`, `c2r`, also in place |
+| real input `rfft`, `irfft`, `brfft` | ✓ | ✓ | ✓ at about complex speed | ✓ `r2c`, `c2r`, also in place and split |
 | DCT-II, the orthonormal `dct`/`idct` | ✓ | ✓ | ✓ | ✓ |
 | DCT-I, DCT-III, DCT-IV | ✓ | ✓ | ◐ partly tuned | ✓ |
 | DST-II | ✓ | ✓ | ✓ | ✓ |
@@ -48,7 +48,8 @@ available.
 | length of a dimension | any; memory is the limit |
 | threads | `Threads.nthreads()` by default; a plan may use fewer |
 | transforms on the GPU | out of place; a plan holds about two buffers of the array's size |
-| libfftl precision | `float` and `double` |
+| libfftl precision | `float` and `double` (FFTW3's `fftw_` and `fftwf_` functions; no `fftwl_`, `fftwq_`) |
+| libfftl interface | FFTW3's C, legacy Fortran and Fortran 2003 interfaces; layouts other than one contiguous array are copied |
 | libfftl threads | fixed at build time |
 
 Numbers that are not in this table, such as the largest transform that fits on a particular

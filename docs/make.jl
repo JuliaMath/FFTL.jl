@@ -14,10 +14,12 @@ for (dir, _, files) in walkdir(LITERATE), file in filter(endswith(".jl"), files)
   Literate.markdown(joinpath(dir, file), outdir; documenter = true)
 end
 
-# The C API reference is the header itself, so the page cannot drift from the code.
+# The C API reference is the headers themselves, so the pages cannot drift from the code.
 mkpath(GENERATED)
-header = read(joinpath(ROOT, "libfftl", "include", "fftl.h"), String)
-write(joinpath(GENERATED, "libfftl_header.md"), "# C header (fftl.h)\n\n```c\n" * header * "```\n")
+for (h, page) in (("fftw3.h", "libfftl_fftw3_header.md"), ("fftl.h", "libfftl_header.md"))
+  header = read(joinpath(ROOT, "libfftl", "include", h), String)
+  write(joinpath(GENERATED, page), "# C header ($h)\n\n```c\n" * header * "```\n")
+end
 
 # The two figures of the benchmarks page are generated from the committed overview data
 # (bench/results) on every build, so a fresh clone reproduces them without any measurement.
@@ -76,6 +78,7 @@ makedocs(;
       "Julia API" => "reference/api.md",
       "AbstractFFTs" => "reference/abstractffts.md",
       "libfftl C API" => "reference/libfftl.md",
+      "C header (fftw3.h)" => "generated/libfftl_fftw3_header.md",
       "C header (fftl.h)" => "generated/libfftl_header.md",
       "Platforms and limits" => "reference/platforms.md",
       "Benchmarks" => "reference/benchmarks.md",

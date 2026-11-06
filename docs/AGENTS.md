@@ -42,7 +42,8 @@ Conversation with Tobias is in German; everything in this folder is written in E
   real-to-real reductions), implementation (type specialisation, SIMD, kernel cache, cache sizes,
   the two chain forms, why libfftl needs `RChain`), performance (measurement protocol).
 - **Reference** (`src/reference/`): Julia API (`@docs`), AbstractFFTs (what is implemented),
-  libfftl C API (prose; the header page is generated from `libfftl/include/fftl.h`), platforms and
+  libfftl C API (prose on FFTW3's interface as libfftl implements it; the header pages are
+  generated from `libfftl/include/fftw3.h` and `fftl.h`), platforms and
   limits, benchmarks (the speed-up and dominance figures, generated from the committed overview
   data in `bench/results`; the campaign on quiet machines replaces the data).
 
@@ -78,10 +79,14 @@ Conversation with Tobias is in German; everything in this folder is written in E
   output; "dominance" is called "standing" here, the summary statistic is the "fold factor").
   The numbers are labelled as the development state (loaded machines, one round per case); the
   campaign on quiet machines replaces the data, and the figures follow it.
-- **libfftl:** size (23 MB on macOS arm64: library 14 MB, Julia runtime 10 MB), build requirements (Julia 1.12+
-  with juliac), build variables (`FFTL_THREADS`, `FFTL_TRIM`, `JULIA_CPU_TARGET`), baked thread pool,
-  column-major data, unnormalised backward transform, error handling via `fftl_last_error`, concurrency
-  rules. The C example in the how-to was compiled and run against the build in `FFTL.jl/libfftl`.
+- **libfftl:** the interface is FFTW3's (C, legacy Fortran, Fortran 2003), credited to the FFTW
+  manual; no comparison with FFTW's licence, no "drop-in replacement" slogan. The pages cover
+  size (25 MB on macOS arm64: library 15 MB, Julia runtime 10 MB), build requirements (Julia 1.12+
+  with juliac), build variables (`FFTL_THREADS`, `FFTL_TRIM`, `JULIA_CPU_TARGET`), the FFTW library
+  names as links, `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` for existing binaries, what differs from
+  FFTW (the list at the top of `fftw3.h`) and what is missing, error handling via
+  `fftl_last_error`, concurrency rules. The C and Fortran examples in the how-to were compiled and
+  run against the build.
 - **Logo:** three hand-built SVGs in `docs/assets/`, each by size of the place it sits in:
   `fftl-main.svg` (wordmark with spectrum underline, everyday use), `fftl-icon.svg` (bars only,
   16-48 px), `fftl-logo.svg` (wide: butterfly, wordmark and spectrum, for headers with room; the
