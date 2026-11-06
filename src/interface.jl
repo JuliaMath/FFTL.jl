@@ -148,6 +148,20 @@ function plan_ifft(x::AbstractArray{<:Complex{<:AbstractFloat}}, region = 1:ndim
   AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(elreal(x), size(x), AbstractFFTs.fftdims(p)))
 end
 
+# In-place: the same plans transform in place — mul! with x === y is safe (the kernels are
+# line-atomic: every pass loads its line before storing it). The (x, region) forms override
+# AbstractFFTs's generic wrappers, which compute out of place (their `*` does not mutate).
+plan_fft!(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); kws...) = plan_fft(x, region; kws...)
+plan_bfft!(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); kws...) = plan_bfft(x, region; kws...)
+plan_ifft!(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); kws...) = plan_ifft(x, region; kws...)
+
+fft!(x::AbstractArray{<:Complex{<:FFTLFloat}}, p::FFTLPlan) = mul!(x, p, x)
+bfft!(x::AbstractArray{<:Complex{<:FFTLFloat}}, p::FFTLPlan) = mul!(x, p, x)
+ifft!(x::AbstractArray{<:Complex{<:FFTLFloat}}, p::AbstractFFTs.ScaledPlan{<:Any,<:FFTLPlan}) = mul!(x, p, x)
+fft!(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x)) = fft!(x, plan_fft(x, region))
+bfft!(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x)) = bfft!(x, plan_bfft(x, region))
+ifft!(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x)) = ifft!(x, plan_ifft(x, region))
+
 elreal(x::AbstractArray) = real(eltype(x))
 
 plan_type(::AbstractArray{Complex{T}}) where {T<:FFTLFloat} = T
