@@ -48,10 +48,14 @@ Conversation with Tobias is in German; everything in this folder is written in E
 
 ## Decisions
 
-- **AbstractFFTs:** FFTL becomes an AbstractFFTs backend for standard arrays (Tobias,
-  2026-11-06; implemented by another agent). The docs already say so. How FFTL and FFTW.jl behave
-  when both are loaded is open; `howto/fftw.md` has a note to be replaced once that is merged.
-  Examples keep the qualified `FFTL.fft`, which works in either case.
+- **AbstractFFTs:** FFTL exports `fft`, `bfft`, `ifft`, `rfft`, `brfft`, `irfft` and their
+  `plan_` forms, which are AbstractFFTs.jl's functions with FFTL's methods (Tobias, 2026-11-06;
+  branch `fftw-compat`). The manual calls them without prefix; `r2r`, `dct`, `idct`, `plan_r2r`,
+  the kinds and everything else stay unexported and are written `FFTL.r2r` etc. With FFTW.jl also
+  loaded, FFTW's more specific methods take strided Float32/Float64 arrays. The transform
+  functions have no FFTL docstring (they are AbstractFFTs's), so `reference/api.md` describes
+  them in a table and documents only the `plan_` docstrings; pulling AbstractFFTs's docstrings
+  into `@docs` fails on their cross-references.
 - **Feature/platform table:** built from README, code and the libfftl header. Checked against the
   FFTL paper (`~/Arbeit/Eigene Publikationen/Draft/2026 FFTL.jl/manuscript/`, 2026-11-05): the
   table itself matched; fixed from the code was the Bluestein convolution-length rule

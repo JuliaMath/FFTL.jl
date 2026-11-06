@@ -34,7 +34,7 @@ hpad = zeros(N); hpad[1:length(kernel)] .= kernel;
 
 # The inputs are real, so `rfft` and `irfft` do this with half the work of complex transforms:
 
-y_fft = FFTL.irfft(FFTL.rfft(xpad) .* FFTL.rfft(hpad), N)[1:n]
+y_fft = irfft(rfft(xpad) .* rfft(hpad), N)[1:n]
 y_dir = direct_convolution(signal, kernel)
 maximum(abs, y_fft - y_dir)
 
@@ -63,8 +63,8 @@ fig
 long_signal = randn(20_000)
 B = 1024 - length(kernel) + 1                     # N = 1024
 N = B + length(kernel) - 1
-pf = FFTL.plan_rfft(zeros(N))
-pb = FFTL.plan_irfft(zeros(ComplexF64, N ÷ 2 + 1), N)
+pf = plan_rfft(zeros(N))
+pb = plan_irfft(zeros(ComplexF64, N ÷ 2 + 1), N)
 H = pf * [kernel; zeros(N - length(kernel))]
 
 y_ola = zeros(length(long_signal) + length(kernel) - 1)

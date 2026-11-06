@@ -4,16 +4,22 @@
 CurrentModule = FFTL
 ```
 
-The names listed here are public. FFTL does not export them; the examples in this manual call
-them qualified, `FFTL.fft` and so on, which selects FFTL explicitly. The generic functions of
-AbstractFFTs.jl reach the same transforms ([AbstractFFTs](@ref "AbstractFFTs")).
+The names listed here are public. FFTL exports the DFT functions `fft`, `bfft`, `ifft`, `rfft`,
+`brfft`, `irfft` and their `plan_` forms; they are the functions of AbstractFFTs.jl, to which
+FFTL adds methods ([AbstractFFTs](@ref "AbstractFFTs")). All other names are used with the
+prefix, `FFTL.r2r`, `FFTL.dct` and so on.
 
 ## Complex transforms
 
+The transform functions are AbstractFFTs.jl's; each makes the plan below and applies it.
+
+| function | computes |
+|:--|:--|
+| `fft(x, region = 1:ndims(x))` | forward DFT along `region`, unnormalised; equal to `plan_fft(x, region) * x` |
+| `bfft(x, region = 1:ndims(x))` | backward DFT, unnormalised: `bfft(fft(x))` is `x` times the number of transformed elements |
+| `ifft(x, region = 1:ndims(x))` | normalised inverse: `ifft(fft(x)) ≈ x` |
+
 ```@docs
-fft
-bfft
-ifft
 plan_fft
 ```
 
@@ -21,10 +27,13 @@ plan_fft
 
 ## Real transforms
 
+| function | computes |
+|:--|:--|
+| `rfft(x, region = 1:ndims(x))` | DFT of real `x`, the half spectrum along the first dimension of `region` (`n ÷ 2 + 1` values) |
+| `brfft(X, n, region = 1:ndims(X))` | unnormalised inverse of `rfft`; `n` is the length of the real array along the first dimension of `region` |
+| `irfft(X, n, region = 1:ndims(X))` | normalised inverse: `irfft(rfft(x), size(x, region[1])) ≈ x` |
+
 ```@docs
-rfft
-brfft
-irfft
 plan_rfft
 ```
 

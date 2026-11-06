@@ -36,25 +36,26 @@ Pkg.add(url = "https://github.com/JuliaMath/FFTL.jl")
 using FFTL, LinearAlgebra
 
 x = randn(ComplexF64, 1000, 1000)
-y = FFTL.fft(x)                 # all dimensions
-y1 = FFTL.fft(x, 1)             # along dimension 1 only
-x2 = FFTL.ifft(y)               # normalised inverse; FFTL.bfft is the unnormalised backward DFT
+y = fft(x)                      # all dimensions
+y1 = fft(x, 1)                  # along dimension 1 only
+x2 = ifft(y)                    # normalised inverse; bfft is the unnormalised backward DFT
 
-p = FFTL.plan_fft(x; threads = 8)
+p = plan_fft(x; threads = 8)
 mul!(y, p, x)                   # out of place, or mul!(x, p, x) in place
 x3 = p \ y                      # inverse through the plan
 
 r = randn(1000, 1000)
-R = FFTL.rfft(r)                # half spectrum along dimension 1 (501 × 1000)
-r2 = FFTL.irfft(R, 1000)
+R = rfft(r)                     # half spectrum along dimension 1 (501 × 1000)
+r2 = irfft(R, 1000)
 c = FFTL.dct(r)                 # orthonormal DCT-II; FFTL.idct is its inverse
 h = FFTL.r2r(r, (FFTL.REDFT10, FFTL.R2HC))   # unnormalised real-to-real, one kind per dimension
 ```
 
-FFTL is a backend of [AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl): its plans
-are `AbstractFFTs.Plan`s, and code written against the generic functions (`fft`, `plan_fft`,
-`rfft`, …) runs on FFTL. Names, conventions and scalings, including the real-to-real kinds and
-the orthonormal `dct`, are those of FFTW.jl; the manual has a page for
+`fft`, `plan_fft`, `rfft` and the other DFT functions are the functions of
+[AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl), with FFTL's methods; FFTL
+exports them, so `using FFTL` can take the place of `using FFTW`. The real-to-real functions
+(`FFTL.r2r`, `FFTL.dct`, …) are not exported. Names, conventions and scalings, including the
+real-to-real kinds and the orthonormal `dct`, are those of FFTW.jl; the manual has a page for
 [coming from FFTW.jl](https://JuliaMath.github.io/FFTL.jl/dev/howto/fftw/).
 
 Plans use `threads = Threads.nthreads()` by default; transforms below about 2^15 values run on
@@ -71,7 +72,7 @@ With KernelAbstractions.jl and a GPU package loaded, the same functions take GPU
 ```julia
 using FFTL, Metal, KernelAbstractions          # or CUDA
 
-yd = FFTL.fft(MtlArray(randn(ComplexF32, 1024, 1024)))
+yd = fft(MtlArray(randn(ComplexF32, 1024, 1024)))
 ```
 
 ## What FFTL covers

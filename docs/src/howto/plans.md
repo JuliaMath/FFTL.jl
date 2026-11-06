@@ -1,6 +1,6 @@
 # Plans and reuse
 
-`FFTL.fft(x)` makes a plan, applies it and throws the plan away. That is the right call for a
+`fft(x)` makes a plan, applies it and throws the plan away. That is the right call for a
 one-off transform. In a loop, make the plan once: everything that depends only on the size and
 the dimensions is computed in the plan, and applying it costs only the arithmetic.
 
@@ -8,10 +8,10 @@ the dimensions is computed in the plan, and applying it costs only the arithmeti
 using FFTL, LinearAlgebra
 
 x = randn(ComplexF64, 512, 512)
-p = FFTL.plan_fft(x)             # forward plan for arrays like x
+p = plan_fft(x)             # forward plan for arrays like x
 y = similar(x)
-mul!(y, p, x)                    # out of place, into a preallocated y
-y ≈ FFTL.fft(x)
+mul!(y, p, x)               # out of place, into a preallocated y
+y ≈ fft(x)
 ```
 
 ## In place
@@ -49,7 +49,7 @@ is one plan per task, each task working through its own chunk of the items:
 chunks = Iterators.partition(eachindex(xs), cld(length(xs), Threads.nthreads()))
 @sync for c in chunks
   Threads.@spawn begin
-    p = FFTL.plan_fft(xs[first(c)]; threads = 1)   # this task's plan
+    p = plan_fft(xs[first(c)]; threads = 1)   # this task's plan
     for i in c
       mul!(ys[i], p, xs[i])
     end
@@ -66,8 +66,8 @@ Plans take a `threads` keyword, which defaults to `Threads.nthreads()`. Code tha
 threaded over its own work should pass `threads = 1`, see [Threads](@ref "Threads").
 
 ```@example plans
-p1 = FFTL.plan_fft(x; threads = 1)
-p1 * x ≈ FFTL.fft(x)
+p1 = plan_fft(x; threads = 1)
+p1 * x ≈ fft(x)
 ```
 
 ## When a plan is expensive

@@ -17,8 +17,10 @@ Real plans are `RFFTLPlan` (`rfft`) and `BRFFTLPlan` (`brfft`, `irfft`); the com
 
 ## The generic functions
 
-The generic functions `AbstractFFTs.fft`, `plan_fft`, `rfft`, … run on FFTL for standard arrays.
-How FFTL and FFTW.jl behave when both are loaded is described on
+`fft`, `bfft`, `ifft`, `rfft`, `brfft`, `irfft` and their `plan_` forms are the functions of
+AbstractFFTs.jl. FFTL adds methods to the `plan_` functions and exports all twelve names; the
+transform functions call the plans through AbstractFFTs's generic definitions. How FFTL and
+FFTW.jl share these functions when both are loaded is described on
 [Coming from FFTW.jl](@ref "Coming from FFTW.jl").
 
 ## Inverses

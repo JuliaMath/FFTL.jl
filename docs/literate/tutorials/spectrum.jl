@@ -16,7 +16,7 @@ x = 0.8 .* sin.(2π * 440 .* t) .+ 0.3 .* sin.(2π * 1234 .* t) .+ 0.05 .* randn
 # A real signal has a spectrum with Hermitian symmetry, so `rfft` returns only the bins from 0 Hz up
 # to the Nyquist frequency ``f_s/2``: ``N ÷ 2 + 1`` complex values.
 
-X = FFTL.rfft(x);
+X = rfft(x);
 size(X)
 
 # ## Amplitudes
@@ -62,5 +62,5 @@ fig
 
 Y = copy(X);
 Y[idx] .= 0;
-clean = FFTL.irfft(Y, N);
+clean = irfft(Y, N);
 round(sqrt(sum(abs2, clean) / N); digits = 3)   # RMS, the noise was 0.05

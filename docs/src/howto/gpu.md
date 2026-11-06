@@ -5,15 +5,15 @@ loaded, the same functions accept GPU arrays. The example needs a GPU, so it is 
 run during the documentation build.
 
 ```julia
-using FFTL, Metal, KernelAbstractions     # or CUDA, AMDGPU, oneAPI
+using FFTL, Metal, KernelAbstractions  # or CUDA, AMDGPU, oneAPI
 
 xd = MtlArray(randn(ComplexF32, 1024, 1024))
-yd = FFTL.fft(xd)                          # a new GPU array
-p = FFTL.plan_fft(xd, 2)                   # plan along dimension 2
+yd = fft(xd)                           # a new GPU array
+p = plan_fft(xd, 2)                    # plan along dimension 2
 yd2 = similar(xd)
-mul!(yd2, p, xd)                           # out of place: yd2 !== xd
+mul!(yd2, p, xd)                       # out of place: yd2 !== xd
 
-Rd = FFTL.rfft(MtlArray(randn(Float32, 1024, 1024)))
+Rd = rfft(MtlArray(randn(Float32, 1024, 1024)))
 ```
 
 ## What to expect

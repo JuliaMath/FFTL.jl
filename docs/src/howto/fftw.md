@@ -1,21 +1,20 @@
 # Coming from FFTW.jl
 
-FFTL uses the names, sign conventions and scalings of FFTW.jl. Code that calls FFTW.jl through
-the generic AbstractFFTs.jl functions runs on FFTL, and code that calls FFTW.jl's own functions
-moves over by changing the prefix. The real-to-real kinds have FFTW's names and FFTW's
-unnormalised definitions, and `dct` is the same orthonormal DCT-II.
+`using FFTL` can take the place of `using FFTW`. FFTL exports the same DFT functions, `fft`,
+`bfft`, `ifft`, `rfft`, `brfft`, `irfft` and their `plan_` forms; they are the functions of
+AbstractFFTs.jl, so code written against them runs unchanged. The real-to-real functions have
+FFTW.jl's names and definitions and are called with the prefix, `FFTL.r2r` and `FFTL.dct`.
 
 ## The same transforms under the same names
 
 | FFTW.jl | FFTL | remark |
 |:--|:--|:--|
-| `fft`, `bfft`, `ifft` | `FFTL.fft`, `FFTL.bfft`, `FFTL.ifft` | same signs and scalings |
-| `rfft`, `brfft`, `irfft` | `FFTL.rfft`, `FFTL.brfft`, `FFTL.irfft` | half spectrum along the first dimension of the region |
-| `r2r(x, FFTW.REDFT10)` | `FFTL.r2r(x, FFTL.REDFT10)` | all eleven kinds, same definitions |
-| `dct`, `idct` | `FFTL.dct`, `FFTL.idct` | orthonormal DCT-II and its inverse |
-| `plan_fft(x; flags = FFTW.MEASURE)` | `FFTL.plan_fft(x)` | no flags, see below |
-| `plan_fft!(x)`, `fft!(x)` | `mul!(x, p, x)` with `p = FFTL.plan_fft(x)` | in place through `mul!` |
-| `FFTW.set_num_threads(n)` | `FFTL.plan_fft(x; threads = n)` | per plan; default `Threads.nthreads()` |
+| `fft`, `bfft`, `ifft`, `rfft`, `brfft`, `irfft` and their plans | the same | same signs and scalings |
+| `FFTW.r2r(x, FFTW.REDFT10)` | `FFTL.r2r(x, FFTL.REDFT10)` | all eleven kinds, same definitions |
+| `FFTW.dct`, `FFTW.idct` | `FFTL.dct`, `FFTL.idct` | orthonormal DCT-II and its inverse |
+| `plan_fft(x; flags = FFTW.MEASURE)` | `plan_fft(x)` | no `flags` keyword, see below |
+| `plan_fft!(x)`, `fft!(x)` | `mul!(x, p, x)` with `p = plan_fft(x)` | in place through `mul!` |
+| `FFTW.set_num_threads(n)` | `plan_fft(x; threads = n)` | per plan; default `Threads.nthreads()` |
 | wisdom (`export_wisdom`, `import_wisdom`) | not needed | plans do not measure |
 
 The example compares the two on the same data; FFTW.jl is not a dependency of FFTL, so it is
@@ -25,8 +24,8 @@ shown, not run:
 using FFTW, FFTL
 
 x = randn(12, 7)
-FFTL.dct(x) ≈ FFTW.dct(x)                              # true
-FFTL.r2r(x, FFTL.RODFT11, 1) ≈ FFTW.r2r(x, FFTW.RODFT11, 1)   # true, likewise for every kind
+FFTL.dct(x) ≈ FFTW.dct(x)                                    # true
+FFTL.r2r(x, FFTL.RODFT11, 1) ≈ FFTW.r2r(x, FFTW.RODFT11, 1)  # true, likewise for every kind
 ```
 
 ## Planning without flags
@@ -54,15 +53,17 @@ function roundtrip(p::AbstractFFTs.Plan, x)
 end
 
 x = randn(ComplexF64, 32, 8)
-p = FFTL.plan_fft(x)
+p = plan_fft(x)
 roundtrip(p, x) ≈ x
 ```
 
-!!! note "FFTL and FFTW.jl in one session"
-    FFTL is becoming the backend of the generic functions `AbstractFFTs.fft`, `plan_fft`, … for
-    standard arrays. How the two packages behave when both are loaded is described here once
-    that work is merged. The qualified calls `FFTL.fft` and `FFTW.fft` always select one of the
-    two explicitly.
+## FFTL and FFTW.jl in one session
+
+Both packages add methods to the same AbstractFFTs functions, so they can be loaded together.
+FFTW.jl's methods are the more specific ones: with both loaded, `fft` of a strided `Float32` or
+`Float64` array runs on FFTW, and FFTL computes the cases FFTW.jl does not handle, such as
+`BigFloat` and the other floating-point types. Load only FFTL to have FFTL compute the standard
+arrays.
 
 ## What FFTL adds
 

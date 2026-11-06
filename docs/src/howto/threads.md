@@ -8,9 +8,9 @@ using FFTL, LinearAlgebra, Random
 Random.seed!(6)
 
 x = randn(ComplexF64, 512, 512)
-p8 = FFTL.plan_fft(x; threads = 8)
+p8 = plan_fft(x; threads = 8)
 y8 = p8 * x
-y8 ≈ FFTL.fft(x)
+y8 ≈ fft(x)
 ```
 
 The threaded result agrees with the single-threaded one up to rounding. Long one-dimensional
@@ -43,7 +43,7 @@ oversubscription is worse than the parallelism it adds:
 chunks = Iterators.partition(eachindex(images), cld(length(images), Threads.nthreads()))
 @sync for c in chunks
   Threads.@spawn begin
-    p = FFTL.plan_fft(images[first(c)]; threads = 1)
+    p = plan_fft(images[first(c)]; threads = 1)
     for i in c
       mul!(out[i], p, images[i])
     end

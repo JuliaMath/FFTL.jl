@@ -47,8 +47,9 @@ programs that use them can be trimmed as well.
 transform one dimension of a strided array and can skip zero inputs and unneeded outputs.
 Libraries that assemble their own transforms from such passes, such as NFFT.jl, use them.
 
-**The interface of the ecosystem.** FFTL is a backend of AbstractFFTs.jl, and its names,
-conventions and scalings are those of FFTW.jl (see [Coming from FFTW.jl](@ref "Coming from FFTW.jl")).
+**The interface of the ecosystem.** `fft`, `plan_fft` and the other DFT functions are those of
+AbstractFFTs.jl, with FFTL's methods, and names, conventions and scalings are those of FFTW.jl:
+`using FFTL` can take the place of `using FFTW` (see [Coming from FFTW.jl](@ref "Coming from FFTW.jl")).
 
 ## Installation
 
@@ -63,21 +64,21 @@ Pkg.add(url = "https://github.com/JuliaMath/FFTL.jl")
 using FFTL, LinearAlgebra
 
 x = randn(ComplexF64, 1000, 1000)
-y = FFTL.fft(x)                  # all dimensions, unnormalised
-x2 = FFTL.ifft(y)                # normalised inverse
+y = fft(x)                  # all dimensions, unnormalised
+x2 = ifft(y)                # normalised inverse
 x2 ≈ x
 ```
 
 ```@example home
-p = FFTL.plan_fft(x)             # a plan holds the work buffers and tables
-mul!(y, p, x)                    # apply it, as often as you like
-y ≈ FFTL.fft(x)
+p = plan_fft(x)             # a plan holds the work buffers and tables
+mul!(y, p, x)               # apply it, as often as you like
+y ≈ fft(x)
 ```
 
 ```@example home
 r = randn(1000, 1000)
-R = FFTL.rfft(r)                 # half spectrum along dimension 1: 501 × 1000
-FFTL.irfft(R, 1000) ≈ r
+R = rfft(r)                 # half spectrum along dimension 1: 501 × 1000
+irfft(R, 1000) ≈ r
 ```
 
 ```@example home

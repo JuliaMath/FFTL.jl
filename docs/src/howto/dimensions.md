@@ -9,15 +9,15 @@ using FFTL, LinearAlgebra, Random
 Random.seed!(4)
 
 A = randn(ComplexF64, 32, 20, 6)
-size(FFTL.fft(A)), size(FFTL.fft(A, 2))
+size(fft(A)), size(fft(A, 2))
 ```
 
 Transforming along dimension 2 gives the same result as transforming each slice `A[:, :, k]`
 along its second dimension:
 
 ```@example dims
-B = FFTL.fft(A, 2)
-slices = [FFTL.fft(A[:, :, k], 2) for k in 1:size(A, 3)]
+B = fft(A, 2)
+slices = [fft(A[:, :, k], 2) for k in 1:size(A, 3)]
 all(B[:, :, k] ≈ slices[k] for k in 1:size(A, 3))
 ```
 
@@ -25,7 +25,7 @@ Regions can be several dimensions. The transform is separable, so transforming a
 equals transforming along both at once:
 
 ```@example dims
-FFTL.fft(A, (1, 3)) ≈ FFTL.fft(FFTL.fft(A, 1), 3)
+fft(A, (1, 3)) ≈ fft(fft(A, 1), 3)
 ```
 
 ## Plans for a region
@@ -53,7 +53,7 @@ n = 64
 V = zeros(ComplexF64, n, 10)
 V[1:16, :] .= randn(ComplexF64, 16, 10)
 
-full = FFTL.fft(V, 1)
+full = fft(V, 1)
 pass = FFTL.plan_pass(V, 1; nonzero = (1:16,), needed = (1:8,))
 W = similar(V)
 mul!(W, pass, V)

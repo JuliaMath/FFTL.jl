@@ -8,12 +8,12 @@ and has no SIMD, but it computes in the precision of the type.
 using FFTL, LinearAlgebra
 
 x = big.(randn(ComplexF64, 24))
-X = FFTL.fft(x)
+X = fft(x)
 eltype(X)
 ```
 
 ```@example types
-maximum(abs, FFTL.ifft(X) - x) < big"1e-60"
+maximum(abs, ifft(X) - x) < big"1e-60"
 ```
 
 The generic path covers the complex transforms, the real transforms (`rfft`, `irfft`,
@@ -28,4 +28,4 @@ for `BigFloat` to a few units in the last place of the type.
 | integers, `Rational`s | converted to `Float64` (or `ComplexF64`) |
 
 A `Vector{Int}` is therefore transformed as `ComplexF64`. To compute it in `BigFloat`, convert
-the input first: `FFTL.fft(big.(v))`.
+the input first: `fft(big.(v))`.

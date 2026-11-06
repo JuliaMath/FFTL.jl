@@ -26,7 +26,7 @@ x = randn(ComplexF64, 48, 30)
 p = FFTL.RPlan{Float64}([48, 30], [1, 2], -1)
 y = similar(x)
 mul!(y, p, x)
-y ≈ FFTL.fft(x)
+y ≈ fft(x)
 ```
 
 ```@example trim
