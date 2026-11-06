@@ -55,13 +55,13 @@ end
 
 ## The orthonormal DCT-II
 
-`FFTL.dct` is the DCT-II scaled to an orthonormal map, and `FFTL.idct` its exact inverse. It is
+`dct` is the DCT-II scaled to an orthonormal map, and `idct` its exact inverse. It is
 the transform most users want for compression and for energy-preserving spectra:
 
 ```@example rr
 c = randn(16)
-D = FFTL.dct(c)
-(norm(D) ≈ norm(c), FFTL.idct(D) ≈ c)
+D = dct(c)
+(norm(D) ≈ norm(c), idct(D) ≈ c)
 ```
 
 Its values are the unnormalised DCT-II divided by ``2\sqrt{n}`` for the zero frequency and by

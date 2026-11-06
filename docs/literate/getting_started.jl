@@ -1,9 +1,8 @@
 # # Your first transform
 #
 # FFTL.jl computes the discrete Fourier transform (DFT) of arrays with any number of dimensions
-# and any length. `using FFTL` makes the DFT functions available (`fft`, `ifft`, `rfft`, … and
-# their `plan_` forms); these are the functions of AbstractFFTs.jl with FFTL's methods. The
-# real-to-real functions are called with the prefix, `FFTL.dct`.
+# and any length. `using FFTL` makes the transform functions available under the names of
+# FFTW.jl (`fft`, `ifft`, `rfft`, `dct`, … and their `plan_` forms).
 
 using FFTL, LinearAlgebra, Random
 Random.seed!(1);
@@ -58,12 +57,12 @@ size(R), irfft(R, 1000) ≈ r
 
 # ## Orthonormal cosine transform
 #
-# `FFTL.dct` is the DCT-II scaled to an orthonormal map, so it preserves the Euclidean norm and
-# `FFTL.idct` is its exact inverse:
+# `dct` is the DCT-II scaled to an orthonormal map, so it preserves the Euclidean norm and
+# `idct` is its exact inverse:
 
 c = randn(100)
-D = FFTL.dct(c)
-norm(D) ≈ norm(c), FFTL.idct(D) ≈ c
+D = dct(c)
+norm(D) ≈ norm(c), idct(D) ≈ c
 
 # Next: the [tutorials](@ref "Spectrum of a sampled signal") apply these to real problems, and
 # the [how-to guides](@ref "Plans and reuse") explain the options.

@@ -17,11 +17,16 @@ Real plans are `RFFTLPlan` (`rfft`) and `BRFFTLPlan` (`brfft`, `irfft`); the com
 
 ## The generic functions
 
-`fft`, `bfft`, `ifft`, `rfft`, `brfft`, `irfft` and their `plan_` forms are the functions of
-AbstractFFTs.jl. FFTL adds methods to the `plan_` functions and exports all twelve names; the
-transform functions call the plans through AbstractFFTs's generic definitions. How FFTL and
-FFTW.jl share these functions when both are loaded is described on
-[Coming from FFTW.jl](@ref "Coming from FFTW.jl").
+FFTL's exported `fft`, `plan_fft`, … are its own functions, not AbstractFFTs's. For generic
+code, FFTL adds methods to AbstractFFTs's `plan_fft`, `plan_bfft`, `plan_fft!`, `plan_bfft!`,
+`plan_rfft` and `plan_brfft` for arrays of floating-point numbers; AbstractFFTs derives the
+transform functions, the normalised inverses and the promotion of real input from them. So
+`AbstractFFTs.fft(x)` runs on FFTL when no other backend is loaded.
+
+These methods are less specific than FFTW.jl's, which take `StridedArray`s of `Float32` and
+`Float64` values. With FFTW.jl loaded, the generic functions therefore run on FFTW for those
+arrays and on FFTL for the others (other floating-point types, non-strided arrays). Code that
+wants FFTL calls FFTL's functions; see [Coming from FFTW.jl](@ref "Coming from FFTW.jl").
 
 ## Inverses
 

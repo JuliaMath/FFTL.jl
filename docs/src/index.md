@@ -47,9 +47,9 @@ programs that use them can be trimmed as well.
 transform one dimension of a strided array and can skip zero inputs and unneeded outputs.
 Libraries that assemble their own transforms from such passes, such as NFFT.jl, use them.
 
-**The interface of the ecosystem.** `fft`, `plan_fft` and the other DFT functions are those of
-AbstractFFTs.jl, with FFTL's methods, and names, conventions and scalings are those of FFTW.jl:
-`using FFTL` can take the place of `using FFTW` (see [Coming from FFTW.jl](@ref "Coming from FFTW.jl")).
+**The interface of the ecosystem.** FFTL exports FFTW.jl's names with FFTW.jl's conventions and
+scalings, so `using FFTL` can take the place of `using FFTW`, and it is a backend of
+AbstractFFTs.jl's generic functions (see [Coming from FFTW.jl](@ref "Coming from FFTW.jl")).
 
 ## Installation
 
@@ -82,8 +82,8 @@ irfft(R, 1000) ≈ r
 ```
 
 ```@example home
-C = FFTL.dct(r)                  # orthonormal DCT-II; idct inverts it
-FFTL.idct(C) ≈ r
+C = dct(r)                  # orthonormal DCT-II; idct inverts it
+idct(C) ≈ r
 ```
 
 ## Where to go

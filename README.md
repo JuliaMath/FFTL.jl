@@ -47,15 +47,17 @@ x3 = p \ y                      # inverse through the plan
 r = randn(1000, 1000)
 R = rfft(r)                     # half spectrum along dimension 1 (501 × 1000)
 r2 = irfft(R, 1000)
-c = FFTL.dct(r)                 # orthonormal DCT-II; FFTL.idct is its inverse
+c = dct(r)                 # orthonormal DCT-II; idct is its inverse
 h = FFTL.r2r(r, (FFTL.REDFT10, FFTL.R2HC))   # unnormalised real-to-real, one kind per dimension
 ```
 
-`fft`, `plan_fft`, `rfft` and the other DFT functions are the functions of
-[AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl), with FFTL's methods; FFTL
-exports them, so `using FFTL` can take the place of `using FFTW`. The real-to-real functions
-(`FFTL.r2r`, `FFTL.dct`, …) are not exported. Names, conventions and scalings, including the
-real-to-real kinds and the orthonormal `dct`, are those of FFTW.jl; the manual has a page for
+FFTL exports the names FFTW.jl exports (`fft`, `plan_fft`, `fft!`, `rfft`, `dct`, `plan_dct`, …),
+with FFTW.jl's conventions and scalings, so `using FFTL` can take the place of `using FFTW`.
+As in FFTW.jl, `FFTL.r2r`, the kinds and `FFTL.set_num_threads` are used with the prefix. These
+functions are FFTL's own: a module that writes `using FFTL` gets FFTL, also when one of its
+dependencies loads FFTW.jl. Generic code that calls
+[AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl)'s functions runs on FFTL as well;
+with FFTW.jl loaded, it runs on FFTW for FFTW's arrays. The manual has a page for
 [coming from FFTW.jl](https://JuliaMath.github.io/FFTL.jl/dev/howto/fftw/).
 
 Plans use `threads = Threads.nthreads()` by default; transforms below about 2^15 values run on

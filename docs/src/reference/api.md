@@ -4,36 +4,32 @@
 CurrentModule = FFTL
 ```
 
-The names listed here are public. FFTL exports the DFT functions `fft`, `bfft`, `ifft`, `rfft`,
-`brfft`, `irfft` and their `plan_` forms; they are the functions of AbstractFFTs.jl, to which
-FFTL adds methods ([AbstractFFTs](@ref "AbstractFFTs")). All other names are used with the
-prefix, `FFTL.r2r`, `FFTL.dct` and so on.
+The names listed here are public. FFTL exports the names FFTW.jl exports: the DFT and DCT
+functions with their `plan_` and in-place forms, and AbstractFFTs.jl's helpers (`fftshift`,
+`fftfreq`, …). All other names are used with the prefix, `FFTL.r2r`, `FFTL.REDFT10` and so on.
+The exported functions are FFTL's own; the generic functions of AbstractFFTs.jl reach them
+through the methods described on [AbstractFFTs](@ref "AbstractFFTs").
 
 ## Complex transforms
 
-The transform functions are AbstractFFTs.jl's; each makes the plan below and applies it.
-
-| function | computes |
-|:--|:--|
-| `fft(x, region = 1:ndims(x))` | forward DFT along `region`, unnormalised; equal to `plan_fft(x, region) * x` |
-| `bfft(x, region = 1:ndims(x))` | backward DFT, unnormalised: `bfft(fft(x))` is `x` times the number of transformed elements |
-| `ifft(x, region = 1:ndims(x))` | normalised inverse: `ifft(fft(x)) ≈ x` |
-
 ```@docs
+fft
+bfft
+ifft
 plan_fft
+plan_fft!
+InplacePlan
 ```
 
-`plan_bfft` and `plan_ifft` are documented with `plan_fft`.
+`plan_bfft` and `plan_ifft` are documented with `plan_fft`; `fft!`, `bfft!`, `ifft!`,
+`plan_bfft!` and `plan_ifft!` with `plan_fft!`.
 
 ## Real transforms
 
-| function | computes |
-|:--|:--|
-| `rfft(x, region = 1:ndims(x))` | DFT of real `x`, the half spectrum along the first dimension of `region` (`n ÷ 2 + 1` values) |
-| `brfft(X, n, region = 1:ndims(X))` | unnormalised inverse of `rfft`; `n` is the length of the real array along the first dimension of `region` |
-| `irfft(X, n, region = 1:ndims(X))` | normalised inverse: `irfft(rfft(x), size(x, region[1])) ≈ x` |
-
 ```@docs
+rfft
+brfft
+irfft
 plan_rfft
 ```
 
@@ -43,11 +39,13 @@ plan_rfft
 
 ```@docs
 dct
+plan_dct
 plan_r2r
 R2RKind
 ```
 
-`idct` is documented with `dct`, and `r2r` with `plan_r2r`.
+`idct` is documented with `dct`; `plan_idct`, `plan_dct!`, `plan_idct!`, `dct!` and `idct!` with
+`plan_dct`; `r2r` with `plan_r2r`.
 
 The kinds, as constants: `REDFT00` (DCT-I), `REDFT10` (DCT-II), `REDFT01` (DCT-III), `REDFT11`
 (DCT-IV), `RODFT00` (DST-I), `RODFT10` (DST-II), `RODFT01` (DST-III), `RODFT11` (DST-IV), `DHT`
@@ -92,6 +90,8 @@ plan_ka_rfft
 ## Cache and configuration
 
 ```@docs
+FFTL.set_num_threads
+FFTL.ESTIMATE
 FFTL.clear_cache!
 FFTL.cpu_caches
 FFTL.set_cpu_caches!
@@ -109,6 +109,8 @@ part of the interface.
 | `RFFTLPlan` | `plan_rfft` |
 | `BRFFTLPlan` | `plan_brfft`, `plan_irfft` (wrapped in `ScaledPlan`) |
 | `R2RPlan` | `plan_r2r` |
+| `OrthoDCTPlan` | `plan_dct`, `plan_idct` |
+| `InplacePlan` | `plan_fft!`, `plan_bfft!`, `plan_ifft!`, `plan_dct!`, `plan_idct!` |
 | `PassPlan` | `plan_pass` |
 | `R2RPassPlan` | `plan_r2r_pass` |
 | `GPlan`, `GRPlan`, `GR2RPlan` | the same functions for `BigFloat` and other number types |

@@ -18,7 +18,9 @@ y ≈ fft(x)
 
 A plan can transform an array into itself, as `mul!(x, p, x)`. The plan's buffers are used
 internally, so this does not allocate the output. `p * x` allocates a new array, and
-`mul!(y, p, x)` writes into a preallocated `y`.
+`mul!(y, p, x)` writes into a preallocated `y`. The in-place plans of `plan_fft!`, `plan_bfft!`
+and `plan_ifft!` overwrite their argument with `p * x`, and `fft!(x)` transforms `x` itself,
+as in FFTW.jl.
 
 ```@example plans
 x2 = copy(x)
