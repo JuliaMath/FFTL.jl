@@ -799,6 +799,205 @@ function test_misc(T)
   F(pre, :cleanup_threads)()
 end
 
+# --- every NULL a planner returns leaves a message; sizes, threads, the plan registry ----------
+
+# The message of the last failed call, reset before f runs: f must return NULL and set one.
+function null_with_message(f, pre, name)
+  set_error!("")
+  p = f()
+  @CHECK p == C_NULL, "$pre $name: NULL"
+  @CHECK !isempty(lasterr()), "$pre $name: message"
+  p == C_NULL || F(pre, :destroy_plan)(p)
+end
+
+function test_errors(T)
+  pre = pfx(T)
+  x = zeros(Complex{T}, 64); y = zeros(Complex{T}, 64); r = zeros(T, 64)
+  I = WIodim64
+  n8 = Cint[8]; n0 = Cint[0]; d8 = [I(8, 1, 1)]; d0 = [I(0, 1, 1)]; d0s = [I(0, 2, 2)]; vneg = [I(-1, 8, 8)]
+  w8 = [WIodim(8, 1, 1)]; wneg = [WIodim(-4, 1, 1)]; kneg = Cint[-1]
+  GC.@preserve x y r n8 n0 d8 d0 d0s vneg w8 wneg kneg begin
+    for (name, f) in (
+        ("n = 0", () -> F(pre, :plan_dft_1d)(Cint(0), vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)),
+        ("n = -1", () -> F(pre, :plan_dft_1d)(Cint(-1), vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)),
+        ("second size 0", () -> F(pre, :plan_dft_2d)(Cint(8), Cint(0), vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)),
+        ("r2c n = 0", () -> F(pre, :plan_dft_r2c_1d)(Cint(0), vp(r), vp(y), FFTW.ESTIMATE)),
+        ("c2r 3d size -2", () -> F(pre, :plan_dft_c2r_3d)(Cint(4), Cint(-2), Cint(4), vp(y), vp(r), FFTW.ESTIMATE)),
+        ("r2r 2d size 0", () -> F(pre, :plan_r2r_2d)(Cint(0), Cint(4), vp(r), vp(r), Cint(0), Cint(0), FFTW.ESTIMATE)),
+        ("sign 0", () -> F(pre, :plan_dft_1d)(Cint(8), vp(x), vp(y), Cint(0), FFTW.ESTIMATE)),
+        ("sign 2", () -> F(pre, :plan_dft_1d)(Cint(8), vp(x), vp(y), Cint(2), FFTW.ESTIMATE)),
+        ("sign -2 (many)", () -> (F(pre, :plan_many_dft)(Cint(1), pointer(n8), Cint(2), vp(x), Ptr{Cint}(C_NULL),
+                                   Cint(1), Cint(8), vp(y), Ptr{Cint}(C_NULL), Cint(1), Cint(8), Cint(-2), FFTW.ESTIMATE))),
+        ("rank -1", () -> F(pre, :plan_dft)(Cint(-1), Ptr{Cint}(C_NULL), vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)),
+        ("r2r rank -1", () -> F(pre, :plan_r2r)(Cint(-1), Ptr{Cint}(C_NULL), vp(r), vp(r), Ptr{Cint}(C_NULL), FFTW.ESTIMATE)),
+        ("many howmany -1", () -> F(pre, :plan_many_dft)(Cint(1), pointer(n8), Cint(-1), vp(x), Ptr{Cint}(C_NULL),
+                                   Cint(1), Cint(8), vp(y), Ptr{Cint}(C_NULL), Cint(1), Cint(8), Cint(-1), FFTW.ESTIMATE)),
+        ("many size 0", () -> F(pre, :plan_many_dft)(Cint(1), pointer(n0), Cint(2), vp(x), Ptr{Cint}(C_NULL),
+                               Cint(1), Cint(8), vp(y), Ptr{Cint}(C_NULL), Cint(1), Cint(8), Cint(-1), FFTW.ESTIMATE)),
+        ("guru howmany_rank -1", () -> F(pre, :plan_guru64_dft)(Cint(1), pointer(d8), Cint(-1), Ptr{I}(C_NULL),
+                                        vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)),
+        ("guru vector size -1", () -> F(pre, :plan_guru64_dft)(Cint(1), pointer(d8), Cint(1), pointer(vneg),
+                                       vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)),
+        ("guru transform size 0", () -> F(pre, :plan_guru64_dft)(Cint(1), pointer(d0), Cint(0), Ptr{I}(C_NULL),
+                                         vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)),
+        ("split guru size 0", () -> F(pre, :plan_guru64_split_dft)(Cint(1), pointer(d0s), Cint(0), Ptr{I}(C_NULL),
+                                     vp(r), vp(r) + sizeof(T), vp(x), vp(x) + sizeof(T), FFTW.ESTIMATE)),
+        ("split r2c rank -1", () -> F(pre, :plan_guru_split_dft_r2c)(Cint(-1), Ptr{WIodim}(C_NULL), Cint(0), Ptr{WIodim}(C_NULL),
+                                     vp(r), vp(x), vp(y), FFTW.ESTIMATE)),
+        ("split c2r unknown size", () -> F(pre, :plan_guru_split_dft_c2r)(Cint(1), pointer(wneg), Cint(0), Ptr{WIodim}(C_NULL),
+                                          vp(x), vp(y), vp(r), FFTW.ESTIMATE)),
+        ("unknown r2r kind 11", () -> F(pre, :plan_r2r_1d)(Cint(8), vp(r), vp(r), Cint(11), FFTW.ESTIMATE)),
+        ("unknown r2r kind -1 (guru)", () -> F(pre, :plan_guru_r2r)(Cint(1), pointer(w8), Cint(0), Ptr{WIodim}(C_NULL),
+                                              vp(r), vp(r), pointer(kneg), FFTW.ESTIMATE)),
+        ("DCT-I of length 1", () -> F(pre, :plan_r2r_1d)(Cint(1), vp(r), vp(r), Cint(FFTW.REDFT00), FFTW.ESTIMATE)),
+        ("FFTW_WISDOM_ONLY", () -> F(pre, :plan_dft_r2c_2d)(Cint(4), Cint(6), vp(r), vp(y), FFTW.WISDOM_ONLY)))
+      null_with_message(f, pre, name)
+    end
+    # copy_plan of no plan
+    set_error!("")
+    @CHECK F(pre, :copy_plan)(Ptr{Cvoid}(UInt(12345))) == C_NULL && !isempty(lasterr()), "$pre copy_plan of no plan: NULL and message"
+    set_error!("")
+    @CHECK F(pre, :sprint_plan)(Ptr{Cvoid}(C_NULL)) == C_NULL && !isempty(lasterr()), "$pre sprint_plan(NULL): NULL and message"
+    set_error!("")
+    @CHECK F(pre, :alloc_complex)(typemax(Csize_t) ÷ 4) == C_NULL && !isempty(lasterr()), "$pre alloc_complex overflow: NULL and message"
+  end
+
+  # a message survives later successful calls
+  GC.@preserve x y begin
+    F(pre, :plan_dft_1d)(Cint(0), vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)
+    m = lasterr()
+    p = F(pre, :plan_dft_1d)(Cint(8), vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)
+    GC.@preserve x y F(pre, :execute)(p)
+    F(pre, :destroy_plan)(p)
+    @CHECK lasterr() == m && !isempty(m), "$pre message survives successful calls"
+  end
+
+  # pointers that are no plans: rejected with a message, nothing written
+  for (what, q) in (("NULL", C_NULL), ("12345", Ptr{Cvoid}(UInt(12345))), ("-1", Ptr{Cvoid}(typemax(UInt))),
+                    ("an uncreated index", Ptr{Cvoid}(UInt((Int64(1) << 32) | 99999) + 1)),
+                    ("a bad precision", Ptr{Cvoid}(UInt(Int64(3) << 32) + 1)), ("a bad type", Ptr{Cvoid}(UInt(Int64(9) << 40 | Int64(1) << 32) + 1)))
+    set_error!("")
+    GC.@preserve x y F(pre, :execute_dft)(q, vp(x), vp(y))
+    @CHECK occursin("invalid plan", lasterr()) && all(iszero, y), "$pre execute_dft on $what: rejected"
+    set_error!("")
+    F(pre, :execute)(q)
+    @CHECK occursin("invalid plan", lasterr()), "$pre execute on $what: rejected"
+    set_error!("")
+    F(pre, :destroy_plan)(q)
+    @CHECK q == C_NULL ? isempty(lasterr()) : occursin("invalid plan", lasterr()), "$pre destroy_plan on $what"
+  end
+  # destroying twice: the second is rejected
+  let p = GC.@preserve x y F(pre, :plan_dft_1d)(Cint(64), vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)
+    F(pre, :destroy_plan)(p)
+    set_error!("")
+    F(pre, :destroy_plan)(p)
+    @CHECK occursin("invalid plan", lasterr()), "$pre second destroy_plan rejected"
+  end
+
+  # many plans of both precisions alive at once, each run while the others exist
+  let ps = Ptr{Cvoid}[], xs = [randn(Complex{i % 2 == 0 ? Float64 : Float32}, 16 + i) for i in 1:64]
+    ys = [similar(v) for v in xs]
+    GC.@preserve xs ys for i in 1:64
+      push!(ps, F(pfx(real(eltype(xs[i]))), :plan_dft_1d)(Cint(16 + i), vp(xs[i]), vp(ys[i]), Cint(-1), FFTW.ESTIMATE))
+    end
+    @CHECK all(!=(C_NULL), ps), "$pre 64 plans of both precisions created"
+    ok = 0
+    GC.@preserve xs ys for i in 64:-1:1
+      S = real(eltype(xs[i]))
+      F(pfx(S), :execute)(ps[i])
+      ok += close(ys[i], FFTW.fft(ComplexF64.(xs[i])), S)
+      F(pfx(S), :destroy_plan)(ps[i])
+    end
+    @CHECK ok == 64, "$pre 64 plans executed: $ok correct"
+  end
+end
+
+# Large transforms with 1 and 4 plan threads (the four-step path for one long line, lane
+# blocks, Bluestein), against FFTW.jl; the two thread counts must agree.
+function test_threads_sizes(T)
+  pre = pfx(T)
+  for (n, what) in (([131072], "1D 2^17 (four-step)"), ([65536], "1D 2^16"), ([1024, 33], "2D 1024 x 33"),
+                    ([16, 16, 16], "3D 16^3"), ([9973], "1D prime 9973 (Bluestein)"), ([37, 5], "2D 37 x 5 (Bluestein)"))
+    x = randn(Complex{T}, reverse(n)...)
+    outs = map((1, 4)) do nt
+      F(pre, :plan_with_nthreads)(Cint(nt))
+      y = similar(x); nn = Cint.(n)
+      p = GC.@preserve x y nn F(pre, :plan_dft)(Cint(length(n)), pointer(nn), vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)
+      GC.@preserve x y F(pre, :execute)(p)
+      F(pre, :destroy_plan)(p)
+      @CHECK close(y, FFTW.fft(ComplexF64.(x)), T), "$pre $what threads $nt: vs FFTW.jl"
+      y
+    end
+    @CHECK relerr(ComplexF64.(outs[1]), ComplexF64.(outs[2])) < (T == Float64 ? 1e-13 : 1e-5), "$pre $what: threads 4 agrees with threads 1"
+  end
+  # 64 x 64 x 8, transformed along the two fastest dimensions, threads 4 (lane blocks)
+  let x = randn(Complex{T}, 64, 64, 8), y = similar(x)
+    F(pre, :plan_with_nthreads)(Cint(4))
+    d = [WIodim(64, 64, 64), WIodim(64, 1, 1)]; v = [WIodim(8, 4096, 4096)]
+    p = GC.@preserve x y d v F(pre, :plan_guru_dft)(Cint(2), pointer(d), Cint(1), pointer(v), vp(x), vp(y), Cint(-1), FFTW.ESTIMATE)
+    GC.@preserve x y F(pre, :execute)(p)
+    F(pre, :destroy_plan)(p)
+    @CHECK close(y, FFTW.fft(ComplexF64.(x), 1:2), T), "$pre 64 x 64 x 8 along two dimensions, threads 4"
+  end
+  # real transforms: r2c/c2r with prime and mixed sizes, threads 1 and 4, c2r keeps its input
+  for n in ([101], [7, 101], [12, 10], [9, 8, 7]), nt in (1, 4)
+    F(pre, :plan_with_nthreads)(Cint(nt))
+    jn = reverse(n); x = randn(T, jn...); h = jn[1] ÷ 2 + 1
+    y = zeros(Complex{T}, h, jn[2:end]...); z = zeros(T, jn...); nn = Cint.(n)
+    pf = GC.@preserve x y nn F(pre, :plan_dft_r2c)(Cint(length(n)), pointer(nn), vp(x), vp(y), FFTW.ESTIMATE)
+    pb = GC.@preserve y z nn F(pre, :plan_dft_c2r)(Cint(length(n)), pointer(nn), vp(y), vp(z), FFTW.ESTIMATE)
+    GC.@preserve x y F(pre, :execute)(pf)
+    @CHECK close(y, FFTW.rfft(Float64.(x)), T), "$pre r2c $n threads $nt"
+    y0 = copy(y)
+    GC.@preserve y z F(pre, :execute)(pb)
+    @CHECK y == y0, "$pre c2r $n threads $nt keeps its input"
+    @CHECK close(z ./ prod(n), x, T), "$pre c2r $n threads $nt round trip"
+    F(pre, :destroy_plan)(pf); F(pre, :destroy_plan)(pb)
+  end
+  # r2r: every kind at lengths 33 and 101; in place equals out of place bit for bit
+  F(pre, :plan_with_nthreads)(Cint(1))
+  for k in ALLKINDS, n in (33, 101)
+    x = randn(T, n); y = zeros(T, n); z = copy(x)
+    p = GC.@preserve x y F(pre, :plan_r2r_1d)(Cint(n), vp(x), vp(y), Cint(k), FFTW.ESTIMATE)
+    q = GC.@preserve z F(pre, :plan_r2r_1d)(Cint(n), vp(z), vp(z), Cint(k), FFTW.ESTIMATE)
+    GC.@preserve x y z (F(pre, :execute)(p); F(pre, :execute)(q))
+    @CHECK close(y, r2r_ref(x, k, 1), T), "$pre r2r kind $k n $n"
+    @CHECK y == z, "$pre r2r kind $k n $n: in place = out of place"
+    F(pre, :destroy_plan)(p); F(pre, :destroy_plan)(q)
+  end
+  # three dimensions, one kind each, threads 4
+  let x = randn(T, 9, 12, 5), y = similar(x), nn = Cint[5, 12, 9], kk = Cint[FFTW.RODFT11, FFTW.REDFT00, FFTW.HC2R]
+    F(pre, :plan_with_nthreads)(Cint(4))
+    p = GC.@preserve x y nn kk F(pre, :plan_r2r)(Cint(3), pointer(nn), vp(x), vp(y), pointer(kk), FFTW.ESTIMATE)
+    GC.@preserve x y F(pre, :execute)(p)
+    F(pre, :destroy_plan)(p)
+    @CHECK close(y, r2r_ref(x, (FFTW.HC2R, FFTW.REDFT00, FFTW.RODFT11), 1:3), T), "$pre r2r 3D mixed kinds threads 4"
+  end
+  F(pre, :plan_with_nthreads)(Cint(0))
+  @CHECK F(pre, :planner_nthreads)() == 1, "$pre plan_with_nthreads(0) gives 1"
+  F(pre, :plan_with_nthreads)(Cint(-2))
+  @CHECK F(pre, :planner_nthreads)() == 1, "$pre plan_with_nthreads(-2) gives 1"
+end
+
+# fftl_version and fftl_last_error, the two functions of fftl.h
+function test_fftl_h()
+  buf = zeros(UInt8, 64)
+  n = fftl_version(pointer(buf), Csize_t(length(buf)))
+  @CHECK n == 5 && String(buf[1:6]) == "0.1.0\0", "fftl_version 0.1.0"
+  fill!(buf, 0)
+  n = fftl_version(pointer(buf), Csize_t(3))
+  @CHECK n == 5 && buf[1:3] == UInt8['0', '.', 0], "fftl_version truncates like snprintf"
+  @CHECK fftl_version(Ptr{UInt8}(C_NULL), Csize_t(0)) == 5, "fftl_version(NULL, 0): the length"
+  set_error!("a message of 22 bytes!")
+  fill!(buf, 0xff)
+  @CHECK fftl_last_error(Ptr{UInt8}(C_NULL), Csize_t(0)) == 22, "fftl_last_error(NULL, 0): the length"
+  @CHECK fftl_last_error(pointer(buf), Csize_t(5)) == 22 && buf[1:5] == UInt8['a', ' ', 'm', 'e', 0], "fftl_last_error truncates like snprintf"
+  # per thread: a message set on another thread is not seen here
+  t = Threads.@spawn (set_error!("other thread"); Threads.threadid())
+  tid = fetch(t)
+  @CHECK tid == Threads.threadid() || lasterr() == "a message of 22 bytes!", "fftl_last_error is per thread"
+end
+
 # Export through the callback: collect the characters into a Julia vector
 const WCHARS = UInt8[]
 wcollect(c::Cchar, ::Ptr{Cvoid}) = (push!(WCHARS, c % UInt8); nothing)
@@ -826,10 +1025,14 @@ for T in (Float64, Float32)
   test_many_layouts(T)
   test_execute(T)
   test_misc(T)
+  test_errors(T)
+  test_threads_sizes(T)
   empty!(WCHARS)
   F(pre, :export_wisdom)(@cfunction(wcollect, Cvoid, (Cchar, Ptr{Cvoid})), C_NULL)
   @CHECK String(copy(WCHARS)) == W_WISDOM, "$pre export_wisdom through the callback"
 end
+
+test_fftl_h()
 
 println("fftw3_jltest: $ntests checks, $nfailed failed (Julia threads: $(Threads.nthreads()))")
 nfailed == 0 || exit(1)

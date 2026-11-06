@@ -969,6 +969,178 @@ static void FN(misc)(void) {
   X(cleanup)();
 }
 
+/* ------------------------------------------- errors, empty transforms, threads, registry */
+
+#ifdef LINKED_FFTL
+/* the message of the last failed call contains want */
+static int FN(msg_has)(const char *want) {
+  char msg[256];
+  fftl_last_error(msg, sizeof msg);
+  return strstr(msg, want) != NULL;
+}
+#endif
+
+static void FN(errors)(void) {
+  CPX *a = X(alloc_complex)(64), *b = X(alloc_complex)(64);
+  R *r = X(alloc_real)(64);
+  /* NULL in both libraries */
+  int n2[2] = {8, 0};
+  X(plan) p = X(plan_dft)(2, n2, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  CHECK(p == NULL, "%d second size 0: NULL", PREC);
+#ifdef LINKED_FFTL
+  CHECK(FN(msg_has)("positive"), "%d second size 0: message", PREC);
+#endif
+  p = X(plan_r2r_1d)(1, r, r, FFTW_REDFT00, FFTW_ESTIMATE);
+  CHECK(p == NULL, "%d DCT-I of length 1: NULL", PREC);
+  X(iodim) d8[1] = {{8, 1, 1}}, vneg[1] = {{-1, 8, 8}};
+  p = X(plan_guru_dft)(1, d8, -1, vneg, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  CHECK(p == NULL, "%d howmany_rank -1: NULL", PREC);
+  p = X(plan_guru_dft)(1, d8, 1, vneg, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  CHECK(p == NULL, "%d vector size -1: NULL", PREC);
+#ifdef LINKED_FFTL
+  CHECK(FN(msg_has)("nonnegative"), "%d vector size -1: message", PREC);
+  /* NULL in libfftl; FFTW's behaviour is not defined by the manual */
+  CHECK(X(plan_dft_1d)(8, a, b, 0, FFTW_ESTIMATE) == NULL && FN(msg_has)("sign"), "%d sign 0: NULL and message", PREC);
+  CHECK(X(plan_r2r_1d)(8, r, r, (X(r2r_kind)) 11, FFTW_ESTIMATE) == NULL && FN(msg_has)("kind"), "%d kind 11: NULL and message", PREC);
+  CHECK(X(plan_dft_1d)(-1, a, b, FFTW_FORWARD, FFTW_ESTIMATE) == NULL && FN(msg_has)("positive"), "%d n = -1: NULL and message", PREC);
+  CHECK(X(plan_dft_1d)(16, a, b, FFTW_FORWARD, FFTW_WISDOM_ONLY) == NULL && FN(msg_has)("WISDOM_ONLY"), "%d FFTW_WISDOM_ONLY: message", PREC);
+  /* pointers that are no plans */
+  memset(b, 0, 64 * sizeof(CPX));
+  X(plan) bogus[3] = {NULL, (X(plan)) (uintptr_t) 12345, (X(plan)) (uintptr_t) -1};
+  for (int i = 0; i < 3; i++) {
+    X(plan_dft_1d)(0, a, b, FFTW_FORWARD, FFTW_ESTIMATE);  /* a different message first */
+    X(execute_dft)(bogus[i], a, b);
+    CHECK(FN(msg_has)("invalid plan"), "%d execute_dft on no plan %d: message", PREC, i);
+    X(plan_dft_1d)(0, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+    X(execute)(bogus[i]);
+    CHECK(FN(msg_has)("invalid plan"), "%d execute on no plan %d: message", PREC, i);
+    CHECK(X(copy_plan)(bogus[i]) == NULL && FN(msg_has)("invalid plan"), "%d copy_plan of no plan %d", PREC, i);
+    if (i > 0) {
+      X(plan_dft_1d)(0, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+      X(destroy_plan)(bogus[i]);
+      CHECK(FN(msg_has)("invalid plan"), "%d destroy_plan of no plan %d: message", PREC, i);
+    }
+  }
+  int zero = 1;
+  for (int i = 0; i < 128; i++) zero &= ((R *) b)[i] == 0;
+  CHECK(zero, "%d no plan: nothing written", PREC);
+  /* destroying twice */
+  p = X(plan_dft_1d)(64, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  X(destroy_plan)(p);
+  X(plan_dft_1d)(0, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  X(destroy_plan)(p);
+  CHECK(FN(msg_has)("invalid plan"), "%d second destroy_plan: message", PREC);
+  /* the wrong execute function, the other precision */
+  p = X(plan_dft_1d)(64, a, b, FFTW_FORWARD, FFTW_ESTIMATE);
+  X(execute_r2r)(p, r, r);
+  CHECK(FN(msg_has)("transform type"), "%d execute_r2r on a c2c plan: message", PREC);
+  X(execute_split_dft)(p, r, r + 1, (R *) b, (R *) b + 1);
+  CHECK(FN(msg_has)("split"), "%d execute_split_dft on an interleaved plan: message", PREC);
+  X(execute_dft)(p, a, a);
+  CHECK(FN(msg_has)("in place"), "%d in-place arrays on an out-of-place plan: message", PREC);
+#if PREC == 64
+  fftwf_execute((fftwf_plan) p);
+#else
+  fftw_execute((fftw_plan) p);
+#endif
+  CHECK(FN(msg_has)("invalid plan"), "%d plan executed with the other precision: message", PREC);
+  X(destroy_plan)(p);
+  /* c2r out of place keeps its input (FFTW may overwrite it) */
+  {
+    int n[2] = {6, 10};
+    CPX *c = X(alloc_complex)(36), *c0 = X(alloc_complex)(36);
+    R *o = X(alloc_real)(60);
+    X(plan) q = X(plan_dft_c2r)(2, n, c, o, FFTW_ESTIMATE);
+    FN(fill)((R *) c, NULL, 72);
+    memcpy(c0, c, 36 * sizeof(CPX));
+    X(execute)(q);
+    CHECK(memcmp(c, c0, 36 * sizeof(CPX)) == 0, "%d c2r out of place keeps its input", PREC);
+    X(destroy_plan)(q);
+    X(free)(c);
+    X(free)(c0);
+    X(free)(o);
+  }
+#endif
+  X(free)(a);
+  X(free)(b);
+  X(free)(r);
+}
+
+static void FN(empty_threads_registry)(void) {
+  /* rank 0 over a 4 x 5 vector: a copy out of place, nothing in place */
+  {
+    X(iodim) v[2] = {{4, 5, 5}, {5, 1, 1}};
+    CPX *x = X(alloc_complex)(20), *y = X(alloc_complex)(20);
+    X(plan) p = X(plan_guru_dft)(0, NULL, 2, v, x, y, FFTW_FORWARD, FFTW_ESTIMATE);
+    X(plan) q = X(plan_guru_dft)(0, NULL, 2, v, x, x, FFTW_FORWARD, FFTW_ESTIMATE);
+    CHECK(p && q, "%d rank 0 plans", PREC);
+    if (p && q) {
+      FN(fill)((R *) x, NULL, 40);
+      X(execute)(p);
+      CHECK(memcmp(x, y, 20 * sizeof(CPX)) == 0, "%d rank 0 out of place copies", PREC);
+      memcpy(y, x, 20 * sizeof(CPX));
+      X(execute)(q);
+      CHECK(memcmp(x, y, 20 * sizeof(CPX)) == 0, "%d rank 0 in place leaves the array", PREC);
+    }
+    if (p) X(destroy_plan)(p);
+    if (q) X(destroy_plan)(q);
+    X(free)(x);
+    X(free)(y);
+  }
+  /* plan threads 1 and 4 give the same result: 33 x 1024 and one line of 2^17 */
+  X(plan_with_nthreads)(0);
+  CHECK(X(planner_nthreads)() == 1, "%d plan_with_nthreads(0) gives 1", PREC);
+  {
+    int shapes[2][2] = {{33, 1024}, {131072, 0}}, ranks[2] = {2, 1};
+    for (int s = 0; s < 2; s++) {
+      long N = prod(ranks[s], shapes[s]);
+      CPX *x = X(alloc_complex)(N), *y1 = X(alloc_complex)(N), *y4 = X(alloc_complex)(N);
+      X(plan_with_nthreads)(1);
+      X(plan) p1 = X(plan_dft)(ranks[s], shapes[s], x, y1, FFTW_FORWARD, FFTW_ESTIMATE);
+      X(plan_with_nthreads)(4);
+      X(plan) p4 = X(plan_dft)(ranks[s], shapes[s], x, y4, FFTW_FORWARD, FFTW_ESTIMATE);
+      FN(fill)((R *) x, NULL, 2 * N);
+      X(execute)(p1);
+      X(execute)(p4);
+      LD *ref = malloc(2 * N * sizeof(LD));
+      for (long i = 0; i < 2 * N; i++) ref[i] = ((R *) y1)[i];
+      double e = RELERR((R *) y4, ref, 2 * N);
+      CHECK(e < TOL, "%d %ld points: threads 4 agrees with threads 1 (rel diff %g)", PREC, N, e);
+      free(ref);
+      X(destroy_plan)(p1);
+      X(destroy_plan)(p4);
+      X(free)(x);
+      X(free)(y1);
+      X(free)(y4);
+    }
+    X(plan_with_nthreads)(1);
+  }
+  /* 64 plans alive at once, executed in reverse order of creation */
+  {
+    X(plan) ps[64];
+    CPX *xs[64], *ys[64];
+    for (int i = 0; i < 64; i++) {
+      xs[i] = X(alloc_complex)(16 + i);
+      ys[i] = X(alloc_complex)(16 + i);
+      ps[i] = X(plan_dft_1d)(16 + i, xs[i], ys[i], i % 2 ? FFTW_FORWARD : FFTW_BACKWARD, FFTW_ESTIMATE);
+    }
+    int ok = 0;
+    for (int i = 63; i >= 0; i--) {
+      int n = 16 + i;
+      LD *ref = malloc(2 * n * sizeof(LD));
+      FN(fill)((R *) xs[i], ref, 2 * n);
+      X(execute)(ps[i]);
+      ref_dft_dim(ref, 1, &n, 0, i % 2 ? FFTW_FORWARD : FFTW_BACKWARD);
+      ok += RELERR((R *) ys[i], ref, 2 * n) < TOL;
+      X(destroy_plan)(ps[i]);
+      X(free)(xs[i]);
+      X(free)(ys[i]);
+      free(ref);
+    }
+    CHECK(ok == 64, "%d 64 plans alive at once: %d correct", PREC, ok);
+  }
+}
+
 /* ----------------------------------------------------------------------------- driver */
 
 static void FN(run)(void) {
@@ -1014,6 +1186,8 @@ static void FN(run)(void) {
   FN(new_arrays)();
   FN(large)();
   FN(misc)();
+  FN(errors)();
+  FN(empty_threads_registry)();
 }
 
 #undef CAT_

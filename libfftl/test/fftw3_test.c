@@ -8,7 +8,8 @@
  * matches the real library; the libfftl build passing shows the interface.
  *
  * Build options: -DWITH_COMPLEX_H includes <complex.h> before fftw3.h (fftw_complex is then the
- * C99 complex type); -DLINKED_FFTL adds the checks of what libfftl rejects by design.
+ * C99 complex type); -DLINKED_FFTL adds the checks that only libfftl defines: the
+ * messages of fftl_last_error and the rejection of calls that are undefined in FFTW.
  *
  * Usage: fftw3_test <output directory>
  */
