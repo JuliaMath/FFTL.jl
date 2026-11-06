@@ -83,6 +83,6 @@ Y = FFTL.r2r(M, (FFTL.REDFT10, FFTL.R2HC), (1, 2))
 size(Y)
 ```
 
-Real-to-real plans of the same size share the same rules as the complex ones: `plan_r2r` returns
-a plan, `inv` of a plan gives its normalised inverse for the pairs above, and `plan_r2r_pass`
-transforms one dimension of a strided array.
+Plans work as for the complex transforms: `plan_r2r` returns a plan, `inv` of a plan gives its
+normalised inverse for the pairs above, and `plan_r2r_pass` transforms one dimension of a
+strided array.

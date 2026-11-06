@@ -52,6 +52,7 @@ makedocs(;
       "Fast convolution" => "generated/tutorials/convolution.md",
     ],
     "How-to Guides" => [
+      "Coming from FFTW.jl" => "howto/fftw.md",
       "Plans and reuse" => "howto/plans.md",
       "Transforms along dimensions" => "howto/dimensions.md",
       "Real data" => "howto/real.md",
@@ -60,12 +61,13 @@ makedocs(;
       "Number types" => "howto/number_types.md",
       "Precompilation" => "howto/precompile.md",
       "GPU" => "howto/gpu.md",
-      "Using FFTL next to FFTW.jl" => "howto/abstractffts.md",
       "C library (libfftl)" => "howto/libfftl.md",
+      "Compiling ahead of time" => "howto/trim.md",
       "Contribute" => "howto/contribute.md",
     ],
     "Explanation" => [
       "The discrete Fourier transform" => "explanation/dft.md",
+      "FFTW and FFTL" => "explanation/fftw.md",
       "Algorithms" => "explanation/algorithms.md",
       "Implementation" => "explanation/implementation.md",
       "Performance" => "explanation/performance.md",
@@ -79,9 +81,9 @@ makedocs(;
       "Benchmarks" => "reference/benchmarks.md",
     ],
   ],
-  # The public API is unexported by design (see "Using FFTL next to FFTW.jl"), so there are no
-  # exports for checkdocs to walk. The names in the `@docs` blocks of reference/api.md are the
-  # enforced list: a binding without a docstring fails the build.
+  # FFTL exports nothing, so there are no exports for checkdocs to walk. The names in the
+  # `@docs` blocks of reference/api.md are the enforced list: a binding without a docstring
+  # fails the build.
   checkdocs = :none,
 )
 

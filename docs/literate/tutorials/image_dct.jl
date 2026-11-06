@@ -40,8 +40,7 @@ for keep in (0.2, 0.05, 0.01)
           round(norm(R - img) / norm(img); sigdigits = 2))
 end
 
-# The error is the price of dropping coefficients. Every line above is computed from the same
-# transform pair, so the trade-off is measured, not assumed.
+# The error grows as fewer coefficients are kept.
 
 # The reconstruction from 5 % of the coefficients next to the original, and the coefficient
 # magnitudes on a log scale, which show where the energy sits:

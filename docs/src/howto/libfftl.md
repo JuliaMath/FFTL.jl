@@ -1,8 +1,10 @@
 # C library (libfftl)
 
 `libfftl` is FFTL compiled into a shared library that C, C++ or any language with a C interface
-can call. The library does not need a Julia installation at run time: it contains the Julia
-runtime that the compiled code needs, built with `juliac --trim=safe`. The interface is
+can call. No transform is written in C: `juliac --trim=safe` compiles the Julia package, through
+the run-time plans of [Compiling ahead of time](@ref "Compiling ahead of time"), and a thin
+Julia file (`libfftl/src/libfftl.jl`) defines the C entry points. A program that links the
+library needs no Julia installation; the Julia runtime it needs is shipped next to it. The interface is
 described in the [C API reference](@ref "libfftl C API").
 
 !!! note "Experimental"
@@ -18,14 +20,15 @@ cd libfftl
 ./build.sh
 ```
 
-The result is in `libfftl/build/lib`: `libfftl` and the Julia runtime, about 23 MB on macOS.
+The result is in `libfftl/build/lib`: the library (14 MB on macOS arm64) and the Julia runtime
+next to it (10 MB: `libjulia` and the few libraries it loads, without LLVM and without BLAS).
 `build.sh` also compiles the C test `test/test.c` against the library into `test/test`; run it to check the build.
 
 Three environment variables change the build:
 
 | variable | meaning |
 |:--|:--|
-| `FFTL_THREADS` | number of worker threads baked into the library, or `auto` for one per CPU of the machine that loads it. The default is `auto`; on macOS it is the number of performance cores of the build machine. |
+| `FFTL_THREADS` | number of worker threads baked into the library, or `auto` for one per CPU of the machine that loads it. Default: `auto` on Linux; on macOS the number of performance cores of the build machine. |
 | `FFTL_TRIM` | `safe` (default): trimmed image, the trim verifier must resolve every call. `off`: an untrimmed library, for diagnosing a failing trim build. |
 | `JULIA_CPU_TARGET` | the CPU target of the compiled code. The script picks `apple-m1` on macOS arm64, `x86-64-v3` on x86-64 and `generic` elsewhere. One target is used because a library built for several targets hangs in a garbage collection triggered by a second thread. |
 
@@ -82,7 +85,7 @@ int main(void) {
 Compile and link it against the build:
 
 ```bash
-cc -O2 -Iinclude -Lbuild/lib -lfftl -Wl,-rpath,"$(pwd)/build/lib" example.c -o example -lm
+cc -O2 -Iinclude example.c -o example -Lbuild/lib -lfftl -Wl,-rpath,"$(pwd)/build/lib" -lm
 ./example
 ```
 

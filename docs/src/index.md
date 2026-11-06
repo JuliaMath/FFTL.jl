@@ -2,29 +2,60 @@
 
 # FFTL.jl
 
-*Fastest Fourier Transform in Lübeck*: a Fourier transform library in pure Julia. Complex, real
-and real-to-real transforms of `Float32` and `Float64` arrays, any number of dimensions, any
-length, several threads, SIMD on the CPU, KernelAbstractions on GPUs, and a C library
-([`libfftl`](@ref "C library (libfftl)")) compiled from the same code.
+*Fastest Fourier Transform in Lübeck*: a fast Fourier transform written in Julia. Complex, real
+and real-to-real transforms of any length and any number of dimensions, in `Float32`, `Float64`
+and other floating-point types, on several threads with SIMD on the CPU, through
+KernelAbstractions on GPUs, and as a C library ([`libfftl`](@ref "C library (libfftl)"))
+compiled from the same Julia code.
 
 !!! warning "Experimental"
     FFTL.jl is under development and not registered yet. The interface can still change; the
     documented parts are the ones tested in CI.
 
-## What you get
+## How FFTL came about
 
-- **Every transform you use.** Complex, real-input and all eleven real-to-real kinds (DCT-I to
-  DCT-IV, DST-I to DST-IV, Hartley, halfcomplex), along any set of dimensions of any rank.
-- **Any length.** Smooth lengths go through codelets; lengths with large prime factors go through
-  Bluestein's algorithm. No padding to powers of two.
-- **Plans that behave like the rest of the ecosystem.** Every plan is an `AbstractFFTs.Plan`:
-  `mul!`, `*`, `inv`, `\`. See [Using FFTL next to FFTW.jl](@ref "Using FFTL next to FFTW.jl").
-- **Parallel where it pays.** Threads are used only when the transform is large enough, and a
-  single long line uses the four-step algorithm. See [Threads](@ref "Threads").
-- **Numbers in their own precision.** `BigFloat` and other floating-point types are transformed
-  in that type, not converted to `Float64`.
-- **A C library without a Julia installation.** [libfftl](@ref "C library (libfftl)") is FFTL
-  trimmed with `juliac`, with the same transforms in single and double precision.
+FFTL was written by a coding agent under the guidance of a domain expert. Julia makes a library
+of this scope possible in one language: the compiler generates the codelets for the radix,
+element type and SIMD width in use, the same generator serves the GPU kernels, and `juliac`
+turns the package into a C library. A coding agent makes it possible to implement, test and
+measure the many details such a library needs. The library builds on decades of work on fast
+Fourier transforms, above all on FFTW; [FFTW and FFTL](@ref "FFTW and FFTL") describes that
+history.
+
+FFTL is meant to be developed further by the Julia community, as one FFT that the ecosystem
+shares. [Contribute](@ref "Contribute") says where help is most useful.
+
+## What FFTL covers
+
+**Transforms, number types and platforms, in Julia.**
+
+- Complex, real-input and all eleven real-to-real kinds (DCT-I to DCT-IV, DST-I to DST-IV,
+  Hartley, halfcomplex), along any set of dimensions of any rank.
+- Any length: smooth lengths through generated codelets, lengths with large prime factors
+  through Bluestein's algorithm, no padding to powers of two.
+- `BigFloat` and other floating-point types in their own precision, not converted to `Float64`.
+- GPUs through KernelAbstractions.jl, with the same functions.
+- Threads where the transform is large enough, and the four-step algorithm for one long line
+  (see [Threads](@ref "Threads")).
+
+**A C library made from the Julia code.** [libfftl](@ref "C library (libfftl)") is the package
+compiled with `juliac --trim`. No transform is written in C, and a program that links the
+library needs no Julia installation. The run-time plans it is built from are public, so Julia
+programs that use them can be trimmed as well.
+
+**Entry points for special variants.** [Passes](@ref "Passes: one dimension of a strided array")
+transform one dimension of a strided array and can skip zero inputs and unneeded outputs.
+Libraries that assemble their own transforms from such passes, such as NFFT.jl, use them.
+
+**The interface of the ecosystem.** FFTL is a backend of AbstractFFTs.jl, and its names,
+conventions and scalings are those of FFTW.jl (see [Coming from FFTW.jl](@ref "Coming from FFTW.jl")).
+
+## Installation
+
+```julia
+using Pkg
+Pkg.add(url = "https://github.com/JuliaMath/FFTL.jl")
+```
 
 ## Quick start
 
@@ -60,6 +91,7 @@ FFTL.idct(C) ≈ r
 |:--|:--|
 | run your first transform | [Your first transform](@ref "Your first transform") |
 | see the library used on real problems | [Tutorials](@ref "Spectrum of a sampled signal") |
+| move code from FFTW.jl | [Coming from FFTW.jl](@ref "Coming from FFTW.jl") |
 | solve a specific task: plans, real data, threads, GPUs, C | [How-to Guides](@ref "Plans and reuse") |
 | understand the mathematics and the algorithms | [Explanation](@ref "The discrete Fourier transform") |
 | look up a function, a kind, a limit | [Reference](@ref "Julia API") |
@@ -68,9 +100,9 @@ FFTL.idct(C) ≈ r
 
 A plan is a Julia object that carries the radix sequence, the twiddle tables and the work
 buffers for one size and one set of dimensions. Radix sequences are chosen by a fixed rule, and
-the codelets they run are generated for the radix, element type and SIMD width actually used. Long transforms run on several threads, and
-lengths with large prime factors go through Bluestein's algorithm. The details are in
-[Explanation](@ref "Algorithms").
+the codelets they run are generated for the radix, element type and SIMD width actually used.
+Long transforms run on several threads, and lengths with large prime factors go through
+Bluestein's algorithm. The details are in [Algorithms](@ref "Algorithms").
 
 ## Package status
 
@@ -78,7 +110,7 @@ lengths with large prime factors go through Bluestein's algorithm. The details a
 |:--|:--|
 | Julia | 1.10 and newer (CI: 1.10 and current) |
 | License | MIT |
-| Interface | `AbstractFFTs.Plan`s with `mul!`, `*`, `\` and `inv`; the functions are called as `FFTL.fft` |
+| Interface | AbstractFFTs.jl backend; plans are `AbstractFFTs.Plan`s with `mul!`, `*`, `\` and `inv` |
 | Platforms | Linux and macOS (CI); Apple M1 Max is the development machine |
 | GPU | experimental, via KernelAbstractions.jl |
 | C library | experimental, `juliac --trim`, see [libfftl](@ref "C library (libfftl)") |

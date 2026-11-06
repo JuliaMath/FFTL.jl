@@ -10,7 +10,7 @@ using FFTL, LinearAlgebra
 x = randn(ComplexF64, 512, 512)
 p = FFTL.plan_fft(x)             # forward plan for arrays like x
 y = similar(x)
-mul!(y, p, x)                    # out of place: y must not be x
+mul!(y, p, x)                    # out of place, into a preallocated y
 y ≈ FFTL.fft(x)
 ```
 
@@ -43,14 +43,22 @@ p \ y ≈ x
 A plan owns its work buffers. Two tasks applying the same plan at the same time would write into
 the same buffers, so a plan must not be shared between tasks. Plans of the same size share their
 twiddle tables and kernels, so making one more plan is cheap. The pattern for a threaded loop
-is one plan per task:
+is one plan per task, each task working through its own chunk of the items:
 
 ```julia
-Threads.@threads for i in 1:n
-  p = plans[Threads.threadid()]   # one per thread, made before the loop
-  mul!(out[i], p, in[i])
+chunks = Iterators.partition(eachindex(xs), cld(length(xs), Threads.nthreads()))
+@sync for c in chunks
+  Threads.@spawn begin
+    p = FFTL.plan_fft(xs[first(c)]; threads = 1)   # this task's plan
+    for i in c
+      mul!(ys[i], p, xs[i])
+    end
+  end
 end
 ```
+
+Indexing a vector of plans with `Threads.threadid()` is not safe: a task can move to another
+thread while it runs, and two tasks can then use the same plan.
 
 ## Threads inside a plan
 

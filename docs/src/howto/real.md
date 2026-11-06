@@ -33,8 +33,8 @@ size(Y), FFTL.irfft(Y, 999) ≈ y
 ```
 
 `brfft` is the unnormalised inverse, the real counterpart of `bfft`. It differs from `irfft` by the
-product of the transformed lengths, which is the number of elements in the region. For one
-dimension that is the length ``d``:
+product of the transformed lengths, the number of elements in the region; for one dimension,
+the length of the real array:
 
 ```@example real
 y1 = randn(999)

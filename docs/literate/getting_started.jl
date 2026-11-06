@@ -1,8 +1,8 @@
 # # Your first transform
 #
 # FFTL.jl computes the discrete Fourier transform (DFT) of arrays with any number of dimensions
-# and any length. The functions are called qualified, `FFTL.fft`, because FFTL does not export
-# them: it can be loaded next to FFTW.jl without the two taking over each other's `fft`.
+# and any length. The examples call the functions qualified, `FFTL.fft`, which selects FFTL
+# explicitly, also when other FFT packages are loaded.
 
 using FFTL, LinearAlgebra, Random
 Random.seed!(1);

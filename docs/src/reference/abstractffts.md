@@ -1,7 +1,7 @@
 # AbstractFFTs
 
-FFTL implements the plan side of [AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl).
-Which methods each plan type provides:
+FFTL is a backend of [AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl). Which
+methods each plan type provides:
 
 | method | complex plans | real plans (`rfft`, `brfft`, `irfft`) | real-to-real plans |
 |:--|:--|:--|:--|
@@ -15,11 +15,11 @@ Which methods each plan type provides:
 Real plans are `RFFTLPlan` (`rfft`) and `BRFFTLPlan` (`brfft`, `irfft`); the complex ones are
 `FFTLPlan`; real-to-real are `R2RPlan`.
 
-## What FFTL does not implement
+## The generic functions
 
-- **`AbstractFFTs.plan_fft` and `AbstractFFTs.fft` for standard arrays.** FFTL does not register
-  itself as the backend of the generic functions, so `AbstractFFTs.fft(x)` needs another backend
-  such as FFTW.jl loaded. The reason is in [Using FFTL next to FFTW.jl](@ref "Using FFTL next to FFTW.jl").
+The generic functions `AbstractFFTs.fft`, `plan_fft`, `rfft`, … run on FFTL for standard arrays.
+How FFTL and FFTW.jl behave when both are loaded is described on
+[Coming from FFTW.jl](@ref "Coming from FFTW.jl").
 
 ## Inverses
 

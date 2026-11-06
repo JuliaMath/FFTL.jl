@@ -37,8 +37,9 @@ a 3D array costs little more than one for a 1D line.
 ## Passes: one dimension of a strided array
 
 `FFTL.plan_pass` transforms along one dimension of a strided view, applied to all lines at once.
-It is the building block of the transforms above and what NFFT.jl uses on its oversampled grid.
-Two optional declarations let it skip work:
+It is the building block of the transforms above, and the entry point for libraries that build
+special variants of the transform themselves, such as NFFT.jl on its oversampled grid. Two
+optional declarations let it skip work:
 
 - `nonzero` says that each line is zero outside the given ranges of indices along `d`. The first
   stage then does not read the zeros.

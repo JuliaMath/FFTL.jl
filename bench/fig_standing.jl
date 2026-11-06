@@ -16,10 +16,11 @@
 # (ducc0: no DCT kinds, vDSP: c2c and DCT-II only) would otherwise read as comparable over the
 # full panel. All panels share one y range in whole octaves, exact powers of two as ticks.
 #
-# Writes docs/src/generated/benchmarks/standing.png.
+# Writes docs/src/generated/benchmarks/standing.png and standing.toml (the per-panel summary that
+# the benchmarks page quotes).
 # Usage: julia --project=docs bench/fig_standing.jl   (or included from docs/make.jl)
 
-using CairoMakie, Statistics, Printf
+using CairoMakie, Statistics, Printf, TOML
 
 include(joinpath(@__DIR__, "overview.jl"))
 
@@ -79,6 +80,7 @@ function main()
     # One y range for every panel so the panels are directly comparable: the enclosing whole
     # octaves of the data, with exact powers of two as ticks.
     allpanels = [folds(p) for p in PANELS]
+    summary = Dict{String,Any}()
     lo = minimum(minimum(f[l]) for (f, _, _) in allpanels for l in keys(f) if !isempty(f[l]))
     hi = maximum(maximum(f[l]) for (f, _, _) in allpanels for l in keys(f) if !isempty(f[l]))
     k0, k1 = floor(Int, log2(lo)), ceil(Int, log2(hi))
@@ -88,6 +90,10 @@ function main()
         f, cov, total = allpanels[i]
         libs = ["fftl"; p.comps]
         present = [l for l in libs if !isempty(f[l])]
+        summary[p.key] = Dict(LIBNAME[l] => Dict("fold" => round(exp(mean(log.(f[l]))); digits = 2),
+                                                  "win_percent" => round(Int, 100count(>(1), f[l]) / length(f[l])),
+                                                  "coverage" => cov[l], "total" => total)
+                              for l in present)
         println(@sprintf("%-8s %s", p.key,
                          join([@sprintf("%s ×%.2f (%d%% of %d/%d)", LIBNAME[l],
                                         exp(mean(log.(f[l]))),
@@ -122,6 +128,7 @@ function main()
     rowgap!(fig.layout, 6); colgap!(fig.layout, 10)
     mkpath(OUT)
     save(joinpath(OUT, "standing.png"), fig)
+    open(io -> TOML.print(io, summary), joinpath(OUT, "standing.toml"), "w")
     set_theme!()   # reset: the figures of the other pages must not inherit this theme
     println("wrote ", joinpath(OUT, "standing.png"))
 end

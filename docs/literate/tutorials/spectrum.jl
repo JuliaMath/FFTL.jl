@@ -50,10 +50,10 @@ text!(ax, f[idx], amp[idx] .+ 0.06;
       align = (:center, :bottom))
 fig
 
-# ## Why this needs no more than one transform
+# ## Long recordings
 #
-# The transform of the whole record is one call. For a long recording, the same plan is applied
-# to every block, which is what the [plans how-to](@ref "Plans and reuse") shows.
+# The transform of the whole record is one call. For a long recording, a plan for the block
+# length is made once and applied to every block (see [Plans and reuse](@ref "Plans and reuse")).
 
 # ## Inverse
 #

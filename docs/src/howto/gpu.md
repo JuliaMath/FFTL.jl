@@ -34,12 +34,18 @@ Rd = FFTL.rfft(MtlArray(randn(Float32, 1024, 1024)))
 Complex transforms use multi-stage kernels. Each kernel computes one pass of a large radix (up to
 4096 points) in workgroup memory, and a transform is one to five passes per dimension. Pass and
 workgroup sizes are tuned on an Apple M1 Max: there, `Float32` transforms were faster than
-Metal.jl's FFT in nearly all measured cases. The CUDA path is built and measured against cuFFT on an NVIDIA RTX A6000; the
-benchmark results are not published yet ([Benchmarks](@ref "Benchmarks")).
+Metal.jl's FFT in nearly all measured cases. The CUDA path is tuned and measured on an NVIDIA RTX A6000 against cuFFT and VkFFT
+([Benchmarks](@ref "Benchmarks")).
 
-Real transforms (`rfft`, `irfft`, `brfft`) run at about the speed of a complex transform of the
-same size. The real-to-real kinds run through a twiddled complex DFT of twice the length. They are
-correct for every kind but not tuned yet, so their speed is below the complex path.
+Real transforms (`rfft`, `irfft`, `brfft`) compute the half spectrum through a complex transform
+of half the length, with the pre- and post-processing inside its first and last pass.
+
+The real-to-real kinds are reduced to complex DFTs: of half the length for DCT-II to DCT-IV and
+DST-II to DST-IV of even length, of length ``n - 1`` for DCT-I and ``n + 1`` for DST-I, mostly
+with the extra steps inside the passes. Odd lengths of the other kinds take a complex DFT of
+length ``2n``, the Hartley and halfcomplex kinds one of length ``n``. DCT-II and DST-II are the
+most tuned of them; for the other kinds the speed relative to VkFFT depends on the kind and the
+size, from faster to several times slower.
 
 Other GPUs run through the same code. They are not tuned, and AMD and Intel GPUs have not been
 tested.

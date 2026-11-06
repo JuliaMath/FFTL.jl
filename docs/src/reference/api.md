@@ -4,8 +4,9 @@
 CurrentModule = FFTL
 ```
 
-FFTL does not export its functions. They are called qualified, `FFTL.fft` and so on, so that
-the package can be loaded next to FFTW.jl. The names listed here are public.
+The names listed here are public. FFTL does not export them; the examples in this manual call
+them qualified, `FFTL.fft` and so on, which selects FFTL explicitly. The generic functions of
+AbstractFFTs.jl reach the same transforms ([AbstractFFTs](@ref "AbstractFFTs")).
 
 ## Complex transforms
 
@@ -53,6 +54,20 @@ plan_pass
 plan_r2r_pass
 apply!
 ```
+
+## Run-time plans
+
+Plans whose radix sequences and sizes are data, for programs compiled with `juliac --trim`; see
+[Compiling ahead of time](@ref "Compiling ahead of time").
+
+```@docs
+RPlan
+execute!
+RRFFTPlan
+RR2RPlan
+```
+
+`execute_r2c!`, `execute_c2r!` and `execute_r2r!` are documented with the plans they apply.
 
 ## GPU
 

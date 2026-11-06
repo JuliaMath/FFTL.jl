@@ -2,7 +2,7 @@
 #
 # A filter that slides over a signal costs ``O(nm)`` operations for signal length ``n`` and
 # filter length ``m``. Through the convolution theorem, the convolution is a pointwise product
-# of spectra: transform both, multiply, transform back. That costs ``O(N log N)`` with ``N ≥ n + m - 1``.
+# of spectra: transform both, multiply, transform back. That costs ``O(N \log N)`` with ``N ≥ n + m - 1``.
 # The result is linear, not circular, so both inputs are zero-padded first.
 
 using FFTL, CairoMakie, Random
@@ -32,14 +32,13 @@ N = nextpow(2, n)
 xpad = zeros(N); xpad[1:length(signal)] .= signal;
 hpad = zeros(N); hpad[1:length(kernel)] .= kernel;
 
-# Real inputs: `rfft` and `irfft` transform the padded signals and their product with half the work
+# The inputs are real, so `rfft` and `irfft` do this with half the work of complex transforms:
 
 y_fft = FFTL.irfft(FFTL.rfft(xpad) .* FFTL.rfft(hpad), N)[1:n]
 y_dir = direct_convolution(signal, kernel)
 maximum(abs, y_fft - y_dir)
 
-# The difference is at the level of rounding, so the two agree. Both give the same output, and
-# the FFT version scales as ``N log N`` instead of ``nm``.
+# The difference is at the level of rounding.
 
 # The signal, the filter and the output; the FFT points sit on the direct curve:
 
@@ -55,6 +54,27 @@ fig
 
 # ## Filtering a long signal
 #
-# For a signal much longer than the filter, overlap-add applies the same method block by block.
-# The plan for the block length is made once and reused for every block: the
-# [plans how-to](@ref "Plans and reuse") explains why that matters.
+# For a signal much longer than the filter, one transform of the whole padded signal wastes
+# memory, and a stream has no end to pad to. Overlap-add cuts the signal into blocks of length
+# ``B``, convolves each block with the filter through transforms of length ``N = B + m - 1``, and
+# adds the overlapping tails. The plans for length ``N`` and the filter's spectrum are made once
+# and reused for every block (see [Plans and reuse](@ref "Plans and reuse")).
+
+long_signal = randn(20_000)
+B = 1024 - length(kernel) + 1                     # N = 1024
+N = B + length(kernel) - 1
+pf = FFTL.plan_rfft(zeros(N))
+pb = FFTL.plan_irfft(zeros(ComplexF64, N ÷ 2 + 1), N)
+H = pf * [kernel; zeros(N - length(kernel))]
+
+y_ola = zeros(length(long_signal) + length(kernel) - 1)
+block = zeros(N)
+for s in 1:B:length(long_signal)
+  e = min(s + B - 1, length(long_signal))
+  block .= 0
+  block[1:e-s+1] .= @view long_signal[s:e]
+  part = pb * ((pf * block) .* H)
+  m = min(N, length(y_ola) - s + 1)
+  y_ola[s:s+m-1] .+= @view part[1:m]
+end
+maximum(abs, y_ola - direct_convolution(long_signal, kernel))
