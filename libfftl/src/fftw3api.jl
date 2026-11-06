@@ -1,4 +1,4 @@
-# The FFTW3 C interface (include/fftw3.h) over the run-time plans of libfftl.jl: double precision
+# The FFTW3 C interface (include/fftw3.h) over FFTL's run-time plans: double precision
 # as fftw_*, single precision as fftwf_*, both exported by the same library. Signatures and
 # semantics follow the FFTW manual (https://www.fftw.org/fftw3_doc/), the constant values
 # FFTW.jl (src/fft.jl). One generic implementation per entry point; the @ccallable methods at the
@@ -23,7 +23,7 @@
 # interface ends up with sz = reverse(n) and FFTW's last dimension, the one r2c/c2r halve, as
 # FFTL's region[1], the one RRFFTPlan halves.
 #
-# An fftw_plan is the libfftl-style handle (index | precision << 32 | type << 40) plus one, so
+# An fftw_plan is a handle (registry index | precision << 32 | type << 40) plus one, so
 # that it is never NULL. Each plan record keeps idle FFTL plans: an execution takes one (or
 # builds another when all are busy) and returns it afterwards, so that the new-array execute
 # functions can run one plan on several threads at once, as FFTW allows. FFTL plans own their

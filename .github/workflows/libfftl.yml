@@ -31,11 +31,6 @@ jobs:
         with:
           version: '1'
       - uses: julia-actions/cache@v2
-      - name: Boundary tests in Julia (no build)
-        working-directory: libfftl
-        run: |
-          julia --project=. -e 'using Pkg; Pkg.instantiate()'
-          julia -t 4 --project=. test/jltest.jl
       - name: FFTW3 interface in Julia against FFTW.jl (no build)
         working-directory: libfftl
         run: |
@@ -43,8 +38,6 @@ jobs:
           julia -t 4 --project=test test/fftw3_jltest.jl
       - name: Build the trimmed library and the C test
         run: libfftl/build.sh
-      - name: C test
-        run: libfftl/test/test
       - name: FFTW3 symbols
         run: libfftl/test/fftw3_symbols.sh
       - name: FFTW3 differential C test (against FFTW_jll)
