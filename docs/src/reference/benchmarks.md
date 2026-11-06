@@ -14,7 +14,9 @@ This figure asks the question a package author faces: which single library to de
 case, the fold change is the time of the fastest *other* library divided by this library's
 time; right of the parity line is a win, left of it a loss, and wins are not clipped at 1. The
 box is the quartile rectangle with the median line and Tukey whiskers, the points are the raw
-cases. The label under each column carries the fold factor (the geometric mean of the fold
+cases. Colour is one Uni Lübeck family per library, FFTL in the house colour Ozeangrün — the
+two figures of this page encode different things in colour: the library here, the precision in
+the figure below. The label under each column carries the fold factor (the geometric mean of the fold
 changes over the cases the library itself computes), the win rate, and the coverage: libraries
 that lack transform kinds (ducc0 without DCT/DST, vDSP with c2c and DCT-II only, MPSGraph and
 cuFFT without real-to-real at all) compute their factor over a smaller subset, so the coverage
