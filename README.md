@@ -9,7 +9,9 @@
 A pure-Julia fast Fourier transform for the CPU and, experimentally, GPUs: complex, real-input
 and real-to-real (DCT, DST, Hartley, halfcomplex) transforms of `Float32` and `Float64` data, any
 number of dimensions, any length, multithreaded; other float types through a generic path; a C
-library built with `juliac --trim`. Work in progress; the interface may still change.
+library built with `juliac --trim`. Experimental and not registered yet; the interface may still
+change. The manual at [JuliaMath.github.io/FFTL.jl](https://JuliaMath.github.io/FFTL.jl)
+documents the parts tested in CI.
 
 ## Usage
 
@@ -119,7 +121,8 @@ it on Linux and macOS.
   `FCADD` and `FCMLA` instructions; elsewhere the same operations are built from shuffles.
 - **Stockham chains.** A transform is a sequence of radix stages (mostly 4 and 8) without bit
   reversal. The sequence is part of the plan's type, so it compiles into one function. The radices
-  are chosen by a fixed rule, without measurements.
+  are chosen by a fixed rule found in offline searches over the decompositions of many lengths;
+  there is no run-time measuring step.
 - **Multidimensional transforms** run the same chains along every dimension: a dimension with
   stride S is a chain started with stride S, the S neighbouring columns forming the vectorised
   index. No transposition.

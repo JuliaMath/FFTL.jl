@@ -1,0 +1,36 @@
+name: Documentation
+
+# Builds the manual with Documenter and deploys it to gh-pages on pushes to main; pull requests
+# build it and (with push_preview in make.jl) get a preview link in their checks. The Literate
+# scripts and the @example blocks run during the build, so a broken example fails the job.
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: write   # deploydocs pushes the build to the gh-pages branch
+  statuses: write   # commit status of the docs build
+
+jobs:
+  docs:
+    name: Documentation · ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - name: Instantiate the docs environment
+        run: julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+      - name: Build and deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: julia --project=docs docs/make.jl

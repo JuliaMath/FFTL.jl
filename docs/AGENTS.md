@@ -57,9 +57,11 @@ Conversation with Tobias is in German; everything in this folder is written in E
   with juliac), build variables (`FFTL_THREADS`, `FFTL_TRIM`, `JULIA_CPU_TARGET`), baked thread pool,
   column-major data, unnormalised backward transform, error handling via `fftl_last_error`, concurrency
   rules. The C example in the how-to was compiled and run against the build in `FFTL.jl/libfftl`.
-- **Logo:** from `FFTL.jl/docs/assets/fftl-logo.svg` (created by the package agent on branch
-  `radix-order`, untracked). Copied, not moved. `src/assets/logo.png` is rendered from the SVG with a
-  transparent background (`rsvg-convert`). If the SVG changes, re-render the PNG.
+- **Logo:** hand-built SVGs in `docs/assets/` (`fftl-logo.svg`, `fftl-logo-dark.svg`,
+  `fftl-favicon-spectrum.svg`; conventions in the workspace `AGENTS.md`), copied to
+  `docs/src/assets/` as `logo.svg` and `logo-dark.svg`. Documenter's sidebar picks them up
+  automatically, including the dark-theme switch; there is no PNG. If the SVGs change, copy them
+  over (the README links `docs/assets/fftl-logo.svg` directly).
 
 ## Verification rules
 
@@ -82,8 +84,10 @@ Conversation with Tobias is in German; everything in this folder is written in E
 
 ## Open items
 
-- GitHub workflow for the docs (`deploydocs` is in `make.jl`; no CI job yet).
+- Docs CI job: written (`.github/workflows/docs.yml`, deploys to gh-pages with `GITHUB_TOKEN` on
+  pushes to `main`); the badge-less manual link in the README points at
+  `https://JuliaMath.github.io/FFTL.jl`, which is live once the job has run on `main`.
 - Dark mode: Documenter's theme still offers a dark-mode switch; Tobias wants light mode only.
-  The tutorial figures have a white background, so they read in both themes.
+  The sidebar logo has light and dark variants; the tutorial figures have a white background, so
+  they read in both themes.
 - Benchmarks: results once the benchmark release is done.
-- Package README still says "work in progress" and does not link the docs.
