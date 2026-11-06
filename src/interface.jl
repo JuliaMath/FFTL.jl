@@ -4,6 +4,25 @@
 
 const FFTLFloat = Union{Float32,Float64}
 
+# The thread default for new plans: set_num_threads(n) sets it (the drop-in for
+# FFTW.set_num_threads); 0 means Threads.nthreads().
+const DEFAULT_THREADS = Ref(0)
+plan_threads() = DEFAULT_THREADS[] == 0 ? Threads.nthreads() : DEFAULT_THREADS[]
+set_num_threads(n::Integer) = (DEFAULT_THREADS[] = Int(n); nothing)
+
+# The FFTW planning flags, accepted and ignored: FFTL plans with its own strategy (a cost
+# model over measured kernels), the flags do not change what is planned. The values match
+# FFTW's (fftw3.h).
+const ESTIMATE = UInt32(1 << 0)
+const MEASURE = UInt32(1 << 1)
+const PATIENT = UInt32(1 << 2)
+const EXHAUSTIVE = UInt32(1 << 3)
+
+# The FFTW-style keywords: num_threads maps to threads, flags and timelimit are accepted and
+# ignored (documented); the remaining keywords go to the plan constructors.
+planthreads(threads, num_threads) =
+  num_threads !== nothing ? Int(num_threads) : threads !== nothing ? Int(threads) : plan_threads()
+
 # The transformed dimensions: sorted, without duplicates, each within 1:N (an integer is one
 # dimension). The message is a literal: the run-time plans are compiled ahead of time.
 function normregion(region, N::Int)
@@ -127,13 +146,16 @@ The methods are on AbstractFFTs's functions (Variant A): with FFTW.jl loaded, FF
 win for StridedArrays and FFTL catches the rest of its float range; FFTL stays reachable
 qualified (`FFTL.plan_fft`).
 """
-plan_fft(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); kws...) =
-  FFTLPlan{plan_type(x)}(size(x), region, -1; kws...)
-plan_bfft(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); kws...) =
-  FFTLPlan{plan_type(x)}(size(x), region, 1; kws...)
+plan_fft(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); threads = nothing, num_threads = nothing,
+         flags = nothing, timelimit = nothing, kws...) =
+  FFTLPlan{plan_type(x)}(size(x), region, -1; threads = planthreads(threads, num_threads), kws...)
+plan_bfft(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); threads = nothing, num_threads = nothing,
+          flags = nothing, timelimit = nothing, kws...) =
+  FFTLPlan{plan_type(x)}(size(x), region, 1; threads = planthreads(threads, num_threads), kws...)
 # the normalisation over the plan's dimensions (the region without duplicates)
-function plan_ifft(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); kws...)
-  p = plan_bfft(x, region; kws...)
+function plan_ifft(x::AbstractArray{<:Complex{<:FFTLFloat}}, region = 1:ndims(x); threads = nothing,
+                   num_threads = nothing, flags = nothing, timelimit = nothing, kws...)
+  p = plan_bfft(x, region; threads = planthreads(threads, num_threads), kws...)
   AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(plan_type(x), size(x), AbstractFFTs.fftdims(p)))
 end
 # The generic-float path: BigFloat, Double64, Float128, … in their own precision,

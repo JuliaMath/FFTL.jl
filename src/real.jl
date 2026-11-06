@@ -413,12 +413,15 @@ realtype(::AbstractArray) = Float64
 Real-input forward DFT (half spectrum along the first dimension of `region`), its unnormalised
 inverse to real arrays with length `d` along that dimension, and the normalised inverse.
 """
-plan_rfft(x::AbstractArray{<:FFTLFloat}, region = 1:ndims(x); kws...) =
-  RFFTLPlan{realtype(x)}(size(x), region; kws...)
-plan_brfft(X::AbstractArray{<:Complex{<:FFTLFloat}}, d::Integer, region = 1:ndims(X); kws...) =
-  BRFFTLPlan{realtype(X)}(size(X), Int(d), region; kws...)
-function plan_irfft(X::AbstractArray{<:Complex{<:FFTLFloat}}, d::Integer, region = 1:ndims(X); kws...)
-  p = plan_brfft(X, d, region; kws...)
+plan_rfft(x::AbstractArray{<:FFTLFloat}, region = 1:ndims(x); threads = nothing, num_threads = nothing,
+          flags = nothing, timelimit = nothing, kws...) =
+  RFFTLPlan{realtype(x)}(size(x), region; threads = planthreads(threads, num_threads), kws...)
+plan_brfft(X::AbstractArray{<:Complex{<:FFTLFloat}}, d::Integer, region = 1:ndims(X); threads = nothing,
+           num_threads = nothing, flags = nothing, timelimit = nothing, kws...) =
+  BRFFTLPlan{realtype(X)}(size(X), Int(d), region; threads = planthreads(threads, num_threads), kws...)
+function plan_irfft(X::AbstractArray{<:Complex{<:FFTLFloat}}, d::Integer, region = 1:ndims(X);
+                    threads = nothing, num_threads = nothing, flags = nothing, timelimit = nothing, kws...)
+  p = plan_brfft(X, d, region; threads = planthreads(threads, num_threads), kws...)
   AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(realtype(X), AbstractFFTs.output_size(p), p.region))
 end
 # The generic-float path: BigFloat, Double64, Float128, … in their own precision,
