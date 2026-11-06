@@ -3,6 +3,7 @@
 # FFTL.jl — Fastest Fourier Transform in Lübeck
 
 [![CI](https://github.com/JuliaMath/FFTL.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaMath/FFTL.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://JuliaMath.github.io/FFTL.jl/dev/)
 [![codecov](https://codecov.io/gh/JuliaMath/FFTL.jl/graph/badge.svg?branch=main)](https://codecov.io/gh/JuliaMath/FFTL.jl)
 [![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
