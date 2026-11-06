@@ -198,7 +198,13 @@ function dct2_pairs!(y, K::R2RLine{T}, B, dst::Bool) where {T}
     y[idx(0)] = 2 * (real(z0) + imag(z0))
     y[idx(M)] = 2 * real(tw[M+1]) * (real(z0) - imag(z0))
     if y isa StridedLine
-      GC.@preserve c w tw dct2_pairs_vec!(y.ptr, y.stride, cptr(c), cptr(w), cptr(tw), n, M, dst)
+      GC.@preserve c w tw begin
+        if y.stride == 1 && T === Float32   # two complex values per 128-bit register; F64 keeps the one-complex pass
+          dct2_pairs_wide!(y.ptr, cptr(c), cptr(w), cptr(tw), n, M, dst)
+        else
+          dct2_pairs_vec!(y.ptr, y.stride, cptr(c), cptr(w), cptr(tw), n, M, dst)
+        end
+      end
     else
       for k in 1:(M-1)÷2
         zk = c[k+1]; zm = conj(c[M-k+1])
@@ -248,6 +254,54 @@ function dct2_pairs_vec!(py::Ptr{T}, ys::Int, pc::Ptr{T}, pw::Ptr{T}, ptw::Ptr{T
     um = ccmul(vload(V, ptw + (M - k) * CB), cconj(h - d))
     unsafe_store!(py, 2 * uk[1], o(k)); unsafe_store!(py, -2 * uk[2], o(n - k))
     unsafe_store!(py, 2 * um[1], o(M - k)); unsafe_store!(py, -2 * um[2], o(M + k))
+  end
+  nothing
+end
+
+# The pairs k = 1…(M-1)÷2 of dct2_pairs! with two consecutive k values per vector (two complex
+# values per vector, the widest ladder step for Float32): the four output streams (re and imag of
+# the values k and M - k) become adjacent pairs in memory, two values per store instead of four
+# scalar ones. Bit-identical to dct2_pairs_vec!: the factor 2 of the outputs is folded into the
+# twiddle product (halving and doubling are exact), so h = c_k + conj c_(M-k) and
+# 2w_k(c_k - conj c_(M-k)) enter the product unscaled.
+function dct2_pairs_wide!(py::Ptr{T}, pc::Ptr{T}, pw::Ptr{T}, ptw::Ptr{T}, n::Int, M::Int, dst::Bool) where {T}
+  W = Vec{4,T}; V = Vec{2,T}; CB = 2 * sizeof(T); SB = sizeof(T)
+  half = V((T(0.5), T(0.5))); mone = V((-one(T), -one(T)))
+  rev = Val((2, 3, 0, 1))                # the mirror loads come out in (k+1, k) order
+  kmax = (M - 1) ÷ 2
+  @inbounds for k in 1:2:(kmax - 1)
+    zc = vload(W, pc + k * CB)                       # c_k, c_(k+1)
+    zm = cconj(shufflevector(vload(W, pc + (M - k - 1) * CB), rev))   # conj c_(M-k), conj c_(M-k-1)
+    h = zc + zm
+    d = ccmul(2 * vload(W, pw + k * CB), zc - zm)
+    uk = ccmul(vload(W, ptw + k * CB), h + d)                         # lanes (k, k+1)
+    um = ccmul(shufflevector(vload(W, ptw + (M - k - 1) * CB), rev), cconj(h - d))  # lanes (k, k+1)
+    if dst
+      vstore(shufflevector(uk, Val((2, 0))), py + (n - k - 2) * SB)         # re at n-1-k, n-2-k
+      vstore(shufflevector(uk, Val((1, 3))) * mone, py + (k - 1) * SB)      # -im at k-1, k
+      vstore(shufflevector(um, Val((0, 2))), py + (M + k - 1) * SB)         # re at M+k-1, M+k
+      vstore(shufflevector(um, Val((3, 1))) * mone, py + (M - k - 2) * SB)  # -im at M-k-2, M-k-1
+    else
+      vstore(shufflevector(uk, Val((0, 2))), py + k * SB)                   # re at k, k+1
+      vstore(shufflevector(uk, Val((3, 1))) * mone, py + (n - k - 1) * SB)  # -im at n-k-1, n-k
+      vstore(shufflevector(um, Val((2, 0))), py + (M - k - 1) * SB)         # re at M-k-1, M-k
+      vstore(shufflevector(um, Val((1, 3))) * mone, py + (M + k) * SB)      # -im at M+k, M+k+1
+    end
+  end
+  # the last pair k, M-k on its own when their number is odd (scalar stores, as above)
+  if isodd(kmax)
+    k = kmax
+    zk = vload(V, pc + k * CB); czm = cconj(vload(V, pc + (M - k) * CB))
+    h = (zk + czm) * half; d = ccmul(vload(V, pw + k * CB), zk - czm)
+    uk = ccmul(vload(V, ptw + k * CB), h + d)
+    um = ccmul(vload(V, ptw + (M - k) * CB), cconj(h - d))
+    idx(j) = (dst ? n - 1 - j : j) + 1
+    @inbounds begin
+      unsafe_store!(py, 2 * uk[1], idx(k))
+      unsafe_store!(py, -2 * uk[2], idx(n - k))
+      unsafe_store!(py, 2 * um[1], idx(M - k))
+      unsafe_store!(py, -2 * um[2], idx(M + k))
+    end
   end
   nothing
 end
