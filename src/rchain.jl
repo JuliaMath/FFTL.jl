@@ -46,6 +46,18 @@ all(in(RADICES), LAZY_RADICES) || error("LAZY_RADICES must be radices from RADIC
 # Whether the factorisation of n has a prime factor whose codelet is compiled on first use.
 has_lazy_factor(n::Int) = any(in(LAZY_RADICES), keys(factorize(n)[1]))
 
+# The stage_small! call of a codelet: a switch over the strides s < C that divide C (a constant
+# of the kernel). A callable of a lazy radix (V a type parameter) takes s as a run-time Val.
+function small_call(r, σ, V)
+  V isa Type || return :(stage_small!(py, px, pt, ms, Val($r), Val($σ), $V, Val(s)))
+  C = ncomplex(V)
+  ex = :(throw(ArgumentError("no small-stride stage for this stride")))
+  for s in C-1:-1:1
+    C % s == 0 && (ex = :(s == $s ? stage_small!(py, px, pt, ms, Val($r), Val($σ), $V, Val($s)) : $ex))
+  end
+  ex
+end
+
 # Codelet dispatch: one function per kind of stage call, a switch over the codelet index,
 # generated for both element types so that every call has constant type arguments. Codelets of
 # LAZY_RADICES are not in the switch; `<kind>_lazy` takes their index and calls the stage kernel
@@ -60,6 +72,7 @@ for T in (Float32, Float64)
     (:cstage_last!,  (:py, :px, :s),                          (r, σ, V) -> :(stage_last!(py, px, s, Val($r), Val($σ), $V))),
     (:cstage_last_range!, (:py, :px, :s, :qlo, :qhi),         (r, σ, V) -> :(stage_last!(py, px, s, qlo, qhi, Val($r), Val($σ), $V))),
     (:cstage_group!, (:py, :px, :pt, :m),                     (r, σ, V) -> :(stage_first_group!(py, px, pt, m, Val($r), Val($σ), $V))),
+    (:cstage_small!, (:py, :px, :pt, :ms, :s),                (r, σ, V) -> small_call(r, σ, V)),
     (:cstage_lanes!, (:py, :px, :pt, :m, :s0, :sx, :sy, :B),  (r, σ, V) -> :(stage_lanes!(py, px, pt, m, s0, sx, sy, B, Val($r), Val($σ), $V))),
     (:cstage_last_lanes!, (:py, :px, :s0, :sx, :sy, :B),      (r, σ, V) -> :(stage_last_lanes!(py, px, s0, sx, sy, B, Val($r), Val($σ), $V))))
   for (name, args, call) in kinds
@@ -70,6 +83,8 @@ for T in (Float32, Float64)
       # never selects another vector type for it, and code compiled ahead of time must not
       # contain the call (its generator would fail)
       name === :cstage_group! && !(ncomplex(V) in (2, 4)) && continue
+      # stage_small! exists for the widest vector type and power-of-two radices
+      name === :cstage_small! && !(vi == 1 && ispow2(r)) && continue
       r in LAZY_RADICES && continue
       c = ((si - 1) * NL + vi - 1) * NR + ri
       push!(cases, :(c == $c && return $(call(r, σ, V))))
@@ -115,6 +130,7 @@ const OP_MID_TAIL = 2     # q in vectors up to s - rem, the scalar remainder aft
 const OP_LAST = 3
 const OP_LAST_TAIL = 4
 const OP_GROUP = 5        # first stage vectorised over the butterflies p
+const OP_SMALL = 6        # stride below the widest vector: vectorised over q + s·p (stage_small!)
 
 struct StageCall
   op::Int
@@ -136,6 +152,7 @@ struct RChain{T} <: Kernel{T}
   rs::Vector{Int}
   tw::Vector{Vector{Complex{T}}}      # stage i: w^(kp) at (R-1)p + k
   tw1::Vector{Complex{T}}             # first stage: w^(kp) at (k-1)m + p
+  twg::Vector{Vector{Complex{T}}}     # stage_small! with s > 1: w^(kp) at (k-1)ms + f, p = f ÷ s; else empty
   single::Vector{StageCall}           # the stage calls of a single line
 end
 
@@ -148,13 +165,15 @@ RChain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
 function build_rchain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
   all(in(RADICES), rs) || throw(ArgumentError("radix without a codelet in RADICES"))
   tw, tw1 = chain_tables(T, n, σ, rs)
-  RChain{T}(n, σ, collect(Int, rs), tw, tw1, single_schedule(T, n, σ, collect(Int, rs)))
+  twg = small_tables(ladder_ncomplex(T)[1], n, rs, tw)
+  RChain{T}(n, σ, collect(Int, rs), tw, tw1, twg, single_schedule(T, n, σ, collect(Int, rs)))
 end
 
 # The stage calls of a single line, with the rules of `chain_body` for S = 1: stage i takes the
 # widest vector type whose complex count fits its stride s = R_1⋯R_(i-1), the remainder
 # s mod C runs one complex value at a time; the first stage is grouped over the butterflies
-# when its stride is 1.
+# when its stride is 1; power-of-two stages with a stride below the widest vector run
+# stage_small! at full width.
 function single_schedule(::Type{T}, n::Int, σ::Int, rs::Vector{Int}) where {T}
   ncs = ladder_ncomplex(T)
   nv = length(ncs)
@@ -177,7 +196,10 @@ function single_schedule(::Type{T}, n::Int, σ::Int, rs::Vector{Int}) where {T}
     rem = s % ncs[vi]
     c = codelet_index(T, σ, vi, r); c1 = codelet_index(T, σ, nv, r)
     m = L ÷ r
-    if i == K
+    if i < K && small_stride(ncs[1], r, n, s) && (s > 1 || group == 0 || ncs[group] < ncs[1])
+      # small strides at full width, where the grouped first stage would not be
+      push!(calls, StageCall(OP_SMALL, codelet_index(T, σ, 1, r), c1, m, s, 0))
+    elseif i == K
       push!(calls, StageCall(rem == 0 ? OP_LAST : OP_LAST_TAIL, c, c1, m, s, rem))
     elseif i == 1 && group != 0 && ncs[vi] == 1
       push!(calls, StageCall(OP_GROUP, codelet_index(T, σ, group, r), c1, m, s, 0))
@@ -276,6 +298,8 @@ function run_single!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain
         cstage!(dst, src, cptr(P.tw[i]), st.m, st.s, st.c)
       elseif op == OP_GROUP
         cstage_group!(dst, src, cptr(P.tw1), st.m, st.c)
+      elseif op == OP_SMALL
+        cstage_small!(dst, src, cptr(st.s == 1 ? P.tw1 : P.twg[i]), st.m * st.s, st.s, st.c)
       elseif op == OP_LAST
         cstage_last!(dst, src, st.s, st.c)
       elseif op == OP_MID_TAIL
@@ -349,13 +373,13 @@ end
 
 @noinline function small_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, S::Int,
                               ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
-  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
+  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1, ntuple(i -> P.twg[i], Val(K)))
   GC.@preserve P run!(py, px, pw1, pw2, c, S)
 end
 
 @noinline function small_lanes_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T},
                                       Sx::Int, Sy::Int, B::Int, ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
-  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
+  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1, ntuple(i -> P.twg[i], Val(K)))
   GC.@preserve P run_lanes!(py, px, pw1, pw2, c, Sx, Sy, B)
 end
 
@@ -404,7 +428,7 @@ end
 # A compiled chain takes all rows in one call: one dispatch per plane instead of one per row.
 @noinline function small_rows_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T},
                                      count::Int, rowstride::Int, ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
-  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
+  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1, ntuple(i -> P.twg[i], Val(K)))
   bytes = rowstride * 2 * sizeof(T)
   GC.@preserve P for j in 0:count-1
     run!(py + j * bytes, px + j * bytes, pw1, pw2, c, 1)

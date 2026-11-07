@@ -14,6 +14,7 @@ struct Chain{T,Rs,σ,K} <: Kernel{T}
   n::Int
   tw::NTuple{K,Vector{Complex{T}}}    # stage i: w^(kp) at (R-1)p + k
   tw1::Vector{Complex{T}}             # first stage: w^(kp) at (k-1)m + p
+  twg::NTuple{K,Vector{Complex{T}}}   # stage_small! with s > 1: w^(kp) at (k-1)ms + f, p = f ÷ s; else empty
 end
 
 # Read-only parts of kernels (chains, four-step twiddles, Bluestein chirp and filter) are shared
@@ -77,8 +78,35 @@ Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
 
 function build_chain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
   tw, tw1 = chain_tables(T, n, σ, rs)
-  Chain{T,Tuple(rs),σ,length(rs)}(n, Tuple(tw), tw1)
+  twg = small_tables(ncomplex(first(vec_ladder(T))), n, rs, tw)
+  Chain{T,Tuple(rs),σ,length(rs)}(n, Tuple(tw), tw1, Tuple(twg))
 end
+
+# Twiddles of the stage_small! stages with s > 1 (empty for every other stage), from the stage
+# tables tw. C: complex values of the widest vector.
+function small_tables(C::Int, n::Int, rs::AbstractVector{Int}, tw::Vector{Vector{Complex{T}}}) where {T}
+  twg = Vector{Complex{T}}[]
+  s = 1
+  for (i, r) in enumerate(rs)
+    push!(twg, s > 1 && i < length(rs) && small_stride(C, r, n, s) ? small_twiddles(tw[i], r, s, n ÷ r) :
+               Complex{T}[])
+    s *= r
+  end
+  twg
+end
+
+# The stage table t (w^(kp) at (r-1)p + k) per lane: w^(kp) at (k-1)ms + f, p = f ÷ s.
+function small_twiddles(t::Vector{Complex{T}}, r::Int, s::Int, ms::Int) where {T}
+  g = Vector{Complex{T}}(undef, (r - 1) * ms)
+  for k in 1:r-1, f in 0:ms-1
+    g[(k-1)*ms+f+1] = t[(r-1)*(f÷s)+k]
+  end
+  g
+end
+
+# Stages of a single line with stride s below the complex count C of the widest vector run
+# stage_small! (full vectors, outputs interleaved in registers).
+small_stride(C::Int, r::Int, n::Int, s::Int) = ispow2(r) && s < C && C % s == 0 && (n ÷ r) % C == 0
 
 # Stage twiddles and first-stage table of a radix sequence, shared by Chain and RChain.
 chain_tables(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T} =
@@ -220,7 +248,14 @@ function chain_body(T, Rs, σ, src, dsts, base, single)
     # for batched lines (their stride is a multiple of the vector type), runtime for odd batch
     # sizes
     rem = single ? sst % ncomplex(V) : (base > 1 ? 0 : nothing)
-    if i == K
+    # small strides at full width, where the grouped first stage would not be
+    small = single && i < K && small_stride(ncomplex(ladder[1]), r, n, sst) &&
+            (sst > 1 || group === nothing || ncomplex(ladder[group]) < ncomplex(ladder[1]))
+    if small
+      pt = sst == 1 ? :(cptr(P.tw1)) : :(cptr(P.twg[$i]))
+      push!(body, :(stage_small!($dst, $src, $pt, $(n ÷ r), Val($r), Val($σ), $(ladder[1]), Val($sst))),
+            :(L = L ÷ $r), :(s *= $r))
+    elseif i == K
       push!(body, last_call(dst, src, r, σ, V, single_vec(T), rem))
     elseif single && i == 1 && group !== nothing && ncomplex(V) == 1
       # the first stage of a single line: vectorised over the butterflies (scalar remainder

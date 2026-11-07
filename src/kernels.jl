@@ -194,6 +194,82 @@ end
   stage_first_group_range_body(T, R, σ, VT)
 end
 
+# Complex values of u ++ v (2C) in chunks of S, alternating u_0 v_0 u_1 v_1 …: the lane masks of
+# the first C and the last C.
+function chunk_masks(C, S)
+  idx = [(isodd(i ÷ S) ? C : 0) + (i ÷ S ÷ 2) * S + i % S for i in 0:2C-1]
+  lanes(ix) = Tuple(l for c in ix for l in (2c, 2c + 1))
+  lanes(idx[1:C]), lanes(idx[C+1:2C])
+end
+
+# Interleave R = 2^r vectors in chunks of S complex values: pairs at S, then the lower and upper
+# halves recursively at 2S; chunks of a whole vector are already in place. labs tracks
+# (vector, complex value) of every complex value so the generator can check the permutation.
+function ilv_net!(ex, ys, labs, S, C)
+  (length(ys) == 1 || S >= C) && return ys, labs
+  ml, mh = chunk_masks(C, S)
+  lo = Any[]; hi = Any[]; llo = Any[]; lhi = Any[]
+  for i in 1:2:length(ys)
+    cat = vcat(labs[i], labs[i+1])
+    push!(llo, cat[collect(ml[1:2:end]) .÷ 2 .+ 1]); push!(lhi, cat[collect(mh[1:2:end]) .÷ 2 .+ 1])
+    a = gensym(:lo); b = gensym(:hi)
+    push!(ex, :($a = shufflevector($(ys[i]), $(ys[i+1]), Val($ml))),
+              :($b = shufflevector($(ys[i]), $(ys[i+1]), Val($mh))))
+    push!(lo, a); push!(hi, b)
+  end
+  o1, l1 = ilv_net!(ex, lo, llo, 2S, C)
+  o2, l2 = ilv_net!(ex, hi, lhi, 2S, C)
+  vcat(o1, o2), vcat(l1, l2)
+end
+
+# Outputs X_k (lanes p·s + q) in the order of y: vector t, lane l holds position tC + l.
+function chunk_interleave!(ex, ys, s, C)
+  R = length(ys)
+  out, labs = ilv_net!(ex, ys, [[(k, l) for l in 0:C-1] for k in 0:R-1], s, C)
+  for t in 0:R-1, l in 0:C-1
+    pos = t * C + l
+    labs[t+1][l+1] == ((pos % (s * R)) ÷ s, (pos ÷ (s * R)) * s + pos % s) ||
+      error("chunk interleave of $R vectors at stride $s, $C complex values is wrong")
+  end
+  out
+end
+
+# Stage of a single line with stride s < C (C complex values per vector, s | C, R a power of
+# two): vectorised over f = q + s·p, so each input is one contiguous load and the R outputs are
+# interleaved in registers into contiguous stores. Twiddles per lane: w^(kp) at (k-1)ms + f,
+# p = f ÷ s (the grouped first-stage table for s = 1). ms = m·s must be a multiple of C; s is a
+# constant because the interleave depends on it.
+function stage_small_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, s::Int) where {T,VT}
+  stmts, a, X = codelet(R, σ)
+  C = ncomplex(VT); B = 2sizeof(T)
+  loads = [:($(a[j]) = vload($VT, px + (f + $(j - 1) * ms) * $B)) for j in 1:R]
+  outs = Any[X[1]]
+  twm = Any[]
+  for k in 1:R-1
+    b = Symbol("b", k)
+    push!(twm, :($b = ccmul($(X[k+1]), vload($VT, pt + (f + $(k - 1) * ms) * $B))))
+    push!(outs, b)
+  end
+  shuf = Any[]
+  ys = chunk_interleave!(shuf, outs, s, C)
+  stores = [:(vstore($(ys[t+1]), py + ($R * f + $(t * C)) * $B)) for t in 0:R-1]
+  quote
+    for f in 0:$C:ms-1
+      $(loads...)
+      $(stmts...)
+      $(twm...)
+      $(shuf...)
+      $(stores...)
+    end
+    nothing
+  end
+end
+
+@generated function stage_small!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, ms::Int, ::Val{R}, ::Val{σ},
+                                 ::Type{VT}, ::Val{s}) where {T,R,σ,VT,s}
+  stage_small_body(T, R, σ, VT, s)
+end
+
 # Scalar tail of the grouped first stage: one complex value per vector, the twiddle table in
 # the grouped layout (k-1)m + p, one store per output.
 function stage_first_group_1_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}

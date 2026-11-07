@@ -95,6 +95,27 @@ bodies the `@generated` methods build. The `@generated` methods remain as the fa
 **Why.** A package image keeps the complete optimised IR of every precompiled `@generated`
 specialisation, 130 MB of the 146 MB image. See [Package size and load time](@ref "Package size and load time").
 
+## Small strides of a single line run at full vector width
+
+**Decision (2026-11-11).** A stage of a single line whose stride s is below the complex count C of the
+widest vector (s divides C, power-of-two radix, not the last stage) runs `stage_small!`: it is vectorised
+over q + s·p, so every input is one contiguous load, the twiddles are stored per lane, and the R outputs
+are interleaved in registers into contiguous stores. The generator checks the permutation of the
+interleave. Both chain forms use it; the kernels (radices 2, 4, 8, 16 × sign × stride, widest vector
+only) are part of the fixed set of plain methods, with the stride as a constant of the kernel and the
+length as run-time data.
+
+**Why.** Such stages ran on narrower vectors (the grouped first stage on 4 complex values, later stages
+on s). `Float32` on AVX-512 (C = 8) is the case that gains; `Float64` has no such stage there. Intel
+Core i7-1185G7, one line, `RChain`, radix sequences of 16s and 8s, µs without → with:
+128: 0.093 → 0.069, 256: 0.176 → 0.131, 1024: 0.81 → 0.61, 2048: 1.60 → 1.35, 4096: 3.75 → 3.29,
+8192: 7.85 → 6.69, 16384: 18.0 → 15.4 (the same code against itself differs by up to 3 %).
+
+**Not done.** Passing m and s to the stage kernels as constants of a single line (immediates for the
+stream offsets) needs one kernel per length, which only the compiled `Chain` can have. Measured in
+`Chain` against the same kernels with run-time m and s, lengths 16–16384, both element types: ratios
+0.90–1.04 without a trend, inside the spread of the measurement. Not verified on other machines.
+
 ## Codelets of the radices 17–31 are compiled on first use
 
 **Decision (2026-11-10).** The codelets of the radices 17, 19, 23, 29 and 31 are not part of the package
