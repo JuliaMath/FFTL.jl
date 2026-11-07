@@ -147,6 +147,20 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     # below the threshold the serial Bluestein kernel stays
     x = randn(Complex{T}, 4099)
     @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Bluestein
+    # smooth part times leftover: the composite kernel on threads, bitwise equal to the serial one
+    for n in pick((65 * 4033, 7 * 11777, 1500 * 1013), (65 * 4033,))
+      x = randn(Complex{T}, n)
+      for mk in (FFTL.plan_fft, FFTL.plan_bfft)
+        ref = mk(x; threads = 1) * x
+        for nt in pick((2, 3, 4), (3,))
+          p = mk(x; threads = nt)
+          @test p.kernels[1] isa FFTL.CompositeMT
+          @test p * x == ref
+          z = copy(x); mul!(z, p, z)
+          @test z == ref
+        end
+      end
+    end
   end
 
   @testset "passes on strided views, $T" for T in (Float64, Float32)

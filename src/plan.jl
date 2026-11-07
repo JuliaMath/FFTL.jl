@@ -486,36 +486,60 @@ function Composite{T}(n::Int, s::Int, q::Int, σ::Int, S::Int) where {T}
   Composite{T,typeof(chain),typeof(blue)}(n, s, q, chain, blue, tw, Vector{Complex{T}}(undef, S * n))
 end
 
-# Block of B lanes, element j of lane i at px + i + Sx·j and py + i + Sy·j.
+# Block of B lanes, element j of lane i at px + i + Sx·j and py + i + Sy·j. The chain stage runs
+# on lane blocks (as the threaded kernel does), so that serial and threaded plans agree bitwise.
 function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, Sx::Int, Sy::Int, B::Int) where {T}
-  n = P.n; s = P.s; q = P.q; bl = P.blue; buf = bl.buf; M = length(buf)
+  n = P.n; q = P.q
   length(P.z) >= B * n || throw(ArgumentError("composite kernel built for fewer lanes"))
   CT = 2 * sizeof(T)
   GC.@preserve P begin
-    pz = cptr(P.z); pb = cptr(buf); bw1 = cptr(bl.work1); bw2 = cptr(bl.work2)
-    if Sx == B && Sy == B
-      run!(pz, px, pw1, pw2, P.chain, B * q)
+    pz = cptr(P.z)
+    if Sx == B
+      chain_blocks!(pz, px, pw1, pw2, P.chain, B * q, 0, B * q)
     else
       for j2 in 0:q-1
         run_lanes!(pz + B * j2 * CT, px + Sx * j2 * CT, pw1, pw2, P.chain, Sx * q, B * q, B)
       end
     end
-    cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
-    tw = P.tw; chirp = bl.chirp; kern = bl.kernel
-    for i in 0:B-1, k1 in 0:s-1
-      zb = i + B * q * k1 + 1
-      m = 0                           # (j2·k1) mod n
-      @inbounds for j in 1:q
-        buf[j] = unsafe_load(cz, zb + B * (j - 1)) * tw[m+1] * chirp[j]
-        m += k1; m >= n && (m -= n)
-      end
-      fill!(view(buf, q+1:M), zero(Complex{T}))
-      run!(pb, pb, bw1, bw2, bl.fwd, 1)
-      buf .*= kern
-      run!(pb, pb, bw1, bw2, bl.bwd, 1)
-      @inbounds for k in 1:q
-        unsafe_store!(cy, buf[k] * chirp[k], i + Sy * (k1 + s * (k - 1)) + 1)
-      end
+    for i in 0:B-1, k1 in 0:P.s-1
+      twiddled_bluestein!(py, pz, P.tw, P.blue, n, P.s, B, i, k1, Sy)
+    end
+  end
+  nothing
+end
+
+# Lanes i0 … i1-1 of the chain stage of a composite kernel (L lanes, contiguous), in blocks that
+# fit in cache.
+function chain_blocks!(pz::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, C::Chain{T}, L::Int, i0::Int, i1::Int) where {T}
+  CT = 2 * sizeof(T)
+  Bb = composite_block(L, C.n)
+  for a in i0:Bb:i1-1
+    run_lanes!(pz + a * CT, px + a * CT, pw1, pw2, C, L, L, min(Bb, i1 - a))
+  end
+  nothing
+end
+composite_block(L, s) = min(L, max(LANE_ALIGN, LANE_ALIGN * fld(TUNING[].block_budget ÷ s, LANE_ALIGN)))
+
+# Bluestein of length q on lane (i, k1) of the chain output z (element j2 at i + B·(j2 + q·k1)),
+# after the twiddles w_n^(j2·k1); output element k2 at y + i + Sy·(k1 + s·k2).
+function twiddled_bluestein!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, bl::Bluestein{T}, n::Int, s::Int,
+                             B::Int, i::Int, k1::Int, Sy::Int) where {T}
+  q = bl.n; buf = bl.buf; M = length(buf); chirp = bl.chirp
+  cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
+  GC.@preserve bl tw begin
+    pb = cptr(buf)
+    zb = i + B * q * k1 + 1
+    m = 0                           # (j2·k1) mod n
+    @inbounds for j in 1:q
+      buf[j] = unsafe_load(cz, zb + B * (j - 1)) * tw[m+1] * chirp[j]
+      m += k1; m >= n && (m -= n)
+    end
+    fill!(view(buf, q+1:M), zero(Complex{T}))
+    run!(pb, pb, cptr(bl.work1), cptr(bl.work2), bl.fwd, 1)
+    buf .*= bl.kernel
+    run!(pb, pb, cptr(bl.work1), cptr(bl.work2), bl.bwd, 1)
+    @inbounds for k in 1:q
+      unsafe_store!(cy, buf[k] * chirp[k], i + Sy * (k1 + s * (k - 1)) + 1)
     end
   end
   nothing
