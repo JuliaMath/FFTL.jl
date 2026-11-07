@@ -2,3 +2,6 @@
 # would only lengthen the build.
 [FFTL]
 precompile_workload = "none"
+# 256-bit kernels only. The 512-bit complex addsub uses an AVX-512 intrinsic that the x86-64-v3
+# target of the trimmed build cannot legalize (LLVM: "Do not know how to split the result").
+simd_bytes = 32
