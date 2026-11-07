@@ -283,8 +283,8 @@ end
 
 # Whether a line kernel uses work buffers of its own (a Bluestein kernel holds them in the kernel,
 # not in the task's buffer set): such lines run on one task.
-own_buffers(k) = k isa Bluestein
-own_buffers(K::RealLine) = K.inner isa Bluestein
+own_buffers(k) = k isa Union{Bluestein,Composite}
+own_buffers(K::RealLine) = K.inner isa Union{Bluestein,Composite}
 line_tasks(K, nt) = own_buffers(K) ? 1 : nt
 
 # Runs f(c, i) for the lines i = 0…nlines-1 on the plan's tasks.

@@ -450,8 +450,75 @@ end
 run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Bluestein{T}, S::Int) where {T} =
   run_lanes!(py, px, pw1, pw2, P, S, S, S)
 
-kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T} =
-  smooth(n) ? Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T}))) : Bluestein{T}(n, σ)
+"""
+    Composite{T}
+
+DFT of a length n = s·q whose smooth part s (prime factors ≤ MAX_RADIX_PRIME) and leftover q
+(prime factors above) are coprime, as one Cooley-Tukey step: with j = j2 + q·j1 and k = k1 + s·k2,
+a chain of length s over j1, the twiddles w_n^(j2·k1), and Bluestein's algorithm of length q over
+j2. The convolutions have length ≥ 2q - 1 instead of 2n - 1.
+"""
+struct Composite{T,C,B} <: Kernel{T}
+  n::Int
+  s::Int
+  q::Int
+  chain::C                        # length s, applied to the q lanes of every slab
+  blue::B                         # Bluestein of length q, with its own buffers
+  tw::Vector{Complex{T}}          # w_n^m, m = 0…n-1
+  z::Vector{Complex{T}}           # output of the chain stage, S·n values
+end
+
+function Composite{T}(n::Int, s::Int, q::Int, σ::Int, S::Int) where {T}
+  chain = Chain{T}(s, σ, radices(s, S * q; esize = sizeof(Complex{T})))
+  blue = Bluestein{T}(q, σ)
+  tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
+  Composite{T,typeof(chain),typeof(blue)}(n, s, q, chain, blue, tw, Vector{Complex{T}}(undef, S * n))
+end
+
+# Block of B lanes, element j of lane i at px + i + Sx·j and py + i + Sy·j.
+function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, Sx::Int, Sy::Int, B::Int) where {T}
+  n = P.n; s = P.s; q = P.q; bl = P.blue; buf = bl.buf; M = length(buf)
+  length(P.z) >= B * n || throw(ArgumentError("composite kernel built for fewer lanes"))
+  CT = 2 * sizeof(T)
+  GC.@preserve P begin
+    pz = cptr(P.z); pb = cptr(buf); bw1 = cptr(bl.work1); bw2 = cptr(bl.work2)
+    if Sx == B && Sy == B
+      run!(pz, px, pw1, pw2, P.chain, B * q)
+    else
+      for j2 in 0:q-1
+        run_lanes!(pz + B * j2 * CT, px + Sx * j2 * CT, pw1, pw2, P.chain, Sx * q, B * q, B)
+      end
+    end
+    cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
+    tw = P.tw; chirp = bl.chirp; kern = bl.kernel
+    for i in 0:B-1, k1 in 0:s-1
+      zb = i + B * q * k1 + 1
+      m = 0                           # (j2·k1) mod n
+      @inbounds for j in 1:q
+        buf[j] = unsafe_load(cz, zb + B * (j - 1)) * tw[m+1] * chirp[j]
+        m += k1; m >= n && (m -= n)
+      end
+      fill!(view(buf, q+1:M), zero(Complex{T}))
+      run!(pb, pb, bw1, bw2, bl.fwd, 1)
+      buf .*= kern
+      run!(pb, pb, bw1, bw2, bl.bwd, 1)
+      @inbounds for k in 1:q
+        unsafe_store!(cy, buf[k] * chirp[k], i + Sy * (k1 + s * (k - 1)) + 1)
+      end
+    end
+  end
+  nothing
+end
+
+run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, S::Int) where {T} =
+  run_lanes!(py, px, pw1, pw2, P, S, S, S)
+
+function kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T}
+  _, q = factorize(n)
+  q == 1 && return Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
+  q == n && return Bluestein{T}(n, σ)
+  Composite{T}(n, n ÷ q, q, σ, S)
+end
 
 """
     run_lanes!(py, px, pw1, pw2, P::Chain, Sx, Sy, B)

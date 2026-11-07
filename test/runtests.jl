@@ -64,6 +64,24 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "smooth part times leftover, $T" for T in (Float64, Float32)
+    # n = s·q: a chain of length s and Bluestein of length q, leftovers prime or composite
+    for n in pick([2 * 37, 3 * 41, 16 * 43, 29 * 37, 64 * 37, 2 * 37^2, 5 * 13 * 37, 2 * 37 * 41, 6 * 1009],
+                  [2 * 37, 29 * 37, 2 * 37 * 41, 6 * 1009])
+      x = randn(Complex{T}, n)
+      @test FFTL.plan_fft(x).kernels[1] isa FFTL.Composite
+      @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
+      @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < 10tol(T)
+    end
+    # lanes of a 2D array: along dimension 1 (contiguous lines) and dimension 2 (strided lanes)
+    for (sz, region) in ((((2 * 37, 5)), (1,)), ((3, 2 * 37), (2,)), ((5, 3 * 41), (1, 2)))
+      x = randn(Complex{T}, sz)
+      @test relerr(FFTL.fft(x, region), dftn(x, region)) < 10tol(T)
+      z = copy(x); p = FFTL.plan_fft(x, region); mul!(z, p, z)
+      @test relerr(z, dftn(x, region)) < 10tol(T)
+    end
+  end
+
   @testset "large lengths: inverse and Parseval, $T" for T in (Float64, Float32)
     for n in pick([4096, 3^8, 10^5, 2^18, 2 * 10007], [3^8, 2^18, 2 * 10007])
       x = randn(Complex{T}, n)

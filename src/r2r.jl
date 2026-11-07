@@ -58,7 +58,7 @@ function check_r2r_region(reg, N::Int)
   nothing
 end
 
-own_buffers(K::R2RLine) = (i = K.inner; i isa RealLine ? i.inner isa Bluestein : i isa Bluestein)
+own_buffers(K::R2RLine) = (i = K.inner; i isa RealLine ? i.inner isa Union{Bluestein,Composite} : i isa Union{Bluestein,Composite})
 
 # exp(iπ(a j + b)/d) for j = 0…m-1
 function cis_table(::Type{T}, m::Int, a::Int, b::Int, d::Int) where {T}
