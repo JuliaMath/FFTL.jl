@@ -83,7 +83,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "large lengths: inverse and Parseval, $T" for T in (Float64, Float32)
-    for n in pick([4096, 3^8, 10^5, 2^18, 2 * 10007], [3^8, 2^18, 2 * 10007])
+    # 262147 (prime) and 2·262147: convolution length beyond 2^19, a four-step on x86
+    for n in pick([4096, 3^8, 10^5, 2^18, 2 * 10007, 262147, 2 * 262147], [3^8, 2^18, 2 * 10007, 262147])
       x = randn(Complex{T}, n)
       y = FFTL.fft(x)
       @test relerr(FFTL.ifft(y), x) < 10tol(T)

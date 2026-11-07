@@ -245,6 +245,12 @@ end
 
 const ROW_PAD = 4
 
+# One line on the calling thread (the convolution transforms of a large Bluestein kernel).
+function run!(py::Ptr{T}, px::Ptr{T}, ::Ptr{T}, ::Ptr{T}, P::FourStep{T}, S::Int) where {T}
+  S == 1 || throw(ArgumentError("a four-step kernel transforms one line"))
+  run_fourstep!(py, px, P, 1)
+end
+
 use_fourstep(n, nt) = nt > 1 && n >= TUNING[].fourstep_min && smooth(n) && fourstep_split(n) > 0
 
 function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T}

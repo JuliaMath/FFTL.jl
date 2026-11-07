@@ -398,11 +398,22 @@ function bluestein_length(::Type{T}, L::Int) where {T}
   best
 end
 
+# Convolution transforms of at least this many bytes run as a four-step on one thread: on Zen 2 a
+# Stockham chain beyond the cache drops to 7 GFLOP/s, the four-step is 1.06× faster at 2^19
+# (8 MiB, Float64) and 1.3× from 2^20 on, 0.8× at 3·2^17 and below. On the M1 Max the chain is
+# faster at every length up to 2^22.
+const BLUESTEIN_FOURSTEP_BYTES = Sys.ARCH === :aarch64 ? typemax(Int) : 1 << 23
+
 # C: the chain type of the two convolution transforms (Chain, or RChain for run-time plans)
 function Bluestein{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
   M = bluestein_length(T, 2n - 1)
-  fwd = C{T}(M, -1)
-  bwd = C{T}(M, 1)
+  if C === Chain && M * sizeof(Complex{T}) >= BLUESTEIN_FOURSTEP_BYTES && fourstep_split(M) > 0
+    fwd = FourStep{T}(M, -1, 1)
+    bwd = FourStep{T}(M, 1, 1)
+  else
+    fwd = C{T}(M, -1)
+    bwd = C{T}(M, 1)
+  end
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
   chirp, b = cached(() -> bluestein_tables(T, n, σ, fwd, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
                    )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
