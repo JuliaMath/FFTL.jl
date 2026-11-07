@@ -71,7 +71,7 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Thre
   cache = Dict{Tuple{Int,Int},Kernel{T}}()
   function dim_kernel(d)
     fourstep_dim(sz, d, nt) && return FourStep{T}(sz[d], σ, nt)
-    composite_mt_dim(sz, d, nt) && return CompositeMT{T}(sz[d], σ, nt)
+    composite_mt_dim(T, sz, d, nt) && return CompositeMT{T}(sz[d], σ, nt)
     bluestein_mt_dim(sz, d, nt) && return BluesteinMT{T}(sz[d], σ, nt)
     S, _ = dim_extent(sz, d)
     get!(() -> kernel(T, sz[d], σ, S), cache, (sz[d], S > LARGE_STRIDE || !smooth(sz[d]) ? S : 0))

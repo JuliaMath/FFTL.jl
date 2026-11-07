@@ -343,7 +343,7 @@ struct CompositeMT{T,C,B} <: Kernel{T}
 end
 
 function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
-  s, q = composite_split(n)
+  s, q = composite_split(T, n)
   c1 = first_kernel(T, s, σ, q, 1)
   chains = [c1; [c1 isa Chain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
   b1 = Bluestein{T}(q, σ)
@@ -354,12 +354,13 @@ function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
 end
 
 # A long line n = s·q (see composite_split) with at least one Bluestein transform per thread.
-function use_composite_mt(n, nt)
+function use_composite_mt(::Type{T}, n, nt) where {T}
   (nt > 1 && n >= TUNING[].bluestein_mt_min) || return false
-  s, q = composite_split(n)
+  s, q = composite_split(T, n)
   q > 1 && s >= nt
 end
-composite_mt_dim(sz, d::Int, nt::Int) = (so = dim_extent(sz, d); so[1] == 1 && so[2] == 1 && use_composite_mt(sz[d], nt))
+composite_mt_dim(::Type{T}, sz, d::Int, nt::Int) where {T} =
+  (so = dim_extent(sz, d); so[1] == 1 && so[2] == 1 && use_composite_mt(T, sz[d], nt))
 
 function run_composite_mt!(py::Ptr{T}, px::Ptr{T}, P::CompositeMT{T}, nt::Int) where {T}
   n, s, q = P.n, P.s, P.q

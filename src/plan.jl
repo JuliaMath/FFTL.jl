@@ -464,11 +464,11 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Bluestein{T}, S::Int) 
 """
     Composite{T}
 
-DFT of a length n = s·q with q the full power of the largest prime factor of n above
-MAX_RADIX_PRIME and s > 1 coprime to it, as one Cooley-Tukey step: with j = j2 + q·j1 and
+DFT of a length n = s·q with s > 1 and q coprime to it (see `composite_split`), as one
+Cooley-Tukey step: with j = j2 + q·j1 and
 k = k1 + s·k2, a kernel of length s over j1 (a chain if s is smooth, else again a composite or
-Bluestein kernel), the twiddles w_n^(j2·k1), and Bluestein's algorithm of length q over j2. Each
-convolution has the length of one prime power instead of 2n - 1, and stays in cache longer.
+Bluestein kernel), the twiddles w_n^(j2·k1), and Bluestein's algorithm of length q over j2. The
+convolutions have length about 2q instead of 2n and stay in cache.
 """
 struct Composite{T,C,B} <: Kernel{T}
   n::Int
@@ -492,11 +492,20 @@ end
 first_kernel(::Type{T}, s::Int, σ::Int, L::Int, S::Int) where {T} =
   smooth(s) ? Chain{T}(s, σ, radices(s, L; esize = sizeof(Complex{T}))) : kernel(T, s, σ, max(composite_block(L, s), S))
 
-# The split n = s·q of the composite kernel: q the full power of the largest prime factor above
-# MAX_RADIX_PRIME. (n, 1) for smooth n.
-function composite_split(n::Int)
+# Leftovers (prime factors above MAX_RADIX_PRIME) whose convolution takes at most this many bytes
+# stay one Bluestein transform. Zen 2, one thread: splitting a leftover with an 8 MiB or larger
+# convolution into its prime powers is 1.1–1.4× faster (591159 = 3·193·1021, 1194467 = 179·6673),
+# splitting one of 128 KiB to 2.7 MiB is 1.15–1.5× slower (262145 = 65·37·109, 1588381 = 19·41·2039):
+# each extra level is one more pass over memory.
+const COMPOSITE_SPLIT_BYTES = 1 << 22
+
+# The split n = s·q of the composite kernel: q the whole leftover r (the product of the prime
+# factors above MAX_RADIX_PRIME) while its convolution is small, else the full power of the
+# largest prime factor of r. (n, 1) for smooth n; s = 1 means a single Bluestein transform.
+function composite_split(::Type{T}, n::Int) where {T}
   _, r = factorize(n)
   r == 1 && return (n, 1)
+  bluestein_length(T, 2r - 1) * sizeof(Complex{T}) <= COMPOSITE_SPLIT_BYTES && return (n ÷ r, r)
   p = r; d = 37
   while d * d <= r                  # largest prime factor of r (all its factors are ≥ 37)
     while r % d == 0
@@ -577,7 +586,7 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, S::Int) 
 
 function kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T}
   smooth(n) && return Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
-  s, q = composite_split(n)
+  s, q = composite_split(T, n)
   s == 1 && return Bluestein{T}(n, σ)
   Composite{T}(n, s, q, σ, S)
 end
