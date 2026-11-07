@@ -494,7 +494,7 @@ first_kernel(::Type{T}, s::Int, σ::Int, L::Int, S::Int) where {T} =
 
 # Leftovers (prime factors above MAX_RADIX_PRIME) whose convolution takes at most this many bytes
 # stay one Bluestein transform. Zen 2, one thread: splitting a leftover with an 8 MiB or larger
-# convolution into its prime powers is 1.1–1.4× faster (591159 = 3·193·1021, 1194467 = 179·6673),
+# convolution into its prime powers is 1.02–1.4× faster (591159 = 3·193·1021: 1.4×, 1194467 = 179·6673: 1.2×),
 # splitting one of 128 KiB to 2.7 MiB is 1.15–1.5× slower (262145 = 65·37·109, 1588381 = 19·41·2039):
 # each extra level is one more pass over memory.
 const COMPOSITE_SPLIT_BYTES = 1 << 22
