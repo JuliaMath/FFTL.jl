@@ -186,7 +186,10 @@ function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
   # vector type of a grouped first stage: the widest with 2 or 4 complex values (the scalar
   # remainder of m is handled by the kernel)
   group = findfirst(V -> ncomplex(V) in (2, 4), ladder)
-  body = Any[:(L = P.n), :(s = S)]
+  # L and s are compile-time constants where provable (prod(Rs) == n is validated by
+  # build_tables; the single dispatch guarantees S == 1), so the remainder branches of the
+  # stage wrappers fold away.
+  body = Any[:(L = $n), single ? :(s = 1) : :(s = S)]
   sst = 1
   for i in 1:K
     r = Rs[i]
