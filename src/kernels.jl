@@ -18,23 +18,51 @@ zero_input(zin, j) = (zin >> (j - 1)) & 1 == 1
 
 @inline cptr(x::Array{Complex{T}}) where {T} = Ptr{T}(pointer(x))
 
-# General stage, vectorised over q: the first s - s % C lanes in vectors of C complex values
-# (C the complex lanes of VT), the remaining s % C lanes one complex value at a time.
+# General stage, vectorised over q: s must be a multiple of the complex lanes of VT.
 stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
   stage!(py, px, pt, m, s, 0, m, Val(R), Val(σ), VT, Val(0))
 
-@inline function stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, plo::Int, phi::Int,
-                        ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
-  C = ncomplex(VT)
-  rem = s % C
-  if rem == 0
-    stage_range!(py, px, pt, m, s, 0, s, plo, phi, Val(R), Val(σ), VT, Val(zin))
-  else
-    stage_range!(py, px, pt, m, s, 0, s - rem, plo, phi, Val(R), Val(σ), VT, Val(zin))
-    stage_range!(py, px, pt, m, s, s - rem, s, plo, phi, Val(R), Val(σ), Vec{2,T}, Val(zin))
+@generated function stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, plo::Int, phi::Int,
+                           ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+  stmts, a, X = codelet(R, σ, zin)
+  C = ncomplex(VT); B = 2sizeof(T)
+  loads = [:($(a[j]) = vload(VT, px + (q + s * (p + $(j - 1) * m)) * $B)) for j in 1:R if !zero_input(zin, j)]
+  twl = [:($(Symbol("w", k)) = cbroadcast(VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
+  stores = Any[:(vstore($(X[1]), py + o * $B))]
+  for k in 1:R-1
+    push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (o + $k * s) * $B)))
+  end
+  quote
+    for p in plo:phi-1
+      $(twl...)
+      for q in 0:$C:s-1
+        $(loads...)
+        $(stmts...)
+        o = q + s * $R * p
+        $(stores...)
+      end
+    end
+    nothing
   end
 end
 
+# Stage for strides that are not a multiple of the complex lanes of VT (odd batch sizes): the
+# first s - s % C lanes in vectors of C complex values, the scalar remainder one complex value
+# at a time.
+@inline function stage_split!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int,
+                              ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
+  C = ncomplex(VT)
+  rem = s % C
+  if rem == 0
+    stage!(py, px, pt, m, s, Val(R), Val(σ), VT)
+  else
+    stage_range!(py, px, pt, m, s, 0, s - rem, 0, m, Val(R), Val(σ), VT, Val(0))
+    stage_range!(py, px, pt, m, s, s - rem, s, 0, m, Val(R), Val(σ), Vec{2,T}, Val(0))
+  end
+end
+
+# Stage over a q range: the kernel behind the split of a single line, whose q extent is known
+# at generation time so the vectorised range and the scalar tail are emitted directly.
 @generated function stage_range!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, qlo::Int, qhi::Int,
                                  plo::Int, phi::Int, ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
   stmts, a, X = codelet(R, σ, zin)
@@ -59,24 +87,12 @@ end
   end
 end
 
-# Last stage (m = 1): all twiddles are 1. Vectorised over q with a scalar remainder.
+# Last stage (m = 1): all twiddles are 1.
 stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
   stage_last!(py, px, s, 0, s, Val(R), Val(σ), VT, Val((1 << R) - 1))
 
-@inline function stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, qlo::Int, qhi::Int,
-                             ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{need}) where {T,R,σ,VT,need}
-  C = ncomplex(VT)
-  rem = (qhi - qlo) % C
-  if rem == 0
-    stage_last_range!(py, px, s, qlo, qhi, Val(R), Val(σ), VT, Val(need))
-  else
-    stage_last_range!(py, px, s, qlo, qhi - rem, Val(R), Val(σ), VT, Val(need))
-    stage_last_range!(py, px, s, qhi - rem, qhi, Val(R), Val(σ), Vec{2,T}, Val(need))
-  end
-end
-
-@generated function stage_last_range!(py::Ptr{T}, px::Ptr{T}, s::Int, qlo::Int, qhi::Int,
-                                      ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{need}) where {T,R,σ,VT,need}
+@generated function stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, qlo::Int, qhi::Int,
+                                ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{need}) where {T,R,σ,VT,need}
   stmts, a, X = codelet(R, σ, 0, need)
   C = ncomplex(VT); B = 2sizeof(T)
   loads = [:($(a[j]) = vload(VT, px + (q + s * $(j - 1)) * $B)) for j in 1:R]
@@ -88,6 +104,20 @@ end
       $(stores...)
     end
     nothing
+  end
+end
+
+# Last stage for strides that are not a multiple of the complex lanes of VT (odd batch sizes):
+# the first s - s % C lanes in vectors, the scalar remainder one complex value at a time.
+@inline function stage_last_split!(py::Ptr{T}, px::Ptr{T}, s::Int,
+                                   ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
+  C = ncomplex(VT)
+  rem = s % C
+  if rem == 0
+    stage_last!(py, px, s, Val(R), Val(σ), VT)
+  else
+    stage_last!(py, px, s, 0, s - rem, Val(R), Val(σ), VT, Val((1 << R) - 1))
+    stage_last!(py, px, s, s - rem, s, Val(R), Val(σ), Vec{2,T}, Val((1 << R) - 1))
   end
 end
 

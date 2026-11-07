@@ -179,12 +179,14 @@ const NOPRUNE = Pruning{(),()}(UnitRange{Int}[], UnitRange{Int}[])
 # number of complex values known to divide S (1 if nothing is known); stage i has stride
 # S·(R_1⋯R_(i-1)) and takes the widest vector type whose complex count divides base·R_1⋯R_(i-1).
 # With `single` (S = 1) the first stage groups 2 or 4 butterflies in one vector when m allows.
-# Stage calls with the q (or butterfly) remainder known at generation time: the vectorised
-# range and the scalar tail are emitted directly. rem === nothing (a runtime stride, e.g. an
-# odd batch size, or pruned ranges) takes the wrapper, which splits at run time.
+# Stage calls with the q (or butterfly) remainder known at generation time: divisible stages
+# take the plain kernels (the same calls as before the tail batching), single lines with a
+# scalar remainder get the vectorised range plus the scalar tail emitted directly.
+# rem === nothing (a runtime stride, e.g. an odd batch size, or pruned ranges) takes the
+# splitting wrappers, which divide at run time.
 function mid_call(dst, src, tw, r, σ, V, V1, rem)
-  rem === nothing && return :(stage!($dst, $src, $tw, m, s, Val($r), Val($σ), $V))
-  rem == 0 && return :(stage_range!($dst, $src, $tw, m, s, 0, s, 0, m, Val($r), Val($σ), $V, Val(0)))
+  rem === nothing && return :(stage_split!($dst, $src, $tw, m, s, Val($r), Val($σ), $V))
+  rem == 0 && return :(stage!($dst, $src, $tw, m, s, Val($r), Val($σ), $V))
   quote
     stage_range!($dst, $src, $tw, m, s, 0, s - $rem, 0, m, Val($r), Val($σ), $V, Val(0))
     stage_range!($dst, $src, $tw, m, s, s - $rem, s, 0, m, Val($r), Val($σ), $V1, Val(0))
@@ -193,11 +195,11 @@ end
 
 function last_call(dst, src, r, σ, V, V1, rem)
   need = (1 << r) - 1
-  rem === nothing && return :(stage_last!($dst, $src, s, Val($r), Val($σ), $V))
-  rem == 0 && return :(stage_last_range!($dst, $src, s, 0, s, Val($r), Val($σ), $V, Val($need)))
+  rem === nothing && return :(stage_last_split!($dst, $src, s, Val($r), Val($σ), $V))
+  rem == 0 && return :(stage_last!($dst, $src, s, Val($r), Val($σ), $V))
   quote
-    stage_last_range!($dst, $src, s, 0, s - $rem, Val($r), Val($σ), $V, Val($need))
-    stage_last_range!($dst, $src, s, s - $rem, s, Val($r), Val($σ), $V1, Val($need))
+    stage_last!($dst, $src, s, 0, s - $rem, Val($r), Val($σ), $V, Val($need))
+    stage_last!($dst, $src, s, s - $rem, s, Val($r), Val($σ), $V1, Val($need))
   end
 end
 
