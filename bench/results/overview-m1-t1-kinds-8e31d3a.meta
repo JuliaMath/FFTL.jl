@@ -1,0 +1,4 @@
+threads: 1; FFTL 8e31d3a; julia 1.13.3; MacBook-Pro-von-Tobias-3.fritz.box
+start: 2026-11-07T11:09:41; load: 11:09  up 3 days, 21:32, 15 users, load averages: 7,60 6,58 5,69
+libraries: fftl,fftw_measure,ducc,vdsp
+end: 2026-11-07T11:23:36; load: 11:23  up 3 days, 21:46, 16 users, load averages: 4,77 4,78 5,07
