@@ -84,8 +84,8 @@ yd = FFTL.fft(MtlArray(randn(ComplexF32, 1024, 1024)))
 **Transforms, number types and platforms, in Julia.**
 
 - Complex, real-input and all eleven real-to-real kinds of FFTW, along any subset of
-  dimensions, for any length (lengths with prime factors above 31 through Bluestein's
-  algorithm).
+  dimensions, for any length (the part of a length made of prime factors above 31 through
+  Bluestein's algorithm).
 - `Float32` and `Float64` on the fast path (SIMD codelets, threads). `BigFloat`, `Double64`,
   `Float128` and other floating-point types are transformed in their own precision by a generic
   path, accurate to a few ulps of the type.
@@ -130,7 +130,8 @@ figures there are regenerated from the committed data on every documentation bui
 - **Multidimensional transforms** run the same chains along every dimension: a dimension with
   stride S is a chain started with stride S, the S neighbouring columns forming the vectorised
   index. No transposition.
-- **Lengths with prime factors above 31** use Bluestein's algorithm.
+- **Lengths with prime factors above 31** split off their smooth part in one Cooley–Tukey step
+  and use Bluestein's algorithm only for the rest.
 - **Threads** split each dimension over slices or blocks of columns; long 1D transforms use the
   four-step algorithm.
 

@@ -398,15 +398,32 @@ function bluestein_length(::Type{T}, L::Int) where {T}
   best
 end
 
+# Convolution transforms of at least this many bytes run as a four-step on one thread: on Zen 2 a
+# Stockham chain beyond the cache drops to 7 GFLOP/s, the four-step is 1.06× faster at 2^19
+# (8 MiB, Float64) and 1.3× from 2^20 on, 0.8× at 3·2^17 and below. On the M1 Max the chain is
+# faster at every length up to 2^22.
+const BLUESTEIN_FOURSTEP_BYTES = Sys.ARCH === :aarch64 ? typemax(Int) : 1 << 23
+
 # C: the chain type of the two convolution transforms (Chain, or RChain for run-time plans)
 function Bluestein{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
   M = bluestein_length(T, 2n - 1)
-  fwd = C{T}(M, -1)
-  bwd = C{T}(M, 1)
+  # one assignment each: the closure below captures fwd, and a variable assigned in two
+  # branches would be boxed (untyped, which juliac --trim cannot resolve)
+  fwd, bwd = convolution_transforms(T, M, C)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
   chirp, b = cached(() -> bluestein_tables(T, n, σ, fwd, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
                    )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
   Bluestein{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, zeros(Complex{T}, M), w1, w2)
+end
+
+# The forward and backward transforms of length M of a Bluestein kernel. The run-time plans keep
+# their chains (one concrete type for juliac --trim).
+convolution_transforms(::Type{T}, M::Int, ::Type{C}) where {T,C} = (C{T}(M, -1), C{T}(M, 1))
+function convolution_transforms(::Type{T}, M::Int, ::Type{Chain}) where {T}
+  if M * sizeof(Complex{T}) >= BLUESTEIN_FOURSTEP_BYTES && fourstep_split(M) > 0
+    return (FourStep{T}(M, -1, 1), FourStep{T}(M, 1, 1))
+  end
+  (Chain{T}(M, -1), Chain{T}(M, 1))
 end
 
 # chirp c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n) and the filter FFT_M(conj(c) wrapped) / M
@@ -450,8 +467,135 @@ end
 run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Bluestein{T}, S::Int) where {T} =
   run_lanes!(py, px, pw1, pw2, P, S, S, S)
 
-kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T} =
-  smooth(n) ? Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T}))) : Bluestein{T}(n, σ)
+"""
+    Composite{T}
+
+DFT of a length n = s·q with s > 1 and q coprime to it (see `composite_split`), as one
+Cooley-Tukey step: with j = j2 + q·j1 and
+k = k1 + s·k2, a kernel of length s over j1 (a chain if s is smooth, else again a composite or
+Bluestein kernel), the twiddles w_n^(j2·k1), and Bluestein's algorithm of length q over j2. The
+convolutions have length about 2q instead of 2n and stay in cache.
+"""
+struct Composite{T,C,B} <: Kernel{T}
+  n::Int
+  s::Int
+  q::Int
+  chain::C                        # length s, applied to the q lanes of every slab
+  blue::B                         # Bluestein of length q, with its own buffers
+  tw::Vector{Complex{T}}          # w_n^m, m = 0…n-1
+  z::Vector{Complex{T}}           # output of the first stage, S·n values
+end
+
+function Composite{T}(n::Int, s::Int, q::Int, σ::Int, S::Int) where {T}
+  chain = first_kernel(T, s, σ, S * q, S)
+  blue = Bluestein{T}(q, σ)
+  tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
+  Composite{T,typeof(chain),typeof(blue)}(n, s, q, chain, blue, tw, Vector{Complex{T}}(undef, S * n))
+end
+
+# Kernel of the first stage of a composite kernel: a chain over L lanes, or a kernel with buffers of
+# its own (composite, Bluestein) that sees at most one lane block, or S lanes, at a time.
+first_kernel(::Type{T}, s::Int, σ::Int, L::Int, S::Int) where {T} =
+  smooth(s) ? Chain{T}(s, σ, radices(s, L; esize = sizeof(Complex{T}))) : kernel(T, s, σ, max(composite_block(L, s), S))
+
+# Leftovers (prime factors above MAX_RADIX_PRIME) whose convolution takes at most this many bytes
+# stay one Bluestein transform. Zen 2, one thread: splitting a leftover with an 8 MiB or larger
+# convolution into its prime powers is 1.02–1.4× faster (591159 = 3·193·1021: 1.4×, 1194467 = 179·6673: 1.2×),
+# splitting one of 128 KiB to 2.7 MiB is 1.15–1.5× slower (262145 = 65·37·109, 1588381 = 19·41·2039):
+# each extra level is one more pass over memory.
+const COMPOSITE_SPLIT_BYTES = 1 << 22
+
+# The split n = s·q of the composite kernel: q the whole leftover r (the product of the prime
+# factors above MAX_RADIX_PRIME) while its convolution is small, else the full power of the
+# largest prime factor of r. (n, 1) for smooth n; s = 1 means a single Bluestein transform.
+function composite_split(::Type{T}, n::Int) where {T}
+  _, r = factorize(n)
+  r == 1 && return (n, 1)
+  bluestein_length(T, 2r - 1) * sizeof(Complex{T}) <= COMPOSITE_SPLIT_BYTES && return (n ÷ r, r)
+  p = r; d = 37
+  while d * d <= r                  # largest prime factor of r (all its factors are ≥ 37)
+    while r % d == 0
+      p = d; r ÷= d
+    end
+    d += 2
+  end
+  r > 1 && (p = r)
+  q = 1
+  m = n
+  while m % p == 0
+    q *= p; m ÷= p
+  end
+  (n ÷ q, q)
+end
+
+# Block of B lanes, element j of lane i at px + i + Sx·j and py + i + Sy·j. The chain stage runs
+# on lane blocks (as the threaded kernel does), so that serial and threaded plans agree bitwise.
+function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, Sx::Int, Sy::Int, B::Int) where {T}
+  n = P.n; q = P.q
+  length(P.z) >= B * n || throw(ArgumentError("composite kernel built for fewer lanes"))
+  CT = 2 * sizeof(T)
+  GC.@preserve P begin
+    pz = cptr(P.z)
+    if Sx == B
+      chain_blocks!(pz, px, pw1, pw2, P.chain, B * q, 0, B * q)
+    else
+      for j2 in 0:q-1
+        run_lanes!(pz + B * j2 * CT, px + Sx * j2 * CT, pw1, pw2, P.chain, Sx * q, B * q, B)
+      end
+    end
+    for i in 0:B-1, k1 in 0:P.s-1
+      twiddled_bluestein!(py, pz, P.tw, P.blue, n, P.s, B, i, k1, Sy)
+    end
+  end
+  nothing
+end
+
+# Lanes i0 … i1-1 of the first stage of a composite kernel (L lanes, contiguous), in blocks that
+# fit in cache.
+function chain_blocks!(pz::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, C::Kernel{T}, L::Int, i0::Int, i1::Int) where {T}
+  CT = 2 * sizeof(T)
+  Bb = composite_block(L, C.n)
+  for a in i0:Bb:i1-1
+    run_lanes!(pz + a * CT, px + a * CT, pw1, pw2, C, L, L, min(Bb, i1 - a))
+  end
+  nothing
+end
+composite_block(L, s) = min(L, max(LANE_ALIGN, LANE_ALIGN * fld(TUNING[].block_budget ÷ s, LANE_ALIGN)))
+
+# Bluestein of length q on lane (i, k1) of the chain output z (element j2 at i + B·(j2 + q·k1)),
+# after the twiddles w_n^(j2·k1); output element k2 at y + i + Sy·(k1 + s·k2).
+function twiddled_bluestein!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, bl::Bluestein{T}, n::Int, s::Int,
+                             B::Int, i::Int, k1::Int, Sy::Int) where {T}
+  q = bl.n; buf = bl.buf; M = length(buf); chirp = bl.chirp
+  cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
+  GC.@preserve bl tw begin
+    pb = cptr(buf)
+    zb = i + B * q * k1 + 1
+    m = 0                           # (j2·k1) mod n
+    @inbounds for j in 1:q
+      buf[j] = unsafe_load(cz, zb + B * (j - 1)) * tw[m+1] * chirp[j]
+      m += k1; m >= n && (m -= n)
+    end
+    fill!(view(buf, q+1:M), zero(Complex{T}))
+    run!(pb, pb, cptr(bl.work1), cptr(bl.work2), bl.fwd, 1)
+    buf .*= bl.kernel
+    run!(pb, pb, cptr(bl.work1), cptr(bl.work2), bl.bwd, 1)
+    @inbounds for k in 1:q
+      unsafe_store!(cy, buf[k] * chirp[k], i + Sy * (k1 + s * (k - 1)) + 1)
+    end
+  end
+  nothing
+end
+
+run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, S::Int) where {T} =
+  run_lanes!(py, px, pw1, pw2, P, S, S, S)
+
+function kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T}
+  smooth(n) && return Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
+  s, q = composite_split(T, n)
+  s == 1 && return Bluestein{T}(n, σ)
+  Composite{T}(n, s, q, σ, S)
+end
 
 """
     run_lanes!(py, px, pw1, pw2, P::Chain, Sx, Sy, B)

@@ -64,8 +64,40 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "smooth part times leftover, $T" for T in (Float64, Float32)
+    # n = s·q: a chain of length s, Bluestein on the leftover q (prime or composite)
+    for n in pick([2 * 37, 3 * 41, 16 * 43, 29 * 37, 64 * 37, 2 * 37^2, 5 * 13 * 37, 2 * 37 * 41, 6 * 1009,
+                   2 * 37 * 41 * 43, 6 * 37^2 * 41],
+                  [2 * 37, 29 * 37, 2 * 37 * 41, 6 * 1009])
+      x = randn(Complex{T}, n)
+      @test FFTL.plan_fft(x).kernels[1] isa FFTL.Composite
+      @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
+      @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < 10tol(T)
+    end
+    # a leftover split into prime powers (the planner does this for large leftovers only): first
+    # stages that are composite and Bluestein kernels themselves
+    for (n, s, q) in pick([(2 * 37 * 41 * 43, 2 * 37 * 41, 43), (37 * 41, 37, 41), (6 * 37^2 * 41, 6 * 37^2, 41)],
+                          [(2 * 37 * 41 * 43, 2 * 37 * 41, 43), (37 * 41, 37, 41)])
+      x = randn(Complex{T}, n)
+      for σ in (-1, 1)
+        k = FFTL.Composite{T}(n, s, q, σ, 1)
+        y = similar(x); w1 = similar(x); w2 = similar(x)
+        GC.@preserve x y w1 w2 FFTL.run!(FFTL.cptr(y), FFTL.cptr(x), FFTL.cptr(w1), FFTL.cptr(w2), k, 1)
+        @test relerr(y, dft(ComplexF64.(x), σ)) < 10tol(T)
+      end
+    end
+    # lanes of a 2D array: along dimension 1 (contiguous lines) and dimension 2 (strided lanes)
+    for (sz, region) in ((((2 * 37, 5)), (1,)), ((3, 2 * 37), (2,)), ((5, 3 * 41), (1, 2)))
+      x = randn(Complex{T}, sz)
+      @test relerr(FFTL.fft(x, region), dftn(x, region)) < 10tol(T)
+      z = copy(x); p = FFTL.plan_fft(x, region); mul!(z, p, z)
+      @test relerr(z, dftn(x, region)) < 10tol(T)
+    end
+  end
+
   @testset "large lengths: inverse and Parseval, $T" for T in (Float64, Float32)
-    for n in pick([4096, 3^8, 10^5, 2^18, 2 * 10007], [3^8, 2^18, 2 * 10007])
+    # 262147 (prime) and 2·262147: convolution length beyond 2^19, a four-step on x86
+    for n in pick([4096, 3^8, 10^5, 2^18, 2 * 10007, 262147, 2 * 262147], [3^8, 2^18, 2 * 10007, 262147])
       x = randn(Complex{T}, n)
       y = FFTL.fft(x)
       @test relerr(FFTL.ifft(y), x) < 10tol(T)
@@ -128,6 +160,21 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     # below the threshold the serial Bluestein kernel stays
     x = randn(Complex{T}, 4099)
     @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Bluestein
+    # smooth part times leftover: the composite kernel on threads, bitwise equal to the serial one
+    # 3·193·1021: the leftover is split, the first stage is a composite kernel on each task
+    for n in pick((65 * 4033, 7 * 11777, 1500 * 1013, 3 * 193 * 1021), (65 * 4033, 3 * 193 * 1021))
+      x = randn(Complex{T}, n)
+      for mk in (FFTL.plan_fft, FFTL.plan_bfft)
+        ref = mk(x; threads = 1) * x
+        for nt in pick((2, 3, 4), (3,))
+          p = mk(x; threads = nt)
+          @test p.kernels[1] isa FFTL.CompositeMT
+          @test p * x == ref
+          z = copy(x); mul!(z, p, z)
+          @test z == ref
+        end
+      end
+    end
   end
 
   @testset "passes on strided views, $T" for T in (Float64, Float32)

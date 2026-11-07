@@ -245,6 +245,12 @@ end
 
 const ROW_PAD = 4
 
+# One line on the calling thread (the convolution transforms of a large Bluestein kernel).
+function run!(py::Ptr{T}, px::Ptr{T}, ::Ptr{T}, ::Ptr{T}, P::FourStep{T}, S::Int) where {T}
+  S == 1 || throw(ArgumentError("a four-step kernel transforms one line"))
+  run_fourstep!(py, px, P, 1)
+end
+
 use_fourstep(n, nt) = nt > 1 && n >= TUNING[].fourstep_min && smooth(n) && fourstep_split(n) > 0
 
 function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T}
@@ -315,6 +321,63 @@ function BluesteinMT{T}(n::Int, σ::Int, nt::Int) where {T}
                    )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
   fwd = FourStep{T}(M, -1, nt); bwd = FourStep{T}(M, 1, nt)
   BluesteinMT{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, Vector{Complex{T}}(undef, M))
+end
+
+"""
+    CompositeMT{T}
+
+The composite kernel (first stage of length s, Bluestein of length q) for one long contiguous
+line on several threads: the first stage in lane blocks over the tasks, then the s Bluestein
+transforms spread over the tasks. Kernels with buffers of their own exist once per task. The
+blocks and the arithmetic are those of the serial kernel, so the results agree bitwise.
+"""
+struct CompositeMT{T,C,B} <: Kernel{T}
+  n::Int
+  s::Int
+  q::Int
+  chains::Vector{C}                 # first stage, one per task
+  blues::Vector{B}                  # one per task
+  tw::Vector{Complex{T}}            # w_n^m, m = 0…n-1
+  z::Vector{Complex{T}}             # output of the first stage
+  tbuf::Vector{Vector{Complex{T}}}  # two per task, one lane block of the first stage each
+end
+
+function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
+  s, q = composite_split(T, n)
+  c1 = first_kernel(T, s, σ, q, 1)
+  chains = [c1; [c1 isa Chain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
+  b1 = Bluestein{T}(q, σ)
+  blues = [b1; [Bluestein{T}(q, σ) for _ in 2:nt]]
+  tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
+  CompositeMT{T,typeof(c1),typeof(b1)}(n, s, q, chains, blues, tw, Vector{Complex{T}}(undef, n),
+                                        thread_buffers(T, composite_block(q, s) * s, 2nt))
+end
+
+# A long line n = s·q (see composite_split) with at least one Bluestein transform per thread.
+function use_composite_mt(::Type{T}, n, nt) where {T}
+  (nt > 1 && n >= TUNING[].bluestein_mt_min) || return false
+  s, q = composite_split(T, n)
+  q > 1 && s >= nt
+end
+composite_mt_dim(::Type{T}, sz, d::Int, nt::Int) where {T} =
+  (so = dim_extent(sz, d); so[1] == 1 && so[2] == 1 && use_composite_mt(T, sz[d], nt))
+
+function run_composite_mt!(py::Ptr{T}, px::Ptr{T}, P::CompositeMT{T}, nt::Int) where {T}
+  n, s, q = P.n, P.s, P.q
+  CT = 2 * sizeof(T)
+  Bb = composite_block(q, s)
+  nb = cld(q, Bb)
+  ntasks = min(nt, length(P.blues))
+  GC.@preserve P begin
+    pz = cptr(P.z)
+    parallel_phases(ntasks,
+      nb, (c, b) -> begin
+        local a = b * Bb
+        run_lanes!(pz + a * CT, px + a * CT, cptr(P.tbuf[2c-1]), cptr(P.tbuf[2c]), P.chains[c], q, q, min(Bb, q - a))
+      end,
+      s, (c, k1) -> twiddled_bluestein!(py, pz, P.tw, P.blues[c], n, s, 1, 0, k1, 1))
+  end
+  nothing
 end
 
 # From this length on, a Bluestein line runs on several threads.
@@ -432,6 +495,9 @@ run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::FourStep{T}, S::Int, n::Int, outer
 
 run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::BluesteinMT{T}, S::Int, n::Int, outer::Int) where {T} =
   run_bluestein_mt!(py, px, k, p.nthreads)
+
+run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::CompositeMT{T}, S::Int, n::Int, outer::Int) where {T} =
+  run_composite_mt!(py, px, k, p.nthreads)
 
 # Stockham chains: lane blocks when there are enough lanes, slices in groups when there are enough
 # slices, otherwise one slice after the other.
