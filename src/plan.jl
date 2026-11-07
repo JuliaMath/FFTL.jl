@@ -179,6 +179,37 @@ const NOPRUNE = Pruning{(),()}(UnitRange{Int}[], UnitRange{Int}[])
 # number of complex values known to divide S (1 if nothing is known); stage i has stride
 # S·(R_1⋯R_(i-1)) and takes the widest vector type whose complex count divides base·R_1⋯R_(i-1).
 # With `single` (S = 1) the first stage groups 2 or 4 butterflies in one vector when m allows.
+# Stage calls with the q (or butterfly) remainder known at generation time: the vectorised
+# range and the scalar tail are emitted directly. rem === nothing (a runtime stride, e.g. an
+# odd batch size, or pruned ranges) takes the wrapper, which splits at run time.
+function mid_call(dst, src, tw, r, σ, V, V1, rem)
+  rem === nothing && return :(stage!($dst, $src, $tw, m, s, Val($r), Val($σ), $V))
+  rem == 0 && return :(stage_range!($dst, $src, $tw, m, s, 0, s, 0, m, Val($r), Val($σ), $V, Val(0)))
+  quote
+    stage_range!($dst, $src, $tw, m, s, 0, s - $rem, 0, m, Val($r), Val($σ), $V, Val(0))
+    stage_range!($dst, $src, $tw, m, s, s - $rem, s, 0, m, Val($r), Val($σ), $V1, Val(0))
+  end
+end
+
+function last_call(dst, src, r, σ, V, V1, rem)
+  need = (1 << r) - 1
+  rem === nothing && return :(stage_last!($dst, $src, s, Val($r), Val($σ), $V))
+  rem == 0 && return :(stage_last_range!($dst, $src, s, 0, s, Val($r), Val($σ), $V, Val($need)))
+  quote
+    stage_last_range!($dst, $src, s, 0, s - $rem, Val($r), Val($σ), $V, Val($need))
+    stage_last_range!($dst, $src, s, s - $rem, s, Val($r), Val($σ), $V1, Val($need))
+  end
+end
+
+function group_call(dst, src, tw1, r, σ, GV, V1, rem)
+  rem === nothing && return :(stage_first_group!($dst, $src, $tw1, m, Val($r), Val($σ), $GV))
+  rem == 0 && return :(stage_first_group_range!($dst, $src, $tw1, m, 0, m, Val($r), Val($σ), $GV, Val(0)))
+  quote
+    stage_first_group_range!($dst, $src, $tw1, m, 0, m - $rem, Val($r), Val($σ), $GV, Val(0))
+    stage_first_group_1!($dst, $src, $tw1, m, m - $rem, m, Val($r), Val($σ), $V1, Val(0))
+  end
+end
+
 function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
   K = length(Rs)
   n = prod(Rs; init = 1)
@@ -187,8 +218,8 @@ function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
   # remainder of m is handled by the kernel)
   group = findfirst(V -> ncomplex(V) in (2, 4), ladder)
   # L and s are compile-time constants where provable (prod(Rs) == n is validated by
-  # build_tables; the single dispatch guarantees S == 1), so the remainder branches of the
-  # stage wrappers fold away.
+  # build_tables; the single dispatch guarantees S == 1), so the remainders of the stages are
+  # known at generation time.
   body = Any[:(L = $n), single ? :(s = 1) : :(s = S)]
   sst = 1
   for i in 1:K
@@ -198,9 +229,13 @@ function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
     # remainder; batched lines need divisibility)
     V = base == 1 ? ladder[findfirst(V -> ncomplex(V) <= base * sst, ladder)] :
                     ladder[findfirst(V -> (base * sst) % ncomplex(V) == 0, ladder)]
+    # the q remainder of this stage: a compile-time constant for single lines, provably zero
+    # for batched lines (their stride is a multiple of the vector type), runtime for odd batch
+    # sizes and pruned ranges
+    rem = single ? sst % ncomplex(V) : (base > 1 ? 0 : nothing)
     if i == K
       if isempty(LM) || K == 1
-        push!(body, :(stage_last!($dst, $src, s, Val($r), Val($σ), $V)))
+        push!(body, last_call(dst, src, r, σ, V, single_vec(T), rem))
       else
         for (j, need) in enumerate(LM)
           push!(body, :(stage_last!($dst, $src, s, first(Pr.last[$j]), last(Pr.last[$j]) + 1, Val($r), Val($σ), $V, Val($need))))
@@ -210,8 +245,9 @@ function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
       # the first stage of a single line: vectorised over the butterflies (scalar remainder
       # handled by the kernel)
       push!(body, :(m = L ÷ $r))
+      GV = ladder[group]
       if isempty(FM)
-        push!(body, :(stage_first_group!($dst, $src, cptr(P.tw1), m, Val($r), Val($σ), $(ladder[group]))))
+        push!(body, group_call(dst, src, :(cptr(P.tw1)), r, σ, GV, single_vec(T), (n ÷ r) % ncomplex(GV)))
       else
         for (j, zin) in enumerate(FM)
           push!(body, :(stage_first_group!($dst, $src, cptr(P.tw1), m, first(Pr.first[$j]), last(Pr.first[$j]) + 1,
@@ -222,7 +258,7 @@ function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
     else
       push!(body, :(m = L ÷ $r))
       if i > 1 || isempty(FM)
-        push!(body, :(stage!($dst, $src, cptr(P.tw[$i]), m, s, Val($r), Val($σ), $V)))
+        push!(body, mid_call(dst, src, :(cptr(P.tw[$i])), r, σ, V, single_vec(T), rem))
       else
         for (j, zin) in enumerate(FM)
           push!(body, :(stage!($dst, $src, cptr(P.tw[$i]), m, s, first(Pr.first[$j]), last(Pr.first[$j]) + 1,
