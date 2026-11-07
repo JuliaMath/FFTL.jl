@@ -1,4 +1,4 @@
-# Radix sequences chosen by the planner, per platform: test/data/radices-<arch>.csv, one line per
+# Radix sequences chosen by the planner, per platform: test/data/radices-<arch>[-32regs].csv, one line per
 # (length, stride) with the radices in order. The test compares the planner with the file, so a
 # change of the rules in factor.jl shows up as a diff of this file. Regenerate with
 #   julia --project=. test/radix_table.jl
@@ -14,7 +14,9 @@ const RADIX_TABLE_LARGE = (2048, 4096, 8192, 16384, 32768, 65536, 100000, 120000
 radix_table_lengths() =
   vcat(filter(n -> FFTL.factorize(n)[2] == 1, 2:1024), collect(RADIX_TABLE_LARGE))
 
-radix_table_path(arch = string(Sys.ARCH)) = joinpath(@__DIR__, "data", "radices-$arch.csv")
+# x86 has two rule sets: 16 vector registers (AVX2) and 32 (AVX-512)
+radix_table_path(arch = string(Sys.ARCH)) =
+  joinpath(@__DIR__, "data", arch == "x86_64" && FFTL.VEC_REGS == 32 ? "radices-x86_64-32regs.csv" : "radices-$arch.csv")
 
 function radix_table_lines()
   lines = String[]

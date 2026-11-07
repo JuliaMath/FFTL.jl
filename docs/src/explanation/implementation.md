@@ -20,7 +20,8 @@ given radix, element type and vector width when they are first called with those
 
 The arithmetic of a codelet is written on complex SIMD vectors (`src/complexvec.jl`). A vector
 holds several complex values, and the same instruction stream runs on all of them. For a
-`Complex{Float32}` array on a 128-bit machine that is two values per register. Lanes of the
+`Complex{Float32}` array on a 128-bit machine that is two values per register, and eight with
+AVX-512. Lanes of the
 multidimensional transforms are the vector elements, so the same codelet serves a single
 line and a batch of lines.
 
