@@ -407,17 +407,23 @@ const BLUESTEIN_FOURSTEP_BYTES = Sys.ARCH === :aarch64 ? typemax(Int) : 1 << 23
 # C: the chain type of the two convolution transforms (Chain, or RChain for run-time plans)
 function Bluestein{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
   M = bluestein_length(T, 2n - 1)
-  if C === Chain && M * sizeof(Complex{T}) >= BLUESTEIN_FOURSTEP_BYTES && fourstep_split(M) > 0
-    fwd = FourStep{T}(M, -1, 1)
-    bwd = FourStep{T}(M, 1, 1)
-  else
-    fwd = C{T}(M, -1)
-    bwd = C{T}(M, 1)
-  end
+  # one assignment each: the closure below captures fwd, and a variable assigned in two
+  # branches would be boxed (untyped, which juliac --trim cannot resolve)
+  fwd, bwd = convolution_transforms(T, M, C)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
   chirp, b = cached(() -> bluestein_tables(T, n, σ, fwd, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
                    )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
   Bluestein{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, zeros(Complex{T}, M), w1, w2)
+end
+
+# The forward and backward transforms of length M of a Bluestein kernel. The run-time plans keep
+# their chains (one concrete type for juliac --trim).
+convolution_transforms(::Type{T}, M::Int, ::Type{C}) where {T,C} = (C{T}(M, -1), C{T}(M, 1))
+function convolution_transforms(::Type{T}, M::Int, ::Type{Chain}) where {T}
+  if M * sizeof(Complex{T}) >= BLUESTEIN_FOURSTEP_BYTES && fourstep_split(M) > 0
+    return (FourStep{T}(M, -1, 1), FourStep{T}(M, 1, 1))
+  end
+  (Chain{T}(M, -1), Chain{T}(M, 1))
 end
 
 # chirp c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n) and the filter FFT_M(conj(c) wrapped) / M
