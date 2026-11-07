@@ -7,6 +7,9 @@
 #   up to 4096 on the M1; on Tiger Lake (AVX-512) 7–30 % from 4096 on (S = 1) and up to 45 % in
 #   batches, within noise below; on Zen 3 (AVX2, 16
 #   registers) it is 3–25 % slower from 256 on.
+#   Single lines on AVX-512 take radix 16 as often as possible and 8s for the rest (Tiger Lake,
+#   128–16384: Float64 2–15 % faster, Float32 between 6 % slower and 8 % faster). Not measured
+#   on NEON.
 #   Otherwise radix 4 throughout, one 8 (or 2) for an odd exponent; radix 16 and above lose
 #   (register spills, cache-set conflicts at large strides).
 # - aarch64: a factor 3 is merged with a 4 into 12, else with a 2 into 6; a factor 5 with a spare
@@ -105,6 +108,11 @@ function heuristic_radices(n::Int, S::Int)
   end
   if RADIX8_POW2 && ispow2(n) && 64 < n <= 16384 && S <= LARGE_STRIDE
     k = trailing_zeros(n)
+    if HAS_AVX512 && S == 1
+      # as many 16s as possible, the rest in 8s: 4t ≤ k, t ≡ k (mod 3)
+      t = k % 3 + 3 * ((k ÷ 4 - k % 3) ÷ 3)
+      return vcat(fill(16, t), fill(8, (k - 4t) ÷ 3))
+    end
     spare = k % 3
     return vcat(spare == 2 ? [4] : spare == 1 ? [4, 4] : Int[], fill(8, (k - (spare == 2 ? 2 : spare == 1 ? 4 : 0)) ÷ 3))
   end
