@@ -464,10 +464,11 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Bluestein{T}, S::Int) 
 """
     Composite{T}
 
-DFT of a length n = s·q whose smooth part s (prime factors ≤ MAX_RADIX_PRIME) and leftover q
-(prime factors above) are coprime, as one Cooley-Tukey step: with j = j2 + q·j1 and k = k1 + s·k2,
-a chain of length s over j1, the twiddles w_n^(j2·k1), and Bluestein's algorithm of length q over
-j2. The convolutions have length ≥ 2q - 1 instead of 2n - 1.
+DFT of a length n = s·q with q the full power of the largest prime factor of n above
+MAX_RADIX_PRIME and s > 1 coprime to it, as one Cooley-Tukey step: with j = j2 + q·j1 and
+k = k1 + s·k2, a kernel of length s over j1 (a chain if s is smooth, else again a composite or
+Bluestein kernel), the twiddles w_n^(j2·k1), and Bluestein's algorithm of length q over j2. Each
+convolution has the length of one prime power instead of 2n - 1, and stays in cache longer.
 """
 struct Composite{T,C,B} <: Kernel{T}
   n::Int
@@ -476,14 +477,40 @@ struct Composite{T,C,B} <: Kernel{T}
   chain::C                        # length s, applied to the q lanes of every slab
   blue::B                         # Bluestein of length q, with its own buffers
   tw::Vector{Complex{T}}          # w_n^m, m = 0…n-1
-  z::Vector{Complex{T}}           # output of the chain stage, S·n values
+  z::Vector{Complex{T}}           # output of the first stage, S·n values
 end
 
 function Composite{T}(n::Int, s::Int, q::Int, σ::Int, S::Int) where {T}
-  chain = Chain{T}(s, σ, radices(s, S * q; esize = sizeof(Complex{T})))
+  chain = first_kernel(T, s, σ, S * q, S)
   blue = Bluestein{T}(q, σ)
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
   Composite{T,typeof(chain),typeof(blue)}(n, s, q, chain, blue, tw, Vector{Complex{T}}(undef, S * n))
+end
+
+# Kernel of the first stage of a composite kernel: a chain over L lanes, or a kernel with buffers of
+# its own (composite, Bluestein) that sees at most one lane block, or S lanes, at a time.
+first_kernel(::Type{T}, s::Int, σ::Int, L::Int, S::Int) where {T} =
+  smooth(s) ? Chain{T}(s, σ, radices(s, L; esize = sizeof(Complex{T}))) : kernel(T, s, σ, max(composite_block(L, s), S))
+
+# The split n = s·q of the composite kernel: q the full power of the largest prime factor above
+# MAX_RADIX_PRIME. (n, 1) for smooth n.
+function composite_split(n::Int)
+  _, r = factorize(n)
+  r == 1 && return (n, 1)
+  p = r; d = 37
+  while d * d <= r                  # largest prime factor of r (all its factors are ≥ 37)
+    while r % d == 0
+      p = d; r ÷= d
+    end
+    d += 2
+  end
+  r > 1 && (p = r)
+  q = 1
+  m = n
+  while m % p == 0
+    q *= p; m ÷= p
+  end
+  (n ÷ q, q)
 end
 
 # Block of B lanes, element j of lane i at px + i + Sx·j and py + i + Sy·j. The chain stage runs
@@ -508,9 +535,9 @@ function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composi
   nothing
 end
 
-# Lanes i0 … i1-1 of the chain stage of a composite kernel (L lanes, contiguous), in blocks that
+# Lanes i0 … i1-1 of the first stage of a composite kernel (L lanes, contiguous), in blocks that
 # fit in cache.
-function chain_blocks!(pz::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, C::Chain{T}, L::Int, i0::Int, i1::Int) where {T}
+function chain_blocks!(pz::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, C::Kernel{T}, L::Int, i0::Int, i1::Int) where {T}
   CT = 2 * sizeof(T)
   Bb = composite_block(L, C.n)
   for a in i0:Bb:i1-1
@@ -549,10 +576,10 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, S::Int) 
   run_lanes!(py, px, pw1, pw2, P, S, S, S)
 
 function kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T}
-  _, q = factorize(n)
-  q == 1 && return Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
-  q == n && return Bluestein{T}(n, σ)
-  Composite{T}(n, n ÷ q, q, σ, S)
+  smooth(n) && return Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
+  s, q = composite_split(n)
+  s == 1 && return Bluestein{T}(n, σ)
+  Composite{T}(n, s, q, σ, S)
 end
 
 """

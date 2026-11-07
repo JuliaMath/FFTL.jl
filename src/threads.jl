@@ -326,38 +326,38 @@ end
 """
     CompositeMT{T}
 
-The composite kernel (chain of length s, Bluestein of length q) for one long contiguous line on
-several threads: the chain stage in lane blocks over the tasks, then the s Bluestein transforms
-spread over the tasks, each with a Bluestein kernel (buffers) of its own. The blocks and the
-arithmetic are those of the serial kernel, so the results agree bitwise.
+The composite kernel (first stage of length s, Bluestein of length q) for one long contiguous
+line on several threads: the first stage in lane blocks over the tasks, then the s Bluestein
+transforms spread over the tasks. Kernels with buffers of their own exist once per task. The
+blocks and the arithmetic are those of the serial kernel, so the results agree bitwise.
 """
 struct CompositeMT{T,C,B} <: Kernel{T}
   n::Int
   s::Int
   q::Int
-  chain::C
+  chains::Vector{C}                 # first stage, one per task
   blues::Vector{B}                  # one per task
   tw::Vector{Complex{T}}            # w_n^m, m = 0…n-1
-  z::Vector{Complex{T}}             # output of the chain stage
-  tbuf::Vector{Vector{Complex{T}}}  # two per task, one lane block of the chain each
+  z::Vector{Complex{T}}             # output of the first stage
+  tbuf::Vector{Vector{Complex{T}}}  # two per task, one lane block of the first stage each
 end
 
 function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
-  _, q = factorize(n)
-  s = n ÷ q
-  chain = Chain{T}(s, σ, radices(s, q; esize = sizeof(Complex{T})))
+  s, q = composite_split(n)
+  c1 = first_kernel(T, s, σ, q, 1)
+  chains = [c1; [c1 isa Chain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
   b1 = Bluestein{T}(q, σ)
   blues = [b1; [Bluestein{T}(q, σ) for _ in 2:nt]]
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
-  CompositeMT{T,typeof(chain),typeof(b1)}(n, s, q, chain, blues, tw, Vector{Complex{T}}(undef, n),
-                                           thread_buffers(T, composite_block(q, s) * s, 2nt))
+  CompositeMT{T,typeof(c1),typeof(b1)}(n, s, q, chains, blues, tw, Vector{Complex{T}}(undef, n),
+                                        thread_buffers(T, composite_block(q, s) * s, 2nt))
 end
 
-# A long line n = s·q with a leftover q and at least one Bluestein transform per thread.
+# A long line n = s·q (see composite_split) with at least one Bluestein transform per thread.
 function use_composite_mt(n, nt)
   (nt > 1 && n >= TUNING[].bluestein_mt_min) || return false
-  q = factorize(n)[2]
-  1 < q < n && n ÷ q >= nt
+  s, q = composite_split(n)
+  q > 1 && s >= nt
 end
 composite_mt_dim(sz, d::Int, nt::Int) = (so = dim_extent(sz, d); so[1] == 1 && so[2] == 1 && use_composite_mt(sz[d], nt))
 
@@ -372,7 +372,7 @@ function run_composite_mt!(py::Ptr{T}, px::Ptr{T}, P::CompositeMT{T}, nt::Int) w
     parallel_phases(ntasks,
       nb, (c, b) -> begin
         local a = b * Bb
-        run_lanes!(pz + a * CT, px + a * CT, cptr(P.tbuf[2c-1]), cptr(P.tbuf[2c]), P.chain, q, q, min(Bb, q - a))
+        run_lanes!(pz + a * CT, px + a * CT, cptr(P.tbuf[2c-1]), cptr(P.tbuf[2c]), P.chains[c], q, q, min(Bb, q - a))
       end,
       s, (c, k1) -> twiddled_bluestein!(py, pz, P.tw, P.blues[c], n, s, 1, 0, k1, 1))
   end

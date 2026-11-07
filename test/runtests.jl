@@ -65,9 +65,10 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "smooth part times leftover, $T" for T in (Float64, Float32)
-    # n = s·q: a chain of length s and Bluestein of length q, leftovers prime or composite
-    for n in pick([2 * 37, 3 * 41, 16 * 43, 29 * 37, 64 * 37, 2 * 37^2, 5 * 13 * 37, 2 * 37 * 41, 6 * 1009],
-                  [2 * 37, 29 * 37, 2 * 37 * 41, 6 * 1009])
+    # n = s·q: Bluestein on the power of the largest prime above 31, the rest again split
+    for n in pick([2 * 37, 3 * 41, 16 * 43, 29 * 37, 64 * 37, 2 * 37^2, 5 * 13 * 37, 2 * 37 * 41, 6 * 1009,
+                   37 * 41, 2 * 37 * 41 * 43, 6 * 37^2 * 41],
+                  [2 * 37, 29 * 37, 2 * 37 * 41, 6 * 1009, 37 * 41])
       x = randn(Complex{T}, n)
       @test FFTL.plan_fft(x).kernels[1] isa FFTL.Composite
       @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
@@ -148,7 +149,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     x = randn(Complex{T}, 4099)
     @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Bluestein
     # smooth part times leftover: the composite kernel on threads, bitwise equal to the serial one
-    for n in pick((65 * 4033, 7 * 11777, 1500 * 1013), (65 * 4033,))
+    for n in pick((65 * 4033, 7 * 11777, 1500 * 1013, 2 * 41 * 2521, 3 * 193 * 1021), (65 * 4033, 2 * 41 * 2521))
       x = randn(Complex{T}, n)
       for mk in (FFTL.plan_fft, FFTL.plan_bfft)
         ref = mk(x; threads = 1) * x
