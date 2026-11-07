@@ -183,14 +183,18 @@ function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
   K = length(Rs)
   n = prod(Rs; init = 1)
   ladder = vec_ladder(T)
-  # vector type of a grouped first stage: the widest with 2 or 4 complex values dividing m
-  group = findfirst(V -> ncomplex(V) in (2, 4) && (n ÷ Rs[1]) % ncomplex(V) == 0, ladder)
+  # vector type of a grouped first stage: the widest with 2 or 4 complex values (the scalar
+  # remainder of m is handled by the kernel)
+  group = findfirst(V -> ncomplex(V) in (2, 4), ladder)
   body = Any[:(L = P.n), :(s = S)]
   sst = 1
   for i in 1:K
     r = Rs[i]
     dst = dsts[i]
-    V = ladder[findfirst(V -> (base * sst) % ncomplex(V) == 0, ladder)]
+    # widest vector type whose complex count fits the stride (single lines take a scalar
+    # remainder; batched lines need divisibility)
+    V = base == 1 ? ladder[findfirst(V -> ncomplex(V) <= base * sst, ladder)] :
+                    ladder[findfirst(V -> (base * sst) % ncomplex(V) == 0, ladder)]
     if i == K
       if isempty(LM) || K == 1
         push!(body, :(stage_last!($dst, $src, s, Val($r), Val($σ), $V)))
@@ -200,6 +204,8 @@ function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
         end
       end
     elseif single && i == 1 && group !== nothing && ncomplex(V) == 1
+      # the first stage of a single line: vectorised over the butterflies (scalar remainder
+      # handled by the kernel)
       push!(body, :(m = L ÷ $r))
       if isempty(FM)
         push!(body, :(stage_first_group!($dst, $src, cptr(P.tw1), m, Val($r), Val($σ), $(ladder[group]))))
