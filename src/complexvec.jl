@@ -2,11 +2,13 @@
 #
 # Each platform has a ladder of vector types, from the widest register down to one complex value
 # per vector (`vec_ladder`): 128-bit registers on aarch64 (and x86 without AVX2), 256-bit with
-# AVX2. A kernel stage takes the widest type whose number of complex values divides its stride.
+# AVX2, 512-bit with AVX-512. A kernel stage takes the widest type whose number of complex values divides its stride.
 #
 # On aarch64 with the ARMv8.3 complex-number extension, a ± i·b maps to FCADD and the complex
 # product to two FCMLA. Elsewhere both are written as blends of two results (even lanes from one,
 # odd lanes from the other), which x86 compiles to vaddsubpd / vfmaddsubpd.
+
+using Preferences: @load_preference
 
 """
     HAS_FCMA
@@ -35,7 +37,28 @@ const HAS_AVX2 = Sys.ARCH === :x86_64 &&
   Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx2) &&
   Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_fma)
 
-const REG_BYTES = HAS_AVX2 ? 32 : 16
+"""
+    HAS_AVX512
+
+Whether the host is an x86-64 CPU with AVX-512F (and AVX2/FMA): 512-bit kernels.
+"""
+const HAS_AVX512 = HAS_AVX2 &&
+  Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx512f)
+
+"""
+    FFTL.REG_BYTES
+
+Width in bytes of the widest vector the CPU kernels use: 64 with AVX-512, 32 with AVX2, 16
+otherwise. The `simd_bytes` preference lowers it (for comparisons, or CPUs that reduce the clock
+for 512-bit instructions); the next load recompiles FFTL:
+
+```julia
+using Preferences, FFTL
+Preferences.set_preferences!(FFTL, "simd_bytes" => 32; force = true)
+```
+"""
+const REG_BYTES = min(HAS_AVX512 ? 64 : HAS_AVX2 ? 32 : 16,
+                      @load_preference("simd_bytes", 64)::Int)
 
 """
     vec_ladder(T)
@@ -43,7 +66,7 @@ const REG_BYTES = HAS_AVX2 ? 32 : 16
 Vector types for complex `T` values, widest first, down to one complex value per vector.
 """
 vec_ladder(::Type{T}) where {T} =
-  Tuple(Vec{b ÷ sizeof(T),T} for b in (REG_BYTES, REG_BYTES ÷ 2, REG_BYTES ÷ 4) if b >= 2sizeof(T))
+  Tuple(Vec{b ÷ sizeof(T),T} for b in (REG_BYTES, REG_BYTES ÷ 2, REG_BYTES ÷ 4, REG_BYTES ÷ 8) if b >= 2sizeof(T))
 single_vec(::Type{T}) where {T} = Vec{2,T}
 
 # Lane permutations and sign patterns.
@@ -89,6 +112,18 @@ else
       VT = NTuple{N,VecElement{T}}
       @eval begin
         @inline addsub(a::Vec{$N,$T}, c::Vec{$N,$T}) = Vec(ccall($name, llvmcall, $VT, ($VT, $VT), a.data, c.data))
+        @inline fcadd90(a::Vec{$N,$T}, b::Vec{$N,$T}) = addsub(a, swap_reim(b))
+        @inline fcadd270(a::Vec{$N,$T}, b::Vec{$N,$T}) = addsub(a, -swap_reim(b))
+      end
+    end
+  end
+  if HAS_AVX512
+    # no 512-bit addsub: fmaddsub(a, 1, c) = (a0 - c0, a1 + c1, …), exact (instead of sub, add, blend)
+    for (T, N, name) in ((Float64, 8, "llvm.x86.avx512.vfmaddsub.pd.512"), (Float32, 16, "llvm.x86.avx512.vfmaddsub.ps.512"))
+      VT = NTuple{N,VecElement{T}}
+      @eval begin
+        @inline addsub(a::Vec{$N,$T}, c::Vec{$N,$T}) =
+          Vec(ccall($name, llvmcall, $VT, ($VT, $VT, $VT, Int32), a.data, one(Vec{$N,$T}).data, c.data, Int32(4)))
         @inline fcadd90(a::Vec{$N,$T}, b::Vec{$N,$T}) = addsub(a, swap_reim(b))
         @inline fcadd270(a::Vec{$N,$T}, b::Vec{$N,$T}) = addsub(a, -swap_reim(b))
       end

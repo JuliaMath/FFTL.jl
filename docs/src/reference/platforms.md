@@ -26,6 +26,7 @@ available.
 | Apple M1 Max (arm64, macOS) | development machine; codelets use the `FCADD`/`FCMLA` complex instructions; GPU via Metal |
 | AMD EPYC 7763 (Zen 3, x86-64 with AVX2, Linux) | x86-64 development machine |
 | AMD EPYC 7702 (Zen 2, x86-64 with AVX2, Linux) | x86-64 machine of the [benchmarks](@ref "Benchmarks") |
+| Intel Core i7-1185G7 (Tiger Lake, x86-64 with AVX-512, Linux) | 512-bit kernels tested; radix rules not retuned for AVX-512 |
 | Linux and macOS in CI | quick tests on every push to `main` and on pull requests; full tests weekly |
 | NVIDIA RTX A6000 | GPU via CUDA, measured against cuFFT |
 | AMD, Intel GPUs | not tested |

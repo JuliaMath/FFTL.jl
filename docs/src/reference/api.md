@@ -96,6 +96,7 @@ FFTL.clear_cache!
 FFTL.cpu_caches
 FFTL.set_cpu_caches!
 FFTL.PRECOMPILE_WORKLOAD
+FFTL.REG_BYTES
 ```
 
 ## Plan types

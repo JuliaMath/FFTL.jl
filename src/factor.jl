@@ -2,9 +2,11 @@
 #
 # Rules from brute-force searches over all decompositions (M1, Float32 and Float64, n ≤ 4·10^6):
 # - n ≤ 16 with small factors: one codelet.
-# - Powers of two up to 16384 (stride ≤ LARGE_STRIDE), aarch64 only: radix 8 as often as possible
-#   and a 4 (two 4s for one spare bit) for the rest, 2–7 % faster than 4s with one 8 up to 4096
-#   (M1, F32 and F64); on Zen 3 (AVX2, 16 vector registers) it is 3–25 % slower from 256 on.
+# - Powers of two up to 16384 (stride ≤ LARGE_STRIDE), with 32 vector registers: radix 8 as often
+#   as possible and a 4 (two 4s for one spare bit) for the rest, 2–7 % faster than 4s with one 8
+#   up to 4096 on the M1; on Tiger Lake (AVX-512) 7–30 % from 4096 on (S = 1) and up to 45 % in
+#   batches, within noise below; on Zen 3 (AVX2, 16
+#   registers) it is 3–25 % slower from 256 on.
 #   Otherwise radix 4 throughout, one 8 (or 2) for an odd exponent; radix 16 and above lose
 #   (register spills, cache-set conflicts at large strides).
 # - aarch64: a factor 3 is merged with a 4 into 12, else with a 2 into 6; a factor 5 with a spare
@@ -45,7 +47,9 @@ const LARGE_STRIDE = 256
 # radices 4, 3, 5, 7 alone are faster: of the lengths up to 1024 with prime factors ≤ 7 (Zen 2, all
 # radix multisets measured), the merged choice is up to 2.4× slower than the best one, plain radices
 # at most 1.4× on lengths not used to choose the rule. Batches (S > 1) keep the merged radices; they
-# have not been measured on x86 for every length.
+# have not been measured on x86 for every length. With AVX-512 (32 registers) merged single lines
+# in this order are slower too (Tiger Lake, 7-smooth n ≤ 1024: geomean 1.10 F32, 1.03 F64), mostly
+# where the chain starts with an odd radix and the later strides are not multiples of the vector.
 merge_composite(S) = Sys.ARCH === :aarch64 || S > 1
 
 """
@@ -65,7 +69,10 @@ end
 # multiple of the L1 set stride, the streams share a cache set and more than 8 of them thrash
 # (48³ dimension 3: (4, 12) 392 µs, (6, 8) 107 µs; 144³: (12, 12) 12.8 ms, (4, 6, 6) 5.6 ms).
 const L1_SET_LOG2 = Sys.ARCH === :aarch64 ? 14 : 12
-const RADIX8_POW2 = Sys.ARCH === :aarch64
+
+# Vector registers of the ISA (NEON and AVX-512: 32, also for 256-bit kernels under AVX-512VL).
+const VEC_REGS = Sys.ARCH === :aarch64 || HAS_AVX512 ? 32 : 16
+const RADIX8_POW2 = VEC_REGS == 32
 
 function set_conflict(rs, n, S, esize = 16)
   for r in rs
