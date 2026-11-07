@@ -286,6 +286,11 @@ function stride_dispatch(T, body)
   :(S == 1 ? $(body(1, true)) : $ex)
 end
 
+# A call with an uninferred kernel (Bluestein's Chain{T}(M, σ) comes out of the cache as Any) must
+# dispatch at run time: enumerating the few run! methods compiled run!(::RChain) and with it every
+# codelet of the run-time dispatch (~20 s on the first plan of a session).
+Base.Experimental.@max_methods 1 function run! end
+
 """
     run!(py, px, pw1, pw2, P::Kernel, S)
 
