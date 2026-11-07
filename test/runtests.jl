@@ -65,14 +65,26 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "smooth part times leftover, $T" for T in (Float64, Float32)
-    # n = s·q: Bluestein on the power of the largest prime above 31, the rest again split
+    # n = s·q: a chain of length s, Bluestein on the leftover q (prime or composite)
     for n in pick([2 * 37, 3 * 41, 16 * 43, 29 * 37, 64 * 37, 2 * 37^2, 5 * 13 * 37, 2 * 37 * 41, 6 * 1009,
-                   37 * 41, 2 * 37 * 41 * 43, 6 * 37^2 * 41],
-                  [2 * 37, 29 * 37, 2 * 37 * 41, 6 * 1009, 37 * 41])
+                   2 * 37 * 41 * 43, 6 * 37^2 * 41],
+                  [2 * 37, 29 * 37, 2 * 37 * 41, 6 * 1009])
       x = randn(Complex{T}, n)
       @test FFTL.plan_fft(x).kernels[1] isa FFTL.Composite
       @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
       @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < 10tol(T)
+    end
+    # a leftover split into prime powers (the planner does this for large leftovers only): first
+    # stages that are composite and Bluestein kernels themselves
+    for (n, s, q) in pick([(2 * 37 * 41 * 43, 2 * 37 * 41, 43), (37 * 41, 37, 41), (6 * 37^2 * 41, 6 * 37^2, 41)],
+                          [(2 * 37 * 41 * 43, 2 * 37 * 41, 43), (37 * 41, 37, 41)])
+      x = randn(Complex{T}, n)
+      for σ in (-1, 1)
+        k = FFTL.Composite{T}(n, s, q, σ, 1)
+        y = similar(x); w1 = similar(x); w2 = similar(x)
+        GC.@preserve x y w1 w2 FFTL.run!(FFTL.cptr(y), FFTL.cptr(x), FFTL.cptr(w1), FFTL.cptr(w2), k, 1)
+        @test relerr(y, dft(ComplexF64.(x), σ)) < 10tol(T)
+      end
     end
     # lanes of a 2D array: along dimension 1 (contiguous lines) and dimension 2 (strided lanes)
     for (sz, region) in ((((2 * 37, 5)), (1,)), ((3, 2 * 37), (2,)), ((5, 3 * 41), (1, 2)))
@@ -149,7 +161,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     x = randn(Complex{T}, 4099)
     @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Bluestein
     # smooth part times leftover: the composite kernel on threads, bitwise equal to the serial one
-    for n in pick((65 * 4033, 7 * 11777, 1500 * 1013, 2 * 41 * 2521, 3 * 193 * 1021), (65 * 4033, 2 * 41 * 2521))
+    # 3·193·1021: the leftover is split, the first stage is a composite kernel on each task
+    for n in pick((65 * 4033, 7 * 11777, 1500 * 1013, 3 * 193 * 1021), (65 * 4033, 3 * 193 * 1021))
       x = randn(Complex{T}, n)
       for mk in (FFTL.plan_fft, FFTL.plan_bfft)
         ref = mk(x; threads = 1) * x
