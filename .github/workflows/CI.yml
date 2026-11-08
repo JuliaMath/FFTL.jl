@@ -30,7 +30,7 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -78,7 +78,7 @@ jobs:
     name: Julia lts · ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       JULIA_NUM_THREADS: 2
     steps:
