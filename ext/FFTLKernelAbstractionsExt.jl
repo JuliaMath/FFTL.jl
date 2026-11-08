@@ -349,7 +349,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       $(asplit(A))
       axe = @inbounds x[abase + $(I(E)) * (Int32(2) * aK) + one(Int32)]
       axo = @inbounds x[abase + $(I(E)) * ($(I(2N - 1)) - Int32(2) * aK) + one(Int32)]
-      ccmul(complex(axe, $(dst ? :axo : :(-axo))), @inbounds cin[aK + one(Int32)])
+      ccmul(complex(axe, $(dst ? :axo : :(-axo))), $(raw ? :(cispi($T(aK) / $T($(2N)))) : :(@inbounds cin[aK + one(Int32)])))
     end
     # staged DCT-III/DST-III: element K of lane l is C_K from the lane's real line y, held as
     # buf[l + G k] = y_2k + i y_2k+1 (y reversed for DST-III, y_2N = 0)
@@ -378,7 +378,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       $(rput(:(Int32(2) * aK), :(real(av))))
       $(rput(:(Int32(2) * aK + one(Int32)), :(imag(av))))
     end : quote
-      $(asplit(A)); aw = ccmul(@inbounds(cout[aK + one(Int32)]), $v)
+      $(asplit(A)); aw = ccmul($(raw ? :(cispi(($T(4) * $T(aK) + one($T)) / $T($(8N)))) : :(@inbounds(cout[aK + one(Int32)]))), $v)
       @inbounds y[abase + $(I(E)) * $(aout(:(Int32(2) * aK))) + one(Int32)] = 2real(aw)
       @inbounds y[abase + $(I(E)) * $(aout(:($(I(2N - 1)) - Int32(2) * aK))) + one(Int32)] = 2imag(aw)
     end
