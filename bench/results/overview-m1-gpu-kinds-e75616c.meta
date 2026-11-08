@@ -1,0 +1,3 @@
+device: metal; FFTL e75616c; julia 1.13.3; MacBook-Pro-von-Tobias-3.local
+start: 2026-11-08T13:39:58; load: 13:39  up 5 days, 2 mins, 17 users, load averages: 5,42 4,65 5,69
+end: 2026-11-08T13:49:36; load: 13:49  up 5 days, 12 mins, 17 users, load averages: 25,53 18,14 11,40

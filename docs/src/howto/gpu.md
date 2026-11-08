@@ -44,7 +44,8 @@ of half the length, with the pre- and post-processing inside its first and last 
 
 The real-to-real kinds are reduced to complex DFTs: of half the length for DCT-II to DCT-IV and
 DST-II to DST-IV of even length, of length ``n - 1`` for DCT-I and ``n + 1`` for DST-I, mostly
-with the extra steps inside the passes. Odd lengths of the other kinds take a complex DFT of
+with the extra steps inside the passes. On CUDA, a DCT-I whose length ``n - 1`` has a prime factor
+above 31 takes a four-step DFT instead of Bluestein's algorithm (the pass radices stop at 31). Odd lengths of the other kinds take a complex DFT of
 length ``2n``, the Hartley and halfcomplex kinds one of length ``n``. DCT-II and DST-II are the
 most tuned of them; for the other kinds the speed relative to VkFFT depends on the kind and the
 size, from faster to several times slower.
