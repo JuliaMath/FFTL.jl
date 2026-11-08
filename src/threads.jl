@@ -390,8 +390,8 @@ function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
   s, q = composite_split(T, n)
   c1 = first_kernel(T, s, σ, q, 1)
   chains = [c1; [c1 isa RChain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
-  b1 = Resample{T}(q, σ)
-  blues = [b1; [Resample{T}(q, σ) for _ in 2:nt]]
+  b1 = RsBatch{T}(q, σ, s)
+  blues = [b1; [RsBatch{T}(q, σ, s) for _ in 2:nt]]
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
   CompositeMT{T,typeof(c1),typeof(b1)}(n, s, q, chains, blues, tw, Vector{Complex{T}}(undef, n),
                                         thread_buffers(T, composite_block(q, s) * s, 2nt))
@@ -412,6 +412,9 @@ function run_composite_mt!(py::Ptr{T}, px::Ptr{T}, P::CompositeMT{T}, nt::Int) w
   Bb = composite_block(q, s)
   nb = cld(q, Bb)
   ntasks = min(nt, length(P.blues))
+  # lane chunks of the second phase: one per task where the lanes allow, multiples of CU (rs_chunk!)
+  CU = ncomplex(first(vec_ladder(T)))
+  Cm = min(P.blues[1].C, CU * cld(cld(s, ntasks), CU))
   GC.@preserve P begin
     pz = cptr(P.z)
     parallel_phases(ntasks,
@@ -419,7 +422,7 @@ function run_composite_mt!(py::Ptr{T}, px::Ptr{T}, P::CompositeMT{T}, nt::Int) w
         local a = b * Bb
         run_lanes!(pz + a * CT, px + a * CT, cptr(P.tbuf[2c-1]), cptr(P.tbuf[2c]), P.chains[c], q, q, min(Bb, q - a))
       end,
-      s, (c, k1) -> twiddled_leftover!(py, pz, P.tw, P.blues[c], n, s, 1, 0, k1, 1))
+      cld(s, Cm), (c, b) -> rs_chunk!(py, pz, P.tw, P.blues[c], n, s, 1, 1, 0, b * Cm, min(Cm, s - b * Cm)))
   end
   nothing
 end

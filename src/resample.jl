@@ -395,26 +395,44 @@ end
 # and the deconvolution, one batched transform, then rows of output (y + i + Sy·(k1 + s·k2)).
 function leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::RsBatch{T}, n::Int, s::Int,
                    B::Int, Sy::Int) where {T}
-  q = R.n; m = R.m; C = R.C; hp = cld(q, 2); corr = R.corr; g = R.g
+  for i in 0:B-1, c0 in 0:R.C:s-1
+    rs_chunk!(py, pz, tw, R, n, s, B, Sy, i, c0, min(R.C, s - c0))
+  end
+  nothing
+end
+
+# Lanes c0 … c0+L-1 (L ≤ C, c0 a multiple of the vector's complex count CU) of slab lane i: one
+# chunk of the batched pass, its multiple of CU lanes and its remainder as separate groups. The
+# chain's vector width follows the lane count, and vectors of one complex value round differently;
+# this way only the last s % CU lanes ever take the narrow path, so the threaded composite kernel
+# (other chunk sizes, multiples of CU) agrees bitwise with the serial one.
+function rs_chunk!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::RsBatch{T}, n::Int, s::Int, B::Int,
+                   Sy::Int, i::Int, c0::Int, L::Int) where {T}
+  r = L % ncomplex(first(vec_ladder(T)))
+  L > r && rs_group!(py, pz, tw, R, n, s, B, Sy, i, c0, L - r)
+  r > 0 && rs_group!(py, pz, tw, R, n, s, B, Sy, i, c0 + L - r, r)
+  nothing
+end
+
+function rs_group!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::RsBatch{T}, n::Int, s::Int, B::Int,
+                   Sy::Int, i::Int, c0::Int, L::Int) where {T}
+  q = R.n; m = R.m; hp = cld(q, 2); corr = R.corr; g = R.g
   cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
   GC.@preserve R tw begin
     pg = cptr(g)
-    for i in 0:B-1, c0 in 0:C:s-1
-      L = min(C, s - c0)
-      @inbounds for j2 in 0:q-1
-        jj = j2 < hp ? j2 : m - q + j2
-        e = (j2 * c0) % n           # (j2·k1) mod n, stepped over the lanes
-        cr = corr[j2+1]
-        zb = i + B * (j2 + q * c0) + 1
-        for c in 0:L-1
-          g[jj*L+c+1] = unsafe_load(cz, zb + B * q * c) * (tw[e+1] * cr)
-          e += j2; e >= n && (e -= n)
-        end
+    @inbounds for j2 in 0:q-1
+      jj = j2 < hp ? j2 : m - q + j2
+      e = (j2 * c0) % n             # (j2·k1) mod n, stepped over the lanes
+      cr = corr[j2+1]
+      zb = i + B * (j2 + q * c0) + 1
+      for c in 0:L-1
+        g[jj*L+c+1] = unsafe_load(cz, zb + B * q * c) * (tw[e+1] * cr)
+        e += j2; e >= n && (e -= n)
       end
-      fill!(view(g, hp*L+1:(m-q+hp)*L), zero(Complex{T}))
-      run!(pg, pg, cptr(R.work1), cptr(R.work2), R.fwd, L)
-      rs_rows!(cy, i + Sy * c0 + 1, Sy, Sy * s, pg, R.ws, q, m, L, Val(resample_width(T)))
     end
+    fill!(view(g, hp*L+1:(m-q+hp)*L), zero(Complex{T}))
+    run!(pg, pg, cptr(R.work1), cptr(R.work2), R.fwd, L)
+    rs_rows!(cy, i + Sy * c0 + 1, Sy, Sy * s, pg, R.ws, q, m, L, Val(resample_width(T)))
   end
   nothing
 end

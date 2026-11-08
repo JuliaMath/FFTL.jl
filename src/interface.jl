@@ -102,7 +102,7 @@ function Base.show(io::IO, ::MIME"text/plain", p::FFTLPlan{T}) where {T}
     k isa Bluestein && print(io, "Bluestein, convolution length ", k.fwd.n)
     k isa Resample && print(io, "resampled, grid length ", k.fwd.n)
     k isa Composite && print(io, "chain of length ", k.s, ", resampled DFT of length ", k.q, ", grid length ", k.blue.m)
-    k isa CompositeMT && print(io, "chain of length ", k.s, ", resampled DFT of length ", k.q, " on threads, grid length ", k.blues[1].fwd.n)
+    k isa CompositeMT && print(io, "chain of length ", k.s, ", resampled DFT of length ", k.q, " on threads, grid length ", k.blues[1].m)
     k isa BluesteinMT && print(io, "Bluestein on threads, convolution length ", k.fwd.n)
     k isa LinesMT && print(io, "one kernel per thread, blocks of ", k.B, " lines")
     k isa ResampleMT && print(io, "resampled on threads, grid length ", k.fwd.n)
