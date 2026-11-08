@@ -34,7 +34,7 @@ rules there apply to everything written here as well. Everything in this folder 
   plans `RPlan`, `RRFFTPlan`, `RR2RPlan`), contribute.
 - **Explanation** (`src/explanation/`): the DFT and its conventions, FFTW and FFTL (history, papers, what
   FFTL takes from FFTW; written from papers and documentation only), algorithms (Stockham chains,
-  codelets, Bluestein, multidimensional without transposition, four-step, real and real-to-real
+  codelets, resampling, multidimensional without transposition, four-step, real and real-to-real
   reductions), implementation (type specialisation, SIMD, kernel cache, cache sizes, the stage loop of the
   chain, why libfftl needs `RChain`), design decisions (what was decided and why, with the evidence), package
   size and load time, performance (measurement protocol).
@@ -51,9 +51,9 @@ Design decisions page. These concern the manual itself:
 
 - **Interface in the text:** the manual writes the exported names without prefix; next to `using FFTL` it
   uses `import AbstractFFTs`, because `using AbstractFFTs` would make `fft` ambiguous.
-- **Feature/platform table:** built from the README, the code and the libfftl header. The Bluestein
-  convolution-length rule is taken from the code (aarch64: smallest 5-smooth M ≥ 2n−1; x86: cost model,
-  7-smooth M in [2n−1, 1.4·(2n−1)]); the FFTW-padded real layout of in-place r2c/c2r in libfftl comes
+- **Feature/platform table:** built from the README, the code and the libfftl header. The grid-length
+  rule of resampled lengths is taken from the code (aarch64: smallest 5-smooth m ≥ 2n; x86: cost model,
+  7-smooth m in [2n, 2.8·n]); the FFTW-padded real layout of in-place r2c/c2r in libfftl comes
   from the header.
 - **Figures:** CairoMakie in the tutorials. Literate runs with `execute = false` (its default for
   markdown), so the scripts execute as Documenter `@example` blocks during `makedocs`; a figure cell ends

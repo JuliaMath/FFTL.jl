@@ -43,7 +43,7 @@ line, all buffers at fixed page offsets, time of the radix-16 sequence over the 
 
 ## Rules for lengths are derived on some lengths and checked on others
 
-**Decision (2026-11-04).** The radix choice and the Bluestein length are rules on the prime
+**Decision (2026-11-04).** The radix choice and the grid length of a resampled transform are rules on the prime
 factorisation, not tables per length. A rule is derived from one part of the lengths (a brute-force
 search over all decompositions, or a cost model) and checked on lengths that were not used for the
 derivation, for example by parity of n or by a random split; only the checked result counts as
@@ -56,20 +56,26 @@ not single points.
 the M1. A dense sweep of every length 2…1024 against FFTW MEASURE (one thread, Zen 2, 2046 cases)
 showed 100 `Float32` and 64 `Float64` lengths slower than 1.5×, the worst at 3.4×.
 
-## Lengths with large prime factors: split off the smooth part, Bluestein on the rest
+## Lengths with large prime factors: split off the smooth part, resample the rest
 
 **Decision (2026-11-07).** For n = s·q, with q the part made of primes above `MAX_RADIX_PRIME` (73, at the
-time of the decision 31): one Cooley–Tukey
-step, a chain of length s, twiddles, and s Bluestein transforms of length q (`Composite`). A leftover q
-stays one Bluestein while its convolution is at most 4 MiB; above that, q is split into its prime
-powers, recursively. Bluestein convolutions of 8 MiB and more run as a serial four-step algorithm on
-x86 (1.3× from 2²⁰ on, Zen 2) but not on aarch64, where the chain is faster up to 2²² (M1 Max). With
-threads, `CompositeMT` is used when s is at least the number of threads and is bitwise equal to the
-serial kernel; otherwise the whole length is one `BluesteinMT`.
+time of the decision 31): one Cooley–Tukey step, a chain of length s, twiddles, and s resampled
+transforms of length q in one batched pass (`Composite`). A leftover q stays one resampled transform
+while its grid is at most 4 MiB; above that, q is split into its prime powers, recursively. Grids of
+8 MiB and more are transformed by a serial four-step algorithm on x86 (1.3× from 2²⁰ on, Zen 2) but
+not on aarch64, where the chain is faster up to 2²² (M1 Max). With threads, `CompositeMT` is used when
+s is at least the number of threads and is bitwise equal to the serial kernel; otherwise the whole
+length is one `ResampleMT`.
 
-**Why.** The convolutions of length about 2q stay in cache, and the arithmetic equals one Bluestein of
-length n. On 45 non-smooth lengths (Zen 2) FFTL moved from ×0.64 to ×1.04 of the fastest other library
-with one thread, and from ×0.77 to ×1.16 with 16 threads.
+**Why.** The grids of length about 2q stay in cache. On 45 non-smooth lengths (Zen 2) FFTL moved from
+×0.64 to ×1.04 of the fastest other library with one thread, and from ×0.77 to ×1.16 with 16 threads
+(measured with Bluestein's algorithm on the leftover). Resampling needs one transform of a length of
+at least 2q where Bluestein's algorithm needs two: it took 0.51–0.82 of Bluestein's time for primes
+from 1009 to 100003 (Tiger Lake, one thread), at an error of 2–5·10⁻¹⁵ in `Float64` (Bluestein about
+5·10⁻¹⁶).
+
+**Replaced.** Bluestein's algorithm on the leftover and `BluesteinMT` for a whole line on threads
+(2026-11-07). Generic number types and the GPU passes keep Bluestein's algorithm.
 
 **Not done / not checked.** Rader's algorithm (5 of the 45 sweep lengths qualify). Both thresholds were
 measured on Zen 2 only, and the 4 MiB rule is checked on 12 lengths that also took part in its
@@ -216,7 +222,7 @@ is 26.8 MB instead of 49.5 MB, its code 8.8 MB instead of 18.6 MB.
 
 **Decision (2026-11-10).** A pass plan (`plan_pass`, `plan_r2c_pass`, `plan_c2r_pass`) built with
 `_runtime` (`plan_pass_runtime`, `plan_r2c_pass_runtime`, `plan_c2r_pass_runtime`) uses run-time kernels
-only: RChain, Bluestein and composite transforms over RChain, the four-step algorithm over RChain. Its
+only: RChain, resampled and composite transforms over RChain, the four-step algorithm over RChain. Its
 type depends on the element type and the number of dimensions, not on the length. The specialised plans
 are unchanged.
 
@@ -229,7 +235,7 @@ and matches the direct DFT to 3·10⁻¹⁴ when called from C. Planning on 64 �
 `d = 1` and 0.9 µs for `d = 2` on the M1 (the specialised plan: 4.7 µs and 2.8 µs). Applying the
 specialised and the run-time plans is within noise of each other on the same views.
 
-**Costs.** For real lengths with large prime factors, the run-time kernel is a Bluestein transform,
+**Costs.** For real lengths with large prime factors, the run-time kernel is one resampled transform,
 without the composite split of the specialised plan.
 
 ## The interface: FFTW.jl's names, FFTL's own functions, AbstractFFTs as a backend

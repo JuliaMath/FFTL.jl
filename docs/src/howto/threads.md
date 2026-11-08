@@ -31,9 +31,10 @@ number of values the transform touches:
 - A long line whose length has a large prime factor (at least ``2^{14}``) runs on threads as
   well. When the smooth part of the length is split off (``n = s\,q``, see
   [Algorithms](@ref "Lengths with a smooth part")) and ``s`` is at least the number of threads,
-  the ``s`` Bluestein transforms of length ``q`` are spread over the threads; the result is
-  bitwise the same as on one thread. Otherwise one Bluestein transform of the whole length
-  runs with its convolution transforms as four-step transforms on the threads.
+  the ``s`` resampled transforms of length ``q`` are spread over the threads in chunks of lanes;
+  the result is bitwise the same as on one thread. Otherwise one resampled transform of the whole
+  length runs with its grid transform as a four-step transform on the threads, and its
+  interpolation split over them.
 
 A 1D transform on a machine where some cores are busy is held up by the slowest piece, so fewer
 threads than cores can be the faster choice there.

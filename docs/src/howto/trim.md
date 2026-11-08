@@ -17,7 +17,7 @@ For trimmed programs, FFTL has plans whose radix sequences and sizes are data:
 
 `T` is `Float32` or `Float64`; sizes, regions and kinds are vectors. All three take the
 `threads` keyword. They compute the same transforms with the same strategies as the normal plans
-(Bluestein, four-step, fused planes); per stage they dispatch at run time, which costs a little
+(resampling, four-step, fused planes); per stage they dispatch at run time, which costs a little
 speed. [libfftl](@ref "C library (libfftl)") is built from exactly these plans, so they are the
 tested route through `juliac --trim=safe`.
 
