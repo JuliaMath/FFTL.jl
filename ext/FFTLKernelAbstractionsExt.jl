@@ -98,6 +98,15 @@ function device_info(backend)
   nothing
 end
 
+# CUDA, one-dimensional transforms of 2^13 to 2^16 values: the chains of two passes run with at
+# most 2048 values per workgroup pass (G·R). Measured on an RTX A6000 against 4096: 0.63–0.73×
+# time for c2c; 2^12 and 2^18 are slower with 2048, so the window stays.
+function plan_limits(backend, ::Type{T}, dims) where {T}
+  lim = device_limits(backend, T)
+  nameof(typeof(backend)) === :CUDABackend && length(dims) == 1 && 2^13 <= dims[1] <= 2^16 ?
+    Limits(min(lim.nstat, 2048), lim.nmax, lim.wmax, lim.slc) : lim
+end
+
 function device_limits(backend, ::Type{T}) where {T}
   info = try device_info(backend) catch; nothing end
   info === nothing && return LIM0   # other backends (CPU, ROCm, oneAPI): the M1 values
@@ -838,7 +847,7 @@ end
 # dropped as a whole (plan.rhook = 0) when the workgroups of the first or last pass do not fit
 # the hooks (see pass_kernel).
 function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64, rhook = 0, rtab = nothing, xreal = false,
-                lim = device_limits(backend, T),   # override: hardware limits (rule tuning)
+                lim = plan_limits(backend, T, dims),   # override: hardware limits (rule tuning)
                 pad = default_pad(dims, region, T, device_profile(backend), lim)) where {T,D}
   region = FFTL.normregion(region, D)
   all(>=(1), dims) || throw(ArgumentError("array size must be positive"))
