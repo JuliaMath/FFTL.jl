@@ -349,7 +349,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       $(asplit(A))
       axe = @inbounds x[abase + $(I(E)) * (Int32(2) * aK) + one(Int32)]
       axo = @inbounds x[abase + $(I(E)) * ($(I(2N - 1)) - Int32(2) * aK) + one(Int32)]
-      ccmul(complex(axe, $(dst ? :axo : :(-axo))), @inbounds cin[aK + one(Int32)])
+      ccmul(complex(axe, $(dst ? :axo : :(-axo))), $(raw ? :(cispi($T(aK) / $T($(2N)))) : :(@inbounds cin[aK + one(Int32)])))
     end
     # staged DCT-III/DST-III: element K of lane l is C_K from the lane's real line y, held as
     # buf[l + G k] = y_2k + i y_2k+1 (y reversed for DST-III, y_2N = 0)
@@ -378,7 +378,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       $(rput(:(Int32(2) * aK), :(real(av))))
       $(rput(:(Int32(2) * aK + one(Int32)), :(imag(av))))
     end : quote
-      $(asplit(A)); aw = ccmul(@inbounds(cout[aK + one(Int32)]), $v)
+      $(asplit(A)); aw = ccmul($(raw ? :(cispi(($T(4) * $T(aK) + one($T)) / $T($(8N)))) : :(@inbounds(cout[aK + one(Int32)]))), $v)
       @inbounds y[abase + $(I(E)) * $(aout(:(Int32(2) * aK))) + one(Int32)] = 2real(aw)
       @inbounds y[abase + $(I(E)) * $(aout(:($(I(2N - 1)) - Int32(2) * aK))) + one(Int32)] = 2imag(aw)
     end
@@ -891,7 +891,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     # element-wise hooks: the first pass must not cross lanes (G | E)
     @assert length(region) == 1 && specs[1].Nx == 0 && specs[end].Ny == 0
     sf = specs[1]; E = sf.E
-    Gf = pass_G(sf.R, sf.s, sf.m, E, sf.B, gmax, hook_limits(lim))
+    Gf = pass_G(sf.R, sf.s, sf.m, E, sf.B, gmax, hook_limits(lim, backend))
     if E == 1 || E % Gf == 0
       ta, tb = rtab
       specs[1] = merge(specs[1], rhook <= 5 ? (rh = rhook, pre = true, cin = ta, cout = tb) : (rh = rhook, pre = true, cin = ta))
@@ -938,7 +938,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   raw = nameof(typeof(backend)) === :CUDABackend
   steps = Any[]
   for (i, sp) in enumerate(specs)
-    G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, 4 <= get(sp, :rh, 0) <= 7 ? hook_limits(lim) : lim)
+    G = pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, 4 <= get(sp, :rh, 0) <= 7 ? hook_limits(lim, backend) : lim)
     k, W, groups, bytes = pass_kernel(sp.R, G, sp.σ, T, sp.s, sp.M, sp.E, sp.B; Nx = sp.Nx, Ny = sp.Ny,
                                       padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]), lim = lim,
                                       rhook = get(sp, :rh, 0), pre = get(sp, :pre, get(sp, :rh, 0) == 1),
@@ -975,9 +975,11 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   KAPlan{T,D,typeof(backend)}(dims, region, σ, rsall, steps, bufs, backend, gmax, rhook)
 end
 
-# Passes with the element-wise hooks 4–7 hold more values per thread: at most 256 threads per
-# workgroup (Metal allows only 448 for the DCT-III hook kernel of 1024² instead of 1024).
-hook_limits(lim::Limits) = Limits(lim.nstat, lim.nmax, min(lim.wmax, 256), lim.slc)
+# Passes with the element-wise hooks 4–7 hold more values per thread. Metal allows only 448 threads
+# for the DCT-III hook kernel of 1024² (instead of 1024), so other backends keep the 256 cap. On CUDA
+# the cap would force G ≤ 4 in the first pass of a 2^20 DCT-IV and cost up to 1.4× (A6000).
+hook_limits(lim::Limits, backend) =
+  nameof(typeof(backend)) === :CUDABackend ? lim : Limits(lim.nstat, lim.nmax, min(lim.wmax, 256), lim.slc)
 
 # Padding the intermediate arrays: a pass that reads and writes with a large power-of-two
 # stride (64 rows 2 MB apart) runs at a third of the bandwidth beyond the SLC; with padded
