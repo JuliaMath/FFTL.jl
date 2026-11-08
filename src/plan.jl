@@ -423,7 +423,7 @@ function convolution_transforms(::Type{T}, M::Int, ::Type{Chain}) where {T}
   if M * sizeof(Complex{T}) >= BLUESTEIN_FOURSTEP_BYTES && fourstep_split(M) > 0
     return (FourStep{T}(M, -1, 1), FourStep{T}(M, 1, 1))
   end
-  (Chain{T}(M, -1), Chain{T}(M, 1))
+  (RChain{T}(M, -1), RChain{T}(M, 1))
 end
 
 # chirp c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n) and the filter FFT_M(conj(c) wrapped) / M
@@ -496,7 +496,7 @@ end
 # Kernel of the first stage of a composite kernel: a chain over L lanes, or a kernel with buffers of
 # its own (composite, Bluestein) that sees at most one lane block, or S lanes, at a time.
 first_kernel(::Type{T}, s::Int, σ::Int, L::Int, S::Int) where {T} =
-  smooth(s) ? Chain{T}(s, σ, radices(s, L; esize = sizeof(Complex{T}))) : kernel(T, s, σ, max(composite_block(L, s), S))
+  smooth(s) ? RChain{T}(s, σ, radices(s, L; esize = sizeof(Complex{T}))) : kernel(T, s, σ, max(composite_block(L, s), S))
 
 # Leftovers (prime factors above MAX_RADIX_PRIME) whose convolution takes at most this many bytes
 # stay one Bluestein transform. Zen 2, one thread: splitting a leftover with an 8 MiB or larger
@@ -591,7 +591,7 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, S::Int) 
   run_lanes!(py, px, pw1, pw2, P, S, S, S)
 
 function kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T}
-  smooth(n) && return Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
+  smooth(n) && return RChain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
   s, q = composite_split(T, n)
   s == 1 && return Bluestein{T}(n, σ)
   Composite{T}(n, s, q, σ, S)

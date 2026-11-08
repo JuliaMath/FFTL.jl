@@ -210,8 +210,7 @@ function fourstep_split(n)
   best
 end
 
-# C: the chain type of the two factors (Chain, or RChain for run-time plans)
-function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C}
+function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = RChain) where {T,C}
   n1 = fourstep_split(n)
   n2 = n ÷ n1
   k1 = C{T}(n1, σ, radices(n1, n2; esize = sizeof(Complex{T})))
@@ -315,7 +314,7 @@ end
 
 function BluesteinMT{T}(n::Int, σ::Int, nt::Int) where {T}
   M = bluestein_mt_length(T, n)
-  ser = Chain{T}(M, -1)
+  ser = RChain{T}(M, -1)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
   chirp, b = cached(() -> bluestein_tables(T, n, σ, ser, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
                    )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
@@ -345,7 +344,7 @@ end
 function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
   s, q = composite_split(T, n)
   c1 = first_kernel(T, s, σ, q, 1)
-  chains = [c1; [c1 isa Chain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
+  chains = [c1; [c1 isa RChain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
   b1 = Bluestein{T}(q, σ)
   blues = [b1; [Bluestein{T}(q, σ) for _ in 2:nt]]
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}

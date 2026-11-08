@@ -97,7 +97,7 @@ function Base.show(io::IO, ::MIME"text/plain", p::FFTLPlan{T}) where {T}
   show(io, p)
   for (d, k) in zip(p.region, p.kernels)
     print(io, "\n  dim $d: ")
-    k isa Chain && print(io, "radices ", radix_tuple(k))
+    k isa RChain && print(io, "radices ", radix_tuple(k))
     k isa Bluestein && print(io, "Bluestein, convolution length ", k.fwd.n)
     k isa Composite && print(io, "chain of length ", k.s, ", Bluestein of length ", k.q, ", convolution length ", k.blue.fwd.n)
     k isa CompositeMT && print(io, "chain of length ", k.s, ", Bluestein of length ", k.q, " on threads, convolution length ", k.blues[1].fwd.n)
@@ -105,7 +105,7 @@ function Base.show(io::IO, ::MIME"text/plain", p::FFTLPlan{T}) where {T}
     k isa FourStep && print(io, "four-step $(k.n1) × $(k.n2), radices ", radix_tuple(k.k1), " and ", radix_tuple(k.k2))
   end
 end
-radix_tuple(::Chain{T,Rs}) where {T,Rs} = Rs
+radix_tuple(k::RChain) = Tuple(k.rs)
 
 check_size(p, x) = size(x) == p.sz ||
   throw(DimensionMismatch("plan for size $(p.sz) applied to an array of size $(size(x))"))
@@ -114,7 +114,7 @@ check_size(p, x) = size(x) == p.sz ||
 # Dimensions 1 and 2 are fused per plane when a plane fits in cache (`run_planes!`).
 function apply_dims!(y::Array{Complex{T}}, x::Array{Complex{T}}, p::FFTLPlan{T}, ks::Tuple, ds::Tuple) where {T}
   isempty(ks) && return y
-  if length(ks) >= 2 && ds[1] == 1 && ds[2] == 2 && ks[1] isa Chain && ks[2] isa Chain
+  if length(ks) >= 2 && ds[1] == 1 && ds[2] == 2 && ks[1] isa RChain && ks[2] isa RChain
     n1, n2 = p.sz[1], p.sz[2]
     outer = dim_extent(p.sz, 2)[2]
     if fuse_planes(n1, n2, outer, p.nthreads)
