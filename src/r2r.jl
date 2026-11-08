@@ -58,7 +58,7 @@ function check_r2r_region(reg, N::Int)
   nothing
 end
 
-own_buffers(K::R2RLine) = (i = K.inner; i isa RealLine ? i.inner isa Union{Bluestein,Composite} : i isa Union{Bluestein,Composite})
+own_buffers(K::R2RLine) = (i = K.inner; i isa RealLine ? i.inner isa Union{Bluestein,Resample,Composite} : i isa Union{Bluestein,Resample,Composite})
 
 # exp(iπ(a j + b)/d) for j = 0…m-1
 function cis_table(::Type{T}, m::Int, a::Int, b::Int, d::Int) where {T}
@@ -70,7 +70,7 @@ function cis_table(::Type{T}, m::Int, a::Int, b::Int, d::Int) where {T}
 end
 
 # Inner kernel of the line for run-time plans (C = RChain): one of these types
-const RInner{T} = Union{RealLine{T,RKern{T}},RChain{T},RBluestein{T}}
+const RInner{T} = Union{RealLine{T,RKern{T}},RChain{T},RResample{T}}
 
 function R2RLine{T}(kind::R2RKind, n::Int, ::Type{C} = TypedKernels) where {T,C}
   n >= 1 || throw(ArgumentError("length must be positive"))

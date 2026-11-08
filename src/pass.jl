@@ -3,20 +3,21 @@
 
 # Kernels of run-time pass plans (`plan_pass_runtime`). Their type depends on the element type only:
 # a smooth length runs on RChain, a leftover of large prime factors is a composite of an RChain and a
-# Bluestein transform over RChain, and a single long line on several threads runs the four-step
+# resampled transform over RChain, and a single long line on several threads runs the four-step
 # algorithm (RChain kernels). A library can therefore hold plans of any size in one container and
 # compile them ahead of time (juliac --trim).
-const RComposite{T} = Composite{T,RChain{T},RBluestein{T}}
-const RPassKern{T} = Union{RChain{T},RBluestein{T},RComposite{T},RFourStep{T}}
+const RComposite{T} = Union{Composite{T,RChain{T},RsBatch{T,RChain{T},RTable{T}}},
+                            Composite{T,RChain{T},RsBatch{T,RChain{T},RPoly{T}}}}
+const RPassKern{T} = Union{RChain{T},RResample{T},RComposite{T},RFourStep{T}}
 
 function runtime_kernel(::Type{T}, n::Int, σ::Int, S::Int) where {T}
   smooth(n) && return RChain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
   s, q = composite_split(T, n)
-  s == 1 && return Bluestein{T}(n, σ, RChain)
+  s == 1 && return Resample{T}(n, σ, RChain)
   chain = RChain{T}(s, σ, radices(s, S * q; esize = sizeof(Complex{T})))
-  blue = Bluestein{T}(q, σ, RChain)
+  blue = RsBatch{T}(q, σ, s)
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
-  RComposite{T}(n, s, q, chain, blue, tw, Vector{Complex{T}}(undef, S * n))
+  Composite{T,typeof(chain),typeof(blue)}(n, s, q, chain, blue, tw, Vector{Complex{T}}(undef, S * n))
 end
 
 """
@@ -118,7 +119,7 @@ end
 """
     plan_pass_runtime(v::StridedArray{<:Complex}, d; sign = -1, threads = 1)
 
-The same transform as [`plan_pass`](@ref), with run-time kernels only (RChain, Bluestein and composite
+The same transform as [`plan_pass`](@ref), with run-time kernels only (RChain, resampling and composite
 over RChain, four-step over RChain). The type of the plan is `PassPlan{T,N,RPassKern{T}}`, the same for
 every length, so that a library can hold plans of any size in one container and compile them ahead of
 time (`juliac --trim`). The kernels are the same as those of `plan_pass` for lengths with run-time

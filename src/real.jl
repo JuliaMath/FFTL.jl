@@ -24,10 +24,10 @@ struct RealLine{T,K<:Kernel{T}}
   w::Vector{Complex{T}}        # u_k, k = 0…n÷2 (even n), see above
 end
 
-# Run-time kernels (RChain, or Bluestein over RChain) for the run-time plans (rreal.jl).
-const RKern{T} = Union{RChain{T},RBluestein{T}}
+# Run-time kernels (RChain, or resampling over RChain) for the run-time plans (rreal.jl).
+const RKern{T} = Union{RChain{T},RResample{T}}
 rkernel(::Type{T}, n::Int, σ::Int) where {T} =
-  (smooth(n) ? RChain{T}(n, σ, radices(n, 1; esize = sizeof(Complex{T}))) : Bluestein{T}(n, σ, RChain))::RKern{T}
+  (smooth(n) ? RChain{T}(n, σ, radices(n, 1; esize = sizeof(Complex{T}))) : Resample{T}(n, σ, RChain))::RKern{T}
 ckernel(::Type{T}, n::Int, σ::Int, ::Type{TypedKernels}) where {T} = kernel(T, n, σ)
 ckernel(::Type{T}, n::Int, σ::Int, ::Type{RChain}) where {T} = rkernel(T, n, σ)
 
@@ -170,6 +170,7 @@ line_fourstep(p) = nothing
 run_half!(py::Ptr{T}, px::Ptr{T}, K::FourStep{T}, nt::Int) where {T} = run_fourstep!(py, px, K, nt)
 run_half!(py::Ptr{T}, px::Ptr{T}, K::CompositeMT{T}, nt::Int) where {T} = run_composite_mt!(py, px, K, nt)
 run_half!(py::Ptr{T}, px::Ptr{T}, K::BluesteinMT{T}, nt::Int) where {T} = run_bluestein_mt!(py, px, K, nt)
+run_half!(py::Ptr{T}, px::Ptr{T}, K::ResampleMT{T}, nt::Int) where {T} = run_resample_mt!(py, px, K, nt)
 
 # Lines along dimension d of an array of size `sz` (real side), as (lane stride S, line offsets
 # in elements of the real side and of the complex side).
@@ -285,7 +286,7 @@ inner_length(n) = iseven(n) ? n ÷ 2 : n
 function half_threads(::Type{T}, h, σ, nt) where {T}
   use_fourstep(h, nt) && return FourStep{T}(h, σ, nt)
   use_composite_mt(T, h, nt) && return CompositeMT{T}(h, σ, nt)
-  use_bluestein_mt(h, nt) && return BluesteinMT{T}(h, σ, nt)
+  use_bluestein_mt(h, nt) && return ResampleMT{T}(h, σ, nt)
   nothing
 end
 
@@ -344,8 +345,8 @@ end
 
 # Whether a line kernel uses work buffers of its own (a Bluestein kernel holds them in the kernel,
 # not in the task's buffer set): such lines run on one task.
-own_buffers(k) = k isa Union{Bluestein,Composite}
-own_buffers(K::RealLine) = K.inner isa Union{Bluestein,Composite}
+own_buffers(k) = k isa Union{Bluestein,Resample,Composite}
+own_buffers(K::RealLine) = K.inner isa Union{Bluestein,Resample,Composite}
 line_tasks(K, nt) = own_buffers(K) ? 1 : nt
 
 # One line kernel per task. A kernel with buffers of its own (Bluestein, composite) cannot run on two

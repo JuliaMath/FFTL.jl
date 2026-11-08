@@ -321,22 +321,22 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Bluestein{T}, S::Int) 
 DFT of a length n = s·q with s > 1 and q coprime to it (see `composite_split`), as one
 Cooley-Tukey step: with j = j2 + q·j1 and
 k = k1 + s·k2, a kernel of length s over j1 (a chain if s is smooth, else again a composite or
-Bluestein kernel), the twiddles w_n^(j2·k1), and Bluestein's algorithm of length q over j2. The
-convolutions have length about 2q instead of 2n and stay in cache.
+resampling kernel), the twiddles w_n^(j2·k1), and a resampled DFT of length q over j2. The
+transforms have length about 2q instead of 2n and stay in cache.
 """
 struct Composite{T,C,B} <: Kernel{T}
   n::Int
   s::Int
   q::Int
   chain::C                        # length s, applied to the q lanes of every slab
-  blue::B                         # Bluestein of length q, with its own buffers
+  blue::B                         # length q over the lanes (RsBatch, or Resample/Bluestein per lane)
   tw::Vector{Complex{T}}          # w_n^m, m = 0…n-1
   z::Vector{Complex{T}}           # output of the first stage, S·n values
 end
 
 function Composite{T}(n::Int, s::Int, q::Int, σ::Int, S::Int) where {T}
   chain = first_kernel(T, s, σ, S * q, S)
-  blue = Bluestein{T}(q, σ)
+  blue = RsBatch{T}(q, σ, s)
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
   Composite{T,typeof(chain),typeof(blue)}(n, s, q, chain, blue, tw, Vector{Complex{T}}(undef, S * n))
 end
@@ -391,9 +391,7 @@ function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composi
         run_lanes!(pz + B * j2 * CT, px + Sx * j2 * CT, pw1, pw2, P.chain, Sx * q, B * q, B)
       end
     end
-    for i in 0:B-1, k1 in 0:P.s-1
-      twiddled_bluestein!(py, pz, P.tw, P.blue, n, P.s, B, i, k1, Sy)
-    end
+    leftover!(py, pz, P.tw, P.blue, n, P.s, B, Sy)
   end
   nothing
 end
@@ -410,10 +408,19 @@ function chain_blocks!(pz::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, C::Kern
 end
 composite_block(L, s) = min(L, max(LANE_ALIGN, LANE_ALIGN * fld(TUNING[].block_budget ÷ s, LANE_ALIGN)))
 
-# Bluestein of length q on lane (i, k1) of the chain output z (element j2 at i + B·(j2 + q·k1)),
-# after the twiddles w_n^(j2·k1); output element k2 at y + i + Sy·(k1 + s·k2).
-function twiddled_bluestein!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, bl::Bluestein{T}, n::Int, s::Int,
-                             B::Int, i::Int, k1::Int, Sy::Int) where {T}
+# The length-q DFTs of all lanes of a composite kernel, one lane at a time (the batched pass,
+# RsBatch, has its own method).
+function leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, bl, n::Int, s::Int, B::Int, Sy::Int) where {T}
+  for i in 0:B-1, k1 in 0:s-1
+    twiddled_leftover!(py, pz, tw, bl, n, s, B, i, k1, Sy)
+  end
+  nothing
+end
+
+# The length-q DFT on lane (i, k1) of the chain output z (element j2 at i + B·(j2 + q·k1)), after
+# the twiddles w_n^(j2·k1); output element k2 at y + i + Sy·(k1 + s·k2).
+function twiddled_leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, bl::Bluestein{T}, n::Int, s::Int,
+                            B::Int, i::Int, k1::Int, Sy::Int) where {T}
   q = bl.n; buf = bl.buf; M = length(buf); chirp = bl.chirp
   cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
   GC.@preserve bl tw begin
@@ -441,7 +448,7 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, S::Int) 
 function kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T}
   smooth(n) && return RChain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
   s, q = composite_split(T, n)
-  s == 1 && return Bluestein{T}(n, σ)
+  s == 1 && return Resample{T}(n, σ)
   Composite{T}(n, s, q, σ, S)
 end
 

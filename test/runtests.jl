@@ -270,24 +270,24 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
-  @testset "Bluestein on several threads, $T" for T in (Float64, Float32)
-    # one long line with a prime factor above MAX_RADIX_PRIME: threaded convolution transforms
+  @testset "resampling on several threads, $T" for T in (Float64, Float32)
+    # one long line with a prime factor above MAX_RADIX_PRIME: threaded grid transform
     for n in pick((16411, 20011, 100003), (20011,))
       x = randn(Complex{T}, n)
       for (mk, σ) in ((FFTL.plan_fft, -1), (FFTL.plan_bfft, 1))
         ref = mk(x; threads = 1) * x
         for nt in pick((2, 3, 4), (3,))
           p = mk(x; threads = nt)
-          @test p.kernels[1] isa FFTL.BluesteinMT
+          @test p.kernels[1] isa FFTL.ResampleMT
           @test relerr(p * x, ref) < tol(T)
           z = copy(x); mul!(z, p, z)
           @test relerr(z, ref) < tol(T)
         end
       end
     end
-    # below the threshold the serial Bluestein kernel stays
+    # below the threshold the serial resampling kernel stays
     x = randn(Complex{T}, 4099)
-    @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Bluestein
+    @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Resample
     # smooth part times leftover: the composite kernel on threads, bitwise equal to the serial one
     # 3·193·1021: the leftover is split, the first stage is a composite kernel on each task
     for n in pick((65 * 4033, 7 * 11777, 1500 * 1013, 3 * 193 * 1021), (3 * 193 * 1021,))
@@ -584,7 +584,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     # real passes: run-time plans have one type for all lengths; the results agree with the specialised ones
     for (sz, d) in (((100, 3), 1), ((1009, 3), 1), ((30, 2), 1))
       x = randn(T, sz)
-      @test FFTL.plan_r2c_pass_runtime(x, d) isa FFTL.RealPassPlan{T,2,FFTL.RealLine{T,Union{FFTL.RChain{T},FFTL.Bluestein{T,FFTL.RChain{T},FFTL.RChain{T}}}}}
+      @test FFTL.plan_r2c_pass_runtime(x, d) isa FFTL.RealPassPlan{T,2,FFTL.RealLine{T,FFTL.RKern{T}}}
       ref = FFTL.plan_r2c_pass(x, d); rt = FFTL.plan_r2c_pass_runtime(x, d)
       ya = zeros(Complex{T}, ref.sz_out); yb = similar(ya)
       mul!(ya, ref, x); mul!(yb, rt, x)
@@ -903,7 +903,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     for (T, n) in ((Float64, 80896), (Float64, 92935), (Float64, 2 * 1009 * 79), (Float32, 33490), (Float32, 92935), (Float32, 100003))
       x = randn(T, n)
       p = FFTL.plan_rfft(x; threads = 3)
-      @test p.four isa Union{FFTL.CompositeMT,FFTL.BluesteinMT}
+      @test p.four isa Union{FFTL.CompositeMT,FFTL.ResampleMT}
       X = p * x
       @test relerr(X, FFTL.plan_rfft(x; threads = 1) * x) < 10tol(T)
       @test relerr(FFTL.plan_brfft(X, n; threads = 3) * X, n .* x) < 10tol(T)
