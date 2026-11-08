@@ -77,14 +77,18 @@ end
 function LinearAlgebra.mul!(w::StridedArray{Complex{T},N}, p::RealPassPlan{T,N}, v::StridedArray{T,N}) where {T,N}
   p.σ == -1 || throw(ArgumentError("c2r pass plan applied to a real input"))
   check_realpass(p, v, w)
-  GC.@preserve v w p real_pass!(Ptr{Complex{T}}(pointer(w)), strides(w), Ptr{T}(pointer(v)), strides(v), p)
+  GC.@preserve v w p r2c_lines!(Ptr{Complex{T}}(pointer(w)), Ptr{T}(pointer(v)),
+    pass_offsets(p.sz_out, strides(w), p.d), pass_offsets(p.sz_in, strides(v), p.d),
+    strides(w)[p.d], strides(v)[p.d], p.line, p.bufs, p.nthreads)
   w
 end
 
 function LinearAlgebra.mul!(w::StridedArray{T,N}, p::RealPassPlan{T,N}, v::StridedArray{Complex{T},N}) where {T,N}
   p.σ == 1 || throw(ArgumentError("r2c pass plan applied to a complex input"))
   check_realpass(p, v, w)
-  GC.@preserve v w p real_pass!(Ptr{T}(pointer(w)), strides(w), Ptr{Complex{T}}(pointer(v)), strides(v), p)
+  GC.@preserve v w p c2r_lines!(Ptr{T}(pointer(w)), Ptr{Complex{T}}(pointer(v)),
+    pass_offsets(p.sz_out, strides(w), p.d), pass_offsets(p.sz_in, strides(v), p.d),
+    strides(w)[p.d], strides(v)[p.d], p.line, p.bufs, p.nthreads)
   w
 end
 
@@ -92,38 +96,4 @@ end
 function pass_offsets(sz::NTuple{N,Int}, st::NTuple{N,Int}, d::Int) where {N}
   outer = Tuple(i for i in 1:N if i != d)
   line_offsets(sz, st, outer)
-end
-
-# r2c (σ = -1): py receives the half spectrum (strides sy), px the real input (strides sx).
-# c2r (σ = +1): py receives the real output, px the half spectrum; the offsets are in elements.
-function real_pass!(py, sy::NTuple{N,Int}, px, sx::NTuple{N,Int}, p::RealPassPlan{T,N}) where {T,N}
-  n = p.n; d = p.d
-  r2c = p.σ == -1
-  offs_x = pass_offsets(p.sz_in, sx, d)
-  offs_y = pass_offsets(p.sz_out, sy, d)
-  Sx = sx[d]; Sy = sy[d]
-  h = nhalf(n)
-  each_line(length(offs_x), n, line_tasks(p.line, p.nthreads)) do c, i
-    local b = p.bufs
-    local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))
-    local xo = offs_x[i+1]; local yo = offs_y[i+1]
-    if r2c
-      for j in 0:n-1
-        unsafe_store!(lr, unsafe_load(px, xo + Sx * j + 1), j + 1)
-      end
-      r2c_line!(lc, lr, cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
-      for k in 0:h-1
-        unsafe_store!(py, unsafe_load(lc, k + 1), yo + Sy * k + 1)
-      end
-    else
-      for k in 0:h-1
-        unsafe_store!(lc, unsafe_load(px, xo + Sx * k + 1), k + 1)
-      end
-      c2r_line!(lr, lc, cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
-      for j in 0:n-1
-        unsafe_store!(py, unsafe_load(lr, j + 1), yo + Sy * j + 1)
-      end
-    end
-  end
-  nothing
 end
