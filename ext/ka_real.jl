@@ -414,6 +414,80 @@ function r2r_twiddles(::Type{T}, kind::FFTL.R2RKind, n::Int) where {T}
   one_, one_
 end
 
+# Four-step DFT of length N = P·S for a one-dimensional line whose largest prime factor P is above
+# 31 (no GPU pass has that radix; Bluestein of N would need a convolution of length ≥ 2N). With
+# n = S·n1 + n2 and k = k1 + P·k2:
+#   Y[n2, k1] = Σ_n1 x[S n1 + n2] W_P^(n1 k1)            (P-point DFTs, Bluestein for P)
+#   Y[n2, k1] *= W_N^(n2 k1)                              (twiddles)
+#   Z[k2, k1] = Σ_n2 Y[n2, k1] W_S^(n2 k2)                (S-point DFTs, smooth S)
+#   X[k1 + P k2] = Z[k2, k1]                              (transposition)
+# Y and Z are S×P arrays (column-major, index n2 + S k1 resp. k2 + S k1).
+const KA_FOURSTEP_MIN = 2^16   # below this Bluestein is cheaper (measured on the A6000, see the PR)
+
+struct KAFourStep{T,B}
+  N::Int; P::Int; S::Int; W::Int
+  pP::Any; pS::Any
+  tlo::Any; thi::Any
+  Y::Any; Z::Any
+  backend::B
+end
+
+function KAFourStep(backend, ::Type{T}, N::Int, P::Int) where {T}
+  S = N ÷ P
+  @assert S * P == N && FFTL.factorize(S)[2] == 1
+  pP = KAPlan(backend, T, (S, P), -1; region = 2:2)
+  pS = KAPlan(backend, T, (S, P), -1; region = 1:1)
+  # W_N^m = thi[m ÷ W + 1] · tlo[m % W + 1] with W ≈ √N: two small tables, computed in double
+  W = isqrt(N) + 1
+  tlo = todevice(backend, [Complex{T}(cispi(-2r / N)) for r in 0:W-1])
+  thi = todevice(backend, [Complex{T}(cispi(-2q * W / N)) for q in 0:N ÷ W + 1])
+  KAFourStep{T,typeof(backend)}(N, P, S, W, pP, pS, tlo, thi, devzeros(backend, Complex{T}, (S, P)),
+                                devzeros(backend, Complex{T}, (S, P)), backend)
+end
+
+# Y[n2, k1] *= W_N^(n2 k1), n2 k1 < N
+@kernel function ka_fs_twiddle!(Y, @Const(tlo), @Const(thi), S, W)
+  t = (@index(Global, Linear) - 1) % Int32      # t = n2 + S k1
+  m = (t % S) * (t ÷ S)
+  @inbounds Y[t+1] *= thi[m ÷ W + one(Int32)] * tlo[m % W + one(Int32)]
+end
+
+@kernel function ka_fs_transpose!(out, @Const(Z), S, P)
+  t = (@index(Global, Linear) - 1) % Int32      # t = k1 + P k2
+  k1 = t % P; k2 = t ÷ P
+  @inbounds out[t+1] = Z[k2 + S * k1 + 1]
+end
+
+# Steps 1–3; the result stays in F.Z in (S, P) layout, X[k1 + P k2] at index k2 + S k1.
+function fs_raw!(x, F::KAFourStep)
+  be = F.backend
+  launch!(F.Y, reshape(x, F.S, F.P), F.pP)
+  run!(ka_fs_twiddle!, be, F.N, F.Y, F.tlo, F.thi, F.S, F.W)
+  launch!(F.Z, F.Y, F.pS)
+  F.Z
+end
+
+function launch!(out, x, F::KAFourStep)
+  Z = fs_raw!(x, F)
+  run!(ka_fs_transpose!, F.backend, F.N, out, Z, F.S, F.P)
+  out
+end
+
+# ka_dct1_post! for a line of N values in the four-step layout (one line, S = 1): index k of the DFT
+# sits at k2 + S k1 with k = k1 + P k2.
+@kernel function ka_dct1_post_fs!(y, @Const(Zs), @Const(u), SF, PF, N)
+  K = (@index(Global, Linear) - 1) % Int32
+  T = real(eltype(y))
+  ia = K; ib = K == zero(Int32) ? K : N - K
+  @inbounds za = Zs[ia ÷ PF + SF * (ia % PF) + one(Int32)]
+  @inbounds zm = K == zero(Int32) ? za : Zs[ib ÷ PF + SF * (ib % PF) + one(Int32)]
+  ca = conj(zm); cm = conj(za)
+  @inbounds y[K+1] = real((za + ca) * T(0.5) + u[K+1] * (za - ca))
+  if K == zero(Int32) || Int32(2) * K != N
+    @inbounds y[N-K+1] = real((zm + cm) * T(0.5) + u[N-K+1] * (zm - cm))
+  end
+end
+
 function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {T,N}
   reg = collect(Int, region isa Integer ? (region,) : region)
   allunique(reg) && all(d -> 1 <= d <= N, reg) || throw(ArgumentError("region $region is not within 1:$N"))
@@ -440,7 +514,14 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       # (with Bluestein the pack step runs in the first pass's chirp loads)
       n1 = n - 1; zsz = setdim(sz, d, n1)
       u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
-      xr = FFTL.factorize(n1)[2] > 1
+      f1, P1 = FFTL.factorize(n1)
+      if nameof(typeof(backend)) === :CUDABackend && length(sz) == 1 && P1 > 1 && n1 >= KA_FOURSTEP_MIN
+        # one large prime factor: four-step DFT (KAFourStep) instead of Bluestein of length 2n
+        push!(dims, (:dct1, false, KAFourStep(backend, T, n1, P1), u,
+                     devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
+        continue
+      end
+      xr = P1 > 1
       push!(dims, (:dct1, xr, KAPlan(backend, T, zsz, -1; region = d:d, xreal = xr), u,
                    devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
       continue
@@ -518,6 +599,10 @@ function LinearAlgebra.mul!(y::AbstractArray{T}, p::KAR2RPlan{T}, x::AbstractArr
     n = p.sz[d]; S = prod(p.sz[1:d-1]; init = 1); outer = prod(p.sz[d+1:end]; init = 1)
     if dim[1] === :fused
       launch!(y, src, dim[3])
+    elseif dim[1] === :dct1 && dim[3] isa KAFourStep
+      _, _, P, u, z, _ = dim
+      run!(ka_dct1_pre!, be, S * (n - 1) * outer, z, src, S, n - 1)
+      run!(ka_dct1_post_fs!, be, (n - 1) ÷ 2 + 1, y, fs_raw!(z, P), u, P.S, P.P, n - 1)
     elseif dim[1] === :dct1
       _, xr, P, u, z, Z = dim
       if xr
