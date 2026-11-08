@@ -331,19 +331,20 @@ function r2c_contiguous!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T}
 end
 
 # strided line: gather into a contiguous buffer, transform, scatter
-function r2c_strided!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T}
-  n = p.line.n; h = nhalf(n); S = p.S
-  each_line(length(p.offs_r), n, line_tasks(p.line, p.nthreads)) do c, i
-    local b = p.bufs
-    local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))
+function r2c_lines!(py::Ptr{Complex{T}}, px::Ptr{T}, offs_y::Vector{Int}, offs_x::Vector{Int}, Sy::Int, Sx::Int,
+                    line::L, bufs::Vector{Vector{Complex{T}}}, nt::Int) where {T,L<:RealLine{T}}
+  n = line.n; h = nhalf(n)
+  each_line(length(offs_x), n, line_tasks(line, nt)) do c, i
+    local lr = Ptr{T}(cptr(bufs[5c-1])); local lc = Ptr{Complex{T}}(cptr(bufs[5c]))
     for j in 0:n-1
-      unsafe_store!(lr, unsafe_load(px, p.offs_r[i+1] + S * j + 1), j + 1)
+      unsafe_store!(lr, unsafe_load(px, offs_x[i+1] + Sx * j + 1), j + 1)
     end
-    r2c_line!(lc, lr, cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
+    r2c_line!(lc, lr, cptr(bufs[5c-4]), cptr(bufs[5c-3]), cptr(bufs[5c-2]), line)
     for k in 0:h-1
-      unsafe_store!(py, unsafe_load(lc, k + 1), p.offs_c[i+1] + S * k + 1)
+      unsafe_store!(py, unsafe_load(lc, k + 1), offs_y[i+1] + Sy * k + 1)
     end
   end
+  nothing
 end
 
 function LinearAlgebra.mul!(y::Array{T,N}, p::BRFFTLPlan{T,N}, x::Array{Complex{T},N}) where {T,N}
@@ -374,20 +375,27 @@ function c2r_contiguous!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T}
   end
 end
 
-function c2r_strided!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T}
-  n = p.line.n; h = nhalf(n); S = p.S
-  each_line(length(p.offs_r), n, line_tasks(p.line, p.nthreads)) do c, i
-    local b = p.bufs
-    local lr = Ptr{T}(cptr(b[5c-1])); local lc = Ptr{Complex{T}}(cptr(b[5c]))
+function c2r_lines!(py::Ptr{T}, px::Ptr{Complex{T}}, offs_y::Vector{Int}, offs_x::Vector{Int}, Sy::Int, Sx::Int,
+                    line::L, bufs::Vector{Vector{Complex{T}}}, nt::Int) where {T,L<:RealLine{T}}
+  n = line.n; h = nhalf(n)
+  each_line(length(offs_x), n, line_tasks(line, nt)) do c, i
+    local lr = Ptr{T}(cptr(bufs[5c-1])); local lc = Ptr{Complex{T}}(cptr(bufs[5c]))
     for k in 0:h-1
-      unsafe_store!(lc, unsafe_load(px, p.offs_c[i+1] + S * k + 1), k + 1)
+      unsafe_store!(lc, unsafe_load(px, offs_x[i+1] + Sx * k + 1), k + 1)
     end
-    c2r_line!(lr, lc, cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
+    c2r_line!(lr, lc, cptr(bufs[5c-4]), cptr(bufs[5c-3]), cptr(bufs[5c-2]), line)
     for j in 0:n-1
-      unsafe_store!(py, unsafe_load(lr, j + 1), p.offs_r[i+1] + S * j + 1)
+      unsafe_store!(py, unsafe_load(lr, j + 1), offs_y[i+1] + Sy * j + 1)
     end
   end
+  nothing
 end
+
+# the strided batches of RFFTLPlan and RRFFTPlan: input and output with the same stride S
+r2c_strided!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T} =
+  r2c_lines!(py, px, p.offs_c, p.offs_r, p.S, p.S, p.line, p.bufs, p.nthreads)
+c2r_strided!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T} =
+  c2r_lines!(py, px, p.offs_r, p.offs_c, p.S, p.S, p.line, p.bufs, p.nthreads)
 
 Base.:*(p::RFFTLPlan{T,N}, x::AbstractArray{<:Real,N}) where {T,N} =
   mul!(Array{Complex{T},N}(undef, AbstractFFTs.output_size(p)), p, convert(Array{T,N}, x))

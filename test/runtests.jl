@@ -177,6 +177,49 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "real passes, $T" for T in (Float64, Float32)
+    # r2c along each dimension of a strided view, into a dense output and into a strided view of a
+    # padded output (the RNFFT grid); the padding of the output is not written
+    G0 = randn(T, 9, 12, 5)
+    for d in 1:3, nt in pick((1, 3), (3,))
+      v = view(G0, 2:8, 3:10, 2:4)
+      p = FFTL.plan_r2c_pass(v, d; threads = nt)
+      osz = ntuple(i -> i == d ? size(v, d) ÷ 2 + 1 : size(v, i), 3)
+      ref = mapslices(u -> dft(ComplexF64.(u))[1:length(u) ÷ 2 + 1], Float64.(Array(v)); dims = d)
+      w = Array{Complex{T}}(undef, osz)
+      mul!(w, p, v)
+      @test relerr(w, ref) < 10tol(T)
+      P = zeros(Complex{T}, osz .+ 2)
+      wv = view(P, ntuple(i -> 2:osz[i]+1, 3)...)
+      mul!(wv, p, v)
+      @test relerr(wv, ref) < 10tol(T)
+      mask = trues(size(P)); mask[ntuple(i -> 2:osz[i]+1, 3)...] .= false
+      @test all(iszero, P[mask])
+    end
+    # round trips, even and odd lengths, dense and into a strided view
+    for (n, d) in pick(((8, 1), (9, 2), (16, 2), (7, 1), (100, 1), (45, 2)), ((8, 1), (9, 2))), nt in (1, 2)
+      sz = d == 1 ? (n, 4) : (3, n)
+      x = randn(T, sz...)
+      pr = FFTL.plan_r2c_pass(x, d; threads = nt)
+      X = Array{Complex{T}}(undef, ntuple(i -> i == d ? n ÷ 2 + 1 : sz[i], 2))
+      mul!(X, pr, x)
+      pc = FFTL.plan_c2r_pass(X, d; n, threads = nt)
+      y = Array{T}(undef, sz)
+      mul!(y, pc, X)
+      @test relerr(y ./ n, x) < 10tol(T)
+      Y = zeros(T, sz .+ 2)
+      yv = view(Y, ntuple(i -> 2:sz[i]+1, 2)...)
+      mul!(yv, pc, X)
+      @test relerr(yv ./ n, x) < 10tol(T)
+    end
+    # sizes and lengths that do not match are errors
+    x = randn(T, 10, 3)
+    @test_throws DimensionMismatch FFTL.plan_c2r_pass(zeros(Complex{T}, 5), 1; n = 10)
+    pr = FFTL.plan_r2c_pass(x, 1)
+    @test_throws DimensionMismatch mul!(Array{Complex{T}}(undef, 5, 3), pr, x)
+    @test_throws ArgumentError mul!(Array{Complex{T}}(undef, 6, 3), FFTL.plan_c2r_pass(zeros(Complex{T}, 6, 3), 1), zeros(T, 10, 3))
+  end
+
   @testset "passes on strided views, $T" for T in (Float64, Float32)
     # views of a padded array as an NFFT uses them: interior boxes and pruned boxes
     G0 = randn(Complex{T}, 40, 36, 30)

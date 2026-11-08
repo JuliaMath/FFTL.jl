@@ -38,6 +38,7 @@ include("pass.jl")
 include("real.jl")
 include("r2r.jl")
 include("rreal.jl")
+include("realpass.jl")
 include("generic.jl")
 include("abstractffts.jl")
 include("ka.jl")
@@ -56,7 +57,7 @@ export fft, bfft, ifft, rfft, brfft, irfft,
   eval(Expr(:public, :r2r, :plan_r2r, :set_num_threads, :ESTIMATE, :MEASURE, :PATIENT, :EXHAUSTIVE,
             :R2RKind, :REDFT00, :REDFT10, :REDFT01, :REDFT11, :RODFT00, :RODFT10, :RODFT01, :RODFT11,
             :DHT, :R2HC, :HC2R,
-            :plan_pass, :plan_r2r_pass, :apply!,
+            :plan_pass, :plan_r2r_pass, :plan_r2c_pass, :plan_c2r_pass, :apply!,
             :RPlan, :RRFFTPlan, :RR2RPlan, :execute!, :execute_r2c!, :execute_c2r!, :execute_r2r!,
             :plan_ka, :plan_ka_rfft, :plan_ka_brfft, :plan_ka_r2r,
             :cpu_caches, :set_cpu_caches!, :clear_cache!, :PRECOMPILE_WORKLOAD))
