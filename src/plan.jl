@@ -1,6 +1,6 @@
 # Kernels for one dimension: a Stockham chain (`RChain`, rchain.jl) for lengths whose prime factors
-# are ≤ MAX_RADIX_PRIME, Bluestein's algorithm on top of two chains otherwise. Both transform a batch
-# of S interleaved sequences (element j of lane i at offset i + S·j), see kernels.jl.
+# are ≤ MAX_RADIX_PRIME, a resampled DFT on top of a chain otherwise (resample.jl). Both transform a
+# batch of S interleaved sequences (element j of lane i at offset i + S·j), see kernels.jl.
 
 abstract type Kernel{T} end
 
@@ -28,7 +28,7 @@ Transform a block of B lanes; element j of lane i at `px + i + Sx·j` and `py + 
 """
 function run_lanes! end
 
-# Read-only parts of kernels (chains, four-step twiddles, Bluestein chirp and filter) are shared
+# Read-only parts of kernels (chains, four-step twiddles, resampling weights) are shared
 # between plans and threads: a second plan of a size costs a lookup. Bounded; when full, an
 # arbitrary entry is dropped. `clear_cache!()` frees everything.
 # Keys and values are concretely typed at every call site (kind, element type, sizes; values are
@@ -171,24 +171,7 @@ function first_twiddles(::Type{T}, W::Vector{ComplexF64}, r::Int) where {T}
   t
 end
 
-"""
-    Bluestein{T}
-
-DFT of any length n as a cyclic convolution of length M ≥ 2n - 1 (M smooth):
-  X_k = c_k · Σ_j (x_j c_j) · conj(c_{k-j}),  c_j = exp(σ·πi·j²/n).
-"""
-struct Bluestein{T,F,B} <: Kernel{T}
-  n::Int
-  chirp::Vector{Complex{T}}       # c_j, j = 0…n-1
-  kernel::Vector{Complex{T}}      # DFT of the convolution kernel, scaled by 1/M
-  fwd::F
-  bwd::B
-  buf::Vector{Complex{T}}
-  work1::Vector{Complex{T}}
-  work2::Vector{Complex{T}}
-end
-
-# 5-smooth numbers: the convolution lengths of the aarch64 rule.
+# 5-smooth numbers: the grid lengths of the aarch64 rule.
 function next_smooth(n::Int)
   m = n
   while true
@@ -198,28 +181,28 @@ function next_smooth(n::Int)
   end
 end
 
-# Convolution length of Bluestein's algorithm: a 7-smooth M in [L, 1.4 L] with the lowest estimated
-# time of a chain of length M, time = M·(c0 + Σ_stages w[radix]) in µs. The stage costs are fitted
-# to measured chains (Zen 2, M = 70…300000, one thread); a length with many radix-9, -5 or -3
+# Grid length of a resampled DFT (see resample.jl): a 7-smooth M in [L, 1.4 L] with the lowest
+# estimated time of a chain of length M, time = M·(c0 + Σ_stages w[radix]) in µs. The stage costs are
+# fitted to measured chains (Zen 2, M = 70…300000, one thread); a length with many radix-9, -5 or -3
 # stages transforms several times slower than a power of two a few percent larger (Float32:
 # 2025 = 3^4·5^2 takes 11 µs, 2048 takes 2.5 µs). The aarch64 stage costs have not been measured:
 # there the smallest 5-smooth M is kept.
-const BLUESTEIN_RADIX = (2, 3, 4, 5, 6, 7, 8, 9, 10, 12)
-# weights for BLUESTEIN_RADIX, then any other radix, then the constant per point
-const BLUESTEIN_W = (Float64 = (0.0, 1.11e-3, 3.5e-4, 7.4e-4, 2.9e-4, 9.9e-4, 1.7e-4, 1.52e-3, 5.6e-4, 7.6e-4, 2.38e-3, 2.6e-4),
-                     Float32 = (4.1e-4, 8.2e-4, 9.0e-5, 4.0e-4, 4.9e-4, 6.2e-4, 0.0, 1.08e-3, 3.4e-4, 1.6e-4, 1.6e-3, 5.1e-4))
+const GRID_RADIX = (2, 3, 4, 5, 6, 7, 8, 9, 10, 12)
+# weights for GRID_RADIX, then any other radix, then the constant per point
+const GRID_W = (Float64 = (0.0, 1.11e-3, 3.5e-4, 7.4e-4, 2.9e-4, 9.9e-4, 1.7e-4, 1.52e-3, 5.6e-4, 7.6e-4, 2.38e-3, 2.6e-4),
+                Float32 = (4.1e-4, 8.2e-4, 9.0e-5, 4.0e-4, 4.9e-4, 6.2e-4, 0.0, 1.08e-3, 3.4e-4, 1.6e-4, 1.6e-3, 5.1e-4))
 
-function bluestein_cost(::Type{T}, m::Int) where {T}
-  w = BLUESTEIN_W[T === Float32 ? :Float32 : :Float64]
+function grid_cost(::Type{T}, m::Int) where {T}
+  w = GRID_W[T === Float32 ? :Float32 : :Float64]
   c = w[end]
   for r in radices(m)
-    i = findfirst(==(r), BLUESTEIN_RADIX)
+    i = findfirst(==(r), GRID_RADIX)
     c += i === nothing ? w[end-1] : w[i]
   end
   m * c
 end
 
-function bluestein_length(::Type{T}, L::Int) where {T}
+function grid_length(::Type{T}, L::Int) where {T}
   Sys.ARCH === :aarch64 && return next_smooth(L)
   hi = ceil(Int, 1.4L)
   best = 0; bestc = Inf
@@ -232,7 +215,7 @@ function bluestein_length(::Type{T}, L::Int) where {T}
         p7 = p5
         while p7 <= hi
           if p7 >= L
-            c = bluestein_cost(T, p7)
+            c = grid_cost(T, p7)
             c < bestc && (best = p7; bestc = c)
           end
           p7 *= 7
@@ -246,74 +229,11 @@ function bluestein_length(::Type{T}, L::Int) where {T}
   best
 end
 
-# Convolution transforms of at least this many bytes run as a four-step on one thread: on Zen 2 a
+# Grid transforms of at least this many bytes run as a four-step on one thread: on Zen 2 a
 # Stockham chain beyond the cache drops to 7 GFLOP/s, the four-step is 1.06× faster at 2^19
 # (8 MiB, Float64) and 1.3× from 2^20 on, 0.8× at 3·2^17 and below. On the M1 Max the chain is
 # faster at every length up to 2^22.
-const BLUESTEIN_FOURSTEP_BYTES = Sys.ARCH === :aarch64 ? typemax(Int) : 1 << 23
-
-# C: TypedKernels, or RChain for run-time plans (their convolution transforms are chains)
-function Bluestein{T}(n::Int, σ::Int, ::Type{C} = TypedKernels) where {T,C}
-  M = bluestein_length(T, 2n - 1)
-  # one assignment each: the closure below captures fwd, and a variable assigned in two
-  # branches would be boxed (untyped, which juliac --trim cannot resolve)
-  fwd, bwd = convolution_transforms(T, M, C)
-  w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
-  chirp, b = cached(() -> bluestein_tables(T, n, σ, fwd, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
-                   )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
-  Bluestein{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, zeros(Complex{T}, M), w1, w2)
-end
-
-# The forward and backward transforms of length M of a Bluestein kernel. The run-time plans keep
-# their chains (one concrete type for juliac --trim).
-convolution_transforms(::Type{T}, M::Int, ::Type{C}) where {T,C} = (C{T}(M, -1), C{T}(M, 1))
-function convolution_transforms(::Type{T}, M::Int, ::Type{TypedKernels}) where {T}
-  if M * sizeof(Complex{T}) >= BLUESTEIN_FOURSTEP_BYTES && fourstep_split(M) > 0
-    return (FourStep{T}(M, -1, 1), FourStep{T}(M, 1, 1))
-  end
-  (RChain{T}(M, -1), RChain{T}(M, 1))
-end
-
-# chirp c_j = exp(σ iπ j²/n) = W_2n^(j² mod 2n) and the filter FFT_M(conj(c) wrapped) / M
-function bluestein_tables(::Type{T}, n::Int, σ::Int, fwd, w1::Vector{Complex{T}}, w2::Vector{Complex{T}}) where {T}
-  M = length(w1)
-  W = unit_roots(σ, 2n)
-  c = Complex{T}[Complex{T}(W[mod(j * j, 2n)+1]) for j in 0:n-1]
-  b = zeros(Complex{T}, M)
-  b[1] = conj(c[1])
-  for j in 1:n-1
-    b[j+1] = b[M-j+1] = conj(c[j+1])
-  end
-  GC.@preserve b w1 w2 run!(cptr(b), cptr(b), cptr(w1), cptr(w2), fwd, 1)
-  b ./= M
-  (c, b)
-end
-
-# Lane by lane: gather, convolve, scatter. Element j of lane i at px + i + Sx·j, py + i + Sy·j.
-# Uses the plan's own buffers, so one Bluestein kernel runs on one thread at a time.
-function run_lanes!(py::Ptr{T}, px::Ptr{T}, ::Ptr{T}, ::Ptr{T}, P::Bluestein{T}, Sx::Int, Sy::Int, B::Int) where {T}
-  n = P.n; buf = P.buf; M = length(buf)
-  cx = Ptr{Complex{T}}(px); cy = Ptr{Complex{T}}(py)
-  GC.@preserve P begin
-    pb = cptr(buf); pw1 = cptr(P.work1); pw2 = cptr(P.work2)
-    for i in 1:B
-      @inbounds for j in 1:n
-        buf[j] = unsafe_load(cx, i + Sx * (j - 1)) * P.chirp[j]
-      end
-      fill!(view(buf, n+1:M), zero(Complex{T}))
-      run!(pb, pb, pw1, pw2, P.fwd, 1)
-      buf .*= P.kernel
-      run!(pb, pb, pw1, pw2, P.bwd, 1)
-      @inbounds for k in 1:n
-        unsafe_store!(cy, buf[k] * P.chirp[k], i + Sy * (k - 1))
-      end
-    end
-  end
-  nothing
-end
-
-run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Bluestein{T}, S::Int) where {T} =
-  run_lanes!(py, px, pw1, pw2, P, S, S, S)
+const GRID_FOURSTEP_BYTES = Sys.ARCH === :aarch64 ? typemax(Int) : 1 << 23
 
 """
     Composite{T}
@@ -329,37 +249,37 @@ struct Composite{T,C,B} <: Kernel{T}
   s::Int
   q::Int
   chain::C                        # length s, applied to the q lanes of every slab
-  blue::B                         # length q over the lanes (RsBatch, or Resample/Bluestein per lane)
+  rs::B                           # length q over the lanes (RsBatch), with its own buffers
   tw::Vector{Complex{T}}          # w_n^m, m = 0…n-1
   z::Vector{Complex{T}}           # output of the first stage, S·n values
 end
 
 function Composite{T}(n::Int, s::Int, q::Int, σ::Int, S::Int) where {T}
   chain = first_kernel(T, s, σ, S * q, S)
-  blue = RsBatch{T}(q, σ, s)
+  rs = RsBatch{T}(q, σ, s)
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
-  Composite{T,typeof(chain),typeof(blue)}(n, s, q, chain, blue, tw, Vector{Complex{T}}(undef, S * n))
+  Composite{T,typeof(chain),typeof(rs)}(n, s, q, chain, rs, tw, Vector{Complex{T}}(undef, S * n))
 end
 
 # Kernel of the first stage of a composite kernel: a chain over L lanes, or a kernel with buffers of
-# its own (composite, Bluestein) that sees at most one lane block, or S lanes, at a time.
+# its own (composite, resampling) that sees at most one lane block, or S lanes, at a time.
 first_kernel(::Type{T}, s::Int, σ::Int, L::Int, S::Int) where {T} =
   smooth(s) ? RChain{T}(s, σ, radices(s, L; esize = sizeof(Complex{T}))) : kernel(T, s, σ, max(composite_block(L, s), S))
 
-# Leftovers (prime factors above MAX_RADIX_PRIME) whose convolution takes at most this many bytes
-# stay one Bluestein transform. Zen 2, one thread: splitting a leftover with an 8 MiB or larger
-# convolution into its prime powers is 1.02–1.4× faster (591159 = 3·193·1021: 1.4×, 1194467 = 179·6673: 1.2×),
-# splitting one of 128 KiB to 2.7 MiB is 1.15–1.5× slower (262145 = 65·37·109, 1588381 = 19·41·2039):
-# each extra level is one more pass over memory.
+# Leftovers (prime factors above MAX_RADIX_PRIME) whose grid takes at most this many bytes stay one
+# resampled transform. Measured with Bluestein's algorithm (Zen 2, one thread): splitting a leftover
+# with an 8 MiB or larger convolution into its prime powers is 1.02–1.4× faster (591159 = 3·193·1021:
+# 1.4×, 1194467 = 179·6673: 1.2×), splitting one of 128 KiB to 2.7 MiB is 1.15–1.5× slower
+# (262145 = 65·37·109, 1588381 = 19·41·2039): each extra level is one more pass over memory.
 const COMPOSITE_SPLIT_BYTES = 1 << 22
 
 # The split n = s·q of the composite kernel: q the whole leftover r (the product of the prime
-# factors above MAX_RADIX_PRIME) while its convolution is small, else the full power of the
-# largest prime factor of r. (n, 1) for smooth n; s = 1 means a single Bluestein transform.
+# factors above MAX_RADIX_PRIME) while its grid is small, else the full power of the largest prime
+# factor of r. (n, 1) for smooth n; s = 1 means a single resampled transform.
 function composite_split(::Type{T}, n::Int) where {T}
   _, r = factorize(n)
   r == 1 && return (n, 1)
-  bluestein_length(T, 2r - 1) * sizeof(Complex{T}) <= COMPOSITE_SPLIT_BYTES && return (n ÷ r, r)
+  grid_length(T, 2r) * sizeof(Complex{T}) <= COMPOSITE_SPLIT_BYTES && return (n ÷ r, r)
   p = r; d = MAX_RADIX_PRIME + 2
   while d * d <= r                  # largest prime factor of r (all its factors are above MAX_RADIX_PRIME)
     while r % d == 0
@@ -391,7 +311,7 @@ function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composi
         run_lanes!(pz + B * j2 * CT, px + Sx * j2 * CT, pw1, pw2, P.chain, Sx * q, B * q, B)
       end
     end
-    leftover!(py, pz, P.tw, P.blue, n, P.s, B, Sy)
+    leftover!(py, pz, P.tw, P.rs, n, P.s, B, Sy)
   end
   nothing
 end
@@ -407,40 +327,6 @@ function chain_blocks!(pz::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, C::Kern
   nothing
 end
 composite_block(L, s) = min(L, max(LANE_ALIGN, LANE_ALIGN * fld(TUNING[].block_budget ÷ s, LANE_ALIGN)))
-
-# The length-q DFTs of all lanes of a composite kernel, one lane at a time (the batched pass,
-# RsBatch, has its own method).
-function leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, bl, n::Int, s::Int, B::Int, Sy::Int) where {T}
-  for i in 0:B-1, k1 in 0:s-1
-    twiddled_leftover!(py, pz, tw, bl, n, s, B, i, k1, Sy)
-  end
-  nothing
-end
-
-# The length-q DFT on lane (i, k1) of the chain output z (element j2 at i + B·(j2 + q·k1)), after
-# the twiddles w_n^(j2·k1); output element k2 at y + i + Sy·(k1 + s·k2).
-function twiddled_leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, bl::Bluestein{T}, n::Int, s::Int,
-                            B::Int, i::Int, k1::Int, Sy::Int) where {T}
-  q = bl.n; buf = bl.buf; M = length(buf); chirp = bl.chirp
-  cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
-  GC.@preserve bl tw begin
-    pb = cptr(buf)
-    zb = i + B * q * k1 + 1
-    m = 0                           # (j2·k1) mod n
-    @inbounds for j in 1:q
-      buf[j] = unsafe_load(cz, zb + B * (j - 1)) * tw[m+1] * chirp[j]
-      m += k1; m >= n && (m -= n)
-    end
-    fill!(view(buf, q+1:M), zero(Complex{T}))
-    run!(pb, pb, cptr(bl.work1), cptr(bl.work2), bl.fwd, 1)
-    buf .*= bl.kernel
-    run!(pb, pb, cptr(bl.work1), cptr(bl.work2), bl.bwd, 1)
-    @inbounds for k in 1:q
-      unsafe_store!(cy, buf[k] * chirp[k], i + Sy * (k1 + s * (k - 1)) + 1)
-    end
-  end
-  nothing
-end
 
 run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, S::Int) where {T} =
   run_lanes!(py, px, pw1, pw2, P, S, S, S)

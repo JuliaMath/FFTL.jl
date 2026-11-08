@@ -52,10 +52,10 @@ end
 
 resample_transform(::Type{T}, m::Int, σ::Int, ::Type{C}) where {T,C} = C{T}(m, σ)
 resample_transform(::Type{T}, m::Int, σ::Int, ::Type{TypedKernels}) where {T} =
-  m * sizeof(Complex{T}) >= BLUESTEIN_FOURSTEP_BYTES && fourstep_split(m) > 0 ? FourStep{T}(m, σ, 1) : RChain{T}(m, σ)
+  m * sizeof(Complex{T}) >= GRID_FOURSTEP_BYTES && fourstep_split(m) > 0 ? FourStep{T}(m, σ, 1) : RChain{T}(m, σ)
 
 # Grid length, width, deconvolution factors and weights of a length-n resampling (shared by plans).
-function resample_parts(::Type{T}, n::Int, m::Int = bluestein_length(T, 2n)) where {T}
+function resample_parts(::Type{T}, n::Int, m::Int = grid_length(T, 2n)) where {T}
   w = resample_width(T)
   corr = cached(() -> resample_corr(T, n, m, w), CacheKey(:resample_corr, T, n, 0, [m, w]))::Vector{T}
   ws = n * 2w * sizeof(T) <= resample_table_bytes(T) ?
@@ -265,31 +265,6 @@ end
 
 run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Resample{T}, S::Int) where {T} =
   run_lanes!(py, px, pw1, pw2, P, S, S, S)
-
-# The length-q DFT of a composite kernel (see the Bluestein method in plan.jl): twiddles and
-# deconvolution in one pass, then interpolation straight into the strided output.
-function twiddled_leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, rs::Resample{T}, n::Int, s::Int,
-                            B::Int, i::Int, k1::Int, Sy::Int) where {T}
-  q = rs.n; buf = rs.buf; M = length(buf); hp = cld(q, 2); corr = rs.corr
-  cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
-  GC.@preserve rs tw begin
-    pb = cptr(buf)
-    zb = i + B * q * k1 + 1
-    e = 0                           # (j2·k1) mod n
-    @inbounds for j in 1:hp
-      buf[j] = unsafe_load(cz, zb + B * (j - 1)) * tw[e+1] * corr[j]
-      e += k1; e >= n && (e -= n)
-    end
-    @inbounds for j in hp+1:q
-      buf[M-q+j] = unsafe_load(cz, zb + B * (j - 1)) * tw[e+1] * corr[j]
-      e += k1; e >= n && (e -= n)
-    end
-    fill!(view(buf, hp+1:M-q+hp), zero(Complex{T}))
-    run!(pb, pb, cptr(rs.work1), cptr(rs.work2), rs.fwd, 1)
-    resample_interp!(cy, i + Sy * k1 + 1, Sy * s, pb, rs.ws, q, M, Val(resample_width(T)), 0, q)
-  end
-  nothing
-end
 
 # Tree reduction of U vectors of U complex values, each vector one output's partial sums, into one
 # vector of the U outputs: per level, pairs of vectors halve their segments (FFTJ's interleaved

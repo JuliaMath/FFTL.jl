@@ -15,9 +15,9 @@ function runtime_kernel(::Type{T}, n::Int, σ::Int, S::Int) where {T}
   s, q = composite_split(T, n)
   s == 1 && return Resample{T}(n, σ, RChain)
   chain = RChain{T}(s, σ, radices(s, S * q; esize = sizeof(Complex{T})))
-  blue = RsBatch{T}(q, σ, s)
+  rs = RsBatch{T}(q, σ, s)
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
-  Composite{T,typeof(chain),typeof(blue)}(n, s, q, chain, blue, tw, Vector{Complex{T}}(undef, S * n))
+  Composite{T,typeof(chain),typeof(rs)}(n, s, q, chain, rs, tw, Vector{Complex{T}}(undef, S * n))
 end
 
 """

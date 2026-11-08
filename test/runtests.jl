@@ -99,7 +99,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
-  @testset "Bluestein, $T" for T in (Float64, Float32)
+  @testset "prime factors above MAX_RADIX_PRIME (resampling), $T" for T in (Float64, Float32)
     for n in pick([79, 83, 158, 101, 79^2, 1009], [79, 158, 1009])
       x = randn(Complex{T}, n)
       @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
@@ -108,7 +108,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "smooth part times leftover, $T" for T in (Float64, Float32)
-    # n = s·q: a chain of length s, Bluestein on the leftover q (prime or composite)
+    # n = s·q: a chain of length s, a resampled DFT of the leftover q (prime or composite)
     for n in pick([2 * 79, 3 * 83, 16 * 89, 29 * 79, 64 * 79, 2 * 79^2, 5 * 13 * 79, 2 * 79 * 83, 6 * 1009,
                    17 * 79 * 83, 6 * 79^2],
                   [2 * 79, 29 * 79, 2 * 79 * 83, 6 * 1009])
@@ -118,7 +118,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < 10tol(T)
     end
     # a leftover split into prime powers (the planner does this for large leftovers only): first
-    # stages that are composite and Bluestein kernels themselves
+    # stages that are composite and resampling kernels themselves
     for (n, s, q) in pick([(2 * 79 * 83 * 89, 2 * 79 * 83, 89), (79 * 83, 79, 83), (6 * 79^2 * 83, 6 * 79^2, 83)],
                           [(2 * 79 * 83 * 89, 2 * 79 * 83, 89), (79 * 83, 79, 83)])
       x = randn(Complex{T}, n)
@@ -238,7 +238,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
         @test all(==(7), parent(w)[mask])
         @test relerr(mul!(v, p, v), ref) < 10tol(T)
       end
-      # LinesMT owns separate Bluestein/composite kernels per task. Exercise first-axis
+      # LinesMT owns separate resampling/composite kernels per task. Exercise first-axis
       # slices, interior-axis lane blocks (including a partial block), and multiple passes.
       # The three-lane case has gather workspace with two planned tasks, but none with three.
       for (sz, region) in (((1009, 64), (1,)), ((65, 1009), (2,)), ((2018, 33), (1,)),
@@ -323,7 +323,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       end
     end
     # many lines with a prime factor above MAX_RADIX_PRIME: slices and lane blocks over the tasks,
-    # Bluestein kernels (127, 1009, 79) and composite kernels (237 = 3·79, 2018 = 2·1009)
+    # resampling kernels (127, 1009, 79) and composite kernels (237 = 3·79, 2018 = 2·1009)
     for (sz, region) in pick([((256, 127, 16), 1:3), ((16, 256, 127), (3,)), ((1009, 64), (1,)), ((64, 1009), (2,)),
                               ((79, 79, 79), 1:3), ((237, 300), 1:2), ((300, 237), 1:2), ((2018, 32), (1,)), ((32, 2018), (2,))],
                              [((256, 127, 16), 1:3), ((64, 1009), (2,)), ((1009, 64), (1,)), ((300, 237), 1:2)])
@@ -547,7 +547,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       mask = trues(size(G)); mask[b...] .= false
       @test G[mask] == G0[mask]
     end
-    # out of place, Bluestein length along d, 2D
+    # out of place, a length with a large prime factor along d, 2D
     H0 = randn(Complex{T}, 45, 41); H1 = similar(H0)
     for d in 1:2
       v = view(H0, 2:44, 3:39); w = view(H1, 2:44, 3:39)
@@ -575,7 +575,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       p = FFTL.plan_pass_runtime(randn(Complex{T}, sz), d)
       @test p isa FFTL.PassPlan{T,2,FFTL.RPassKern{T}}
     end
-    # against the length-specialised plan, every kernel kind: smooth, Bluestein, composite, four-step
+    # against the length-specialised plan, every kernel kind: smooth, resampling, composite, four-step
     for (n, sz_other, nt) in ((64, 5, 1), (100, 7, 1), (1000, 3, 2), (1009, 4, 1), (2 * 79 * 83, 2, 1),
                               (2^17, 1, 3))
       x = randn(Complex{T}, n, sz_other)
@@ -933,7 +933,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "argument checks and fixed bugs" begin
-    # Bluestein lines in threaded real and r2r plans (the kernel's own buffers, one task at a time)
+    # resampled lines in threaded real and r2r plans (the kernel's own buffers, one task at a time)
     x = rand(1031, 40)
     @test FFTL.plan_rfft(x; threads = 4) * x == FFTL.plan_rfft(x; threads = 1) * x
     @test FFTL.plan_r2r(x, FFTL.REDFT10, 1; threads = 4) * x == FFTL.plan_r2r(x, FFTL.REDFT10, 1; threads = 1) * x

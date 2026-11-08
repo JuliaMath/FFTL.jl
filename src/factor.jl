@@ -26,9 +26,10 @@
 """
     MAX_RADIX_PRIME
 
-Largest prime factor that is a radix of a chain; lengths with larger prime factors use Bluestein's
-algorithm. The primes from `LOOPED_RADIX_MIN` on share one kernel (primestage.jl), so the limit
-is where that kernel stops being faster than Bluestein's algorithm for a line of prime length.
+Largest prime factor that is a radix of a chain; lengths with larger prime factors are resampled
+onto a smooth grid (see `Resample`). The primes from `LOOPED_RADIX_MIN` on share one kernel
+(primestage.jl); the limit is where that kernel stopped being faster than Bluestein's algorithm
+for a line of prime length, measured before resampling replaced Bluestein's algorithm.
 """
 const MAX_RADIX_PRIME = 73
 

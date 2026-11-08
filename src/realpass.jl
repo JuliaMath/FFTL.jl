@@ -80,7 +80,7 @@ end
 """
     plan_r2c_pass_runtime(v::StridedArray{<:Real}, d; threads = 1)
 
-The same transform as [`plan_r2c_pass`](@ref), with run-time kernels (RChain, and Bluestein over RChain
+The same transform as [`plan_r2c_pass`](@ref), with run-time kernels (RChain, and resampling over RChain
 for lengths with large prime factors). The plan type is `RealPassPlan{T,N,RealLine{T,RKern{T}}}`, the same
 for every length, so a library can compile it ahead of time (`juliac --trim`).
 """

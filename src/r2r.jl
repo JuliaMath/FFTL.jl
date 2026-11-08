@@ -58,7 +58,7 @@ function check_r2r_region(reg, N::Int)
   nothing
 end
 
-own_buffers(K::R2RLine) = (i = K.inner; i isa RealLine ? i.inner isa Union{Bluestein,Resample,Composite} : i isa Union{Bluestein,Resample,Composite})
+own_buffers(K::R2RLine) = (i = K.inner; i isa RealLine ? i.inner isa Union{Resample,Composite} : i isa Union{Resample,Composite})
 
 # exp(iπ(a j + b)/d) for j = 0…m-1
 function cis_table(::Type{T}, m::Int, a::Int, b::Int, d::Int) where {T}
@@ -505,7 +505,7 @@ function half_dft(::Type{T}, sz, d, kind, z::Vector{Complex{T}}, nt) where {T}
   HalfDFT{T,typeof(cplan)}(S, outer, n, kind == RODFT10, kind == DHT, cplan, zz, w, cis_table(T, M + 1, -1, 0, 2n))
 end
 
-# One line kernel per task. A kernel with buffers of its own (Bluestein, composite) cannot run on
+# One line kernel per task. A kernel with buffers of its own (resampling, composite) cannot run on
 # two tasks at once, so each task gets a copy; the other kernels are shared.
 task_lines(K::R2RLine{T}, threads::Integer) where {T} =
   own_buffers(K) && threads > 1 ? [K; [R2RLine{T}(K.kind, K.n) for _ in 2:threads]] : [K]
