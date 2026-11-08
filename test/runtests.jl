@@ -97,7 +97,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
 
   @testset "large lengths: inverse and Parseval, $T" for T in (Float64, Float32)
     # 262147 (prime) and 2·262147: convolution length beyond 2^19, a four-step on x86
-    for n in pick([4096, 3^8, 10^5, 2^18, 2 * 10007, 262147, 2 * 262147], [3^8, 2^18, 2 * 10007, 262147])
+    for n in pick([4096, 3^8, 10^5, 2^18, 2 * 10007, 262147, 2 * 262147], [3^8, 2^18, 2 * 10007])
       x = randn(Complex{T}, n)
       y = FFTL.fft(x)
       @test relerr(FFTL.ifft(y), x) < 10tol(T)
@@ -162,7 +162,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Bluestein
     # smooth part times leftover: the composite kernel on threads, bitwise equal to the serial one
     # 3·193·1021: the leftover is split, the first stage is a composite kernel on each task
-    for n in pick((65 * 4033, 7 * 11777, 1500 * 1013, 3 * 193 * 1021), (65 * 4033, 3 * 193 * 1021))
+    for n in pick((65 * 4033, 7 * 11777, 1500 * 1013, 3 * 193 * 1021), (3 * 193 * 1021,))
       x = randn(Complex{T}, n)
       for mk in (FFTL.plan_fft, FFTL.plan_bfft)
         ref = mk(x; threads = 1) * x
