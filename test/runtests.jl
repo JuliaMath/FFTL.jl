@@ -1,13 +1,32 @@
 using FFTL, Test, LinearAlgebra
+import AbstractFFTs
 
-# Reference DFT in Float64 (BigFloat would be exact but slow; the tolerances below allow for it).
-function dft(x, σ = -1)
-  n = length(x)
-  [sum(x[j+1] * cispi(2σ * mod(j * k, n) / n) for j in 0:n-1) for k in 0:n-1]
+# The AbstractFFTs generics with FFTL as the only backend: before FFTW.jl is loaded (below).
+fftw_loaded() = any(m -> nameof(m) === :FFTW, values(Base.loaded_modules))
+
+@testset "AbstractFFTs without FFTW" begin
+  if fftw_loaded()
+    @test_skip "FFTW already loaded"
+  else
+    x = randn(ComplexF64, 12, 10)
+    @test AbstractFFTs.plan_fft(x) isa FFTL.FFTLPlan
+    @test AbstractFFTs.fft(x) ≈ FFTL.fft(x)
+    @test AbstractFFTs.fft(real(x)) ≈ FFTL.fft(real(x))
+    @test AbstractFFTs.ifft(AbstractFFTs.fft(x)) ≈ x
+    r = randn(Float32, 9, 4)
+    @test AbstractFFTs.irfft(AbstractFFTs.rfft(r), 9) ≈ r
+    @test AbstractFFTs.plan_rfft(r) isa FFTL.RFFTLPlan
+    y = copy(x); AbstractFFTs.fft!(y)
+    @test y ≈ FFTL.fft(x)
+  end
 end
 
-# The DFT at a few frequencies only, each in O(n): the full reference is O(n²), too slow for lengths
-# of 10⁵ and more. The frequencies cover both ends, the middle and a spread in between.
+# Reference DFTs in Float64 from FFTW.jl: an independent implementation, O(n log n) at every size.
+import FFTW
+dft(x, σ = -1) = σ == -1 ? FFTW.fft(ComplexF64.(x)) : FFTW.bfft(ComplexF64.(x))
+
+# The DFT at a few frequencies only, each in O(n), by direct summation. The frequencies cover both
+# ends, the middle and a spread in between.
 function dft_at(x, σ = -1)
   n = length(x)
   ks = unique([0, 1, n ÷ 3, n ÷ 2, n - 2, n - 1, (7n) ÷ 11])
@@ -15,11 +34,11 @@ function dft_at(x, σ = -1)
   ks, ref
 end
 
-# Direct DFT along the dimensions in `region`, one after the other.
+# Along the dimensions in `region`, one after the other.
 function dftn(x, region, σ = -1)
   y = ComplexF64.(x)
   for d in region
-    y = mapslices(v -> dft(v, σ), y; dims = d)
+    y = σ == -1 ? FFTW.fft(y, d) : FFTW.bfft(y, d)
   end
   y
 end
