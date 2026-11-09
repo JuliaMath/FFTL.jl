@@ -295,8 +295,7 @@ using the work buffers `pw1`, `pw2` (S·n complex values each).
 run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, S::Int) where {T} =
   run!(py, px, pw1, pw2, P, S, NOPRUNE)
 
-@generated function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K}, S::Int,
-                         Pr::Pruning{FM,LM}) where {T,Rs,σ,K,FM,LM}
+function run_body(::Type{T}, Rs, σ::Int, K::Int, FM, LM) where {T}
   K == 0 && return :(py == px || unsafe_copyto!(py, px, 2S); nothing)
   # Out of place: the stages alternate between py and pw1 and end in py; px is only read.
   oop = [iseven(K - i) ? :py : :pw1 for i in 1:K]
@@ -321,6 +320,11 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, S::Int) wher
     end
     nothing
   end
+end
+
+@generated function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K}, S::Int,
+                         Pr::Pruning{FM,LM}) where {T,Rs,σ,K,FM,LM}
+  run_body(T, Rs, σ, K, FM, LM)
 end
 
 """
@@ -607,8 +611,7 @@ Transform a block of B lanes; element j of lane i at `px + i + Sx·j` and `py + 
 run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, Sx::Int, Sy::Int, B::Int) where {T} =
   run_lanes!(py, px, pw1, pw2, P, Sx, Sy, B, NOPRUNE)
 
-@generated function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K},
-                               Sx::Int, Sy::Int, B::Int, Pr::Pruning{FM,LM}) where {T,Rs,σ,K,FM,LM}
+function run_lanes_body(::Type{T}, Rs, σ::Int, K::Int, FM, LM) where {T}
   function body(V)
     ex = Any[:(L = P.n), :(s0 = 1)]
     src, srcS = :px, :Sx
@@ -664,6 +667,11 @@ run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, Sx::In
     GC.@preserve P $(by_width(V -> quote $(body(V)...) end))
     nothing
   end
+end
+
+@generated function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K},
+                               Sx::Int, Sy::Int, B::Int, Pr::Pruning{FM,LM}) where {T,Rs,σ,K,FM,LM}
+  run_lanes_body(T, Rs, σ, K, FM, LM)
 end
 
 # y[i + Sy·j] = x[i + Sx·j] for B lanes and n elements

@@ -38,3 +38,17 @@ for T in (Float32, Float64), (name, head, kind, vts) in KERNEL_HEADS
     @eval $(Expr(:function, h, b))
   end
 end
+
+# The compiled chains of the small lengths (rchain.jl) run through `run!`/`run_lanes!` methods of
+# plain definition for the same reason; any other chain type, and every pruned call, uses the
+# @generated methods.
+for T in (Float32, Float64), (n, σ) in SMALL_ENTRIES
+  Rs = Tuple(radices(n, 1; esize = sizeof(Complex{T})))
+  C = Chain{T,Rs,σ,length(Rs)}
+  Pr = typeof(NOPRUNE)
+  @eval $(Expr(:function, :(run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::$C, S::Int, Pr::$Pr)),
+               run_body(T, Rs, σ, length(Rs), (), ())))
+  @eval $(Expr(:function, :(run_lanes!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::$C,
+                                       Sx::Int, Sy::Int, B::Int, Pr::$Pr)),
+               run_lanes_body(T, Rs, σ, length(Rs), (), ())))
+end
