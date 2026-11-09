@@ -2,7 +2,8 @@
 # type, empty zero-input mask or full output mask) that `RChain` dispatches to. The `@generated`
 # kernels in kernels.jl handle every other combination (pruned stages); a package image keeps
 # the complete optimised IR of every precompiled `@generated` specialization but none of a
-# plain method, so the fixed set is defined as plain methods with the same bodies.
+# plain method, so the fixed set is defined as plain methods with the same bodies. The codelets
+# of LAZY_RADICES are not in the set.
 
 kernel_subst(x, d) = x isa Symbol ? get(d, x, x) :
                      x isa Expr ? Expr(x.head, map(a -> kernel_subst(a, d), x.args)...) : x
@@ -31,6 +32,7 @@ for T in (Float32, Float64), (name, head, kind, vts) in KERNEL_HEADS
   vts === :group ? (types = filter(V -> ncomplex(V) in (2, 4), vec_ladder(T))) :
   (types = any(V -> ncomplex(V) in (2, 4), vec_ladder(T)) ? (Vec{2,T},) : ())
   for σ in (-1, 1), VT in types, R in RADICES
+    R in LAZY_RADICES && continue
     mask = kind === :need ? (1 << R) - 1 : 0
     h = kernel_subst(head, Dict{Symbol,Any}(:T => T, :R => R, :σ => σ, :VT => VT, :mask => mask))
     # the codelet statements name the type parameters T and VT, which a plain method does not bind
