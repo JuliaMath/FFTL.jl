@@ -16,6 +16,8 @@ struct RealPassPlan{T<:FFTLFloat,N,L<:RealLine{T}}
   n::Int                              # real length along d
   sz_in::NTuple{N,Int}
   sz_out::NTuple{N,Int}
+  offs_in::Vector{Int}
+  offs_out::Vector{Int}
   line::L
   bufs::Vector{Vector{Complex{T}}}    # five per task
   nthreads::Int
@@ -28,7 +30,9 @@ function realpass_plan(::Type{T}, σ::Int, sz_in::NTuple{N,Int}, d::Int, n::Int,
   sz_in[d] == nin || throw(DimensionMismatch("input has length $(sz_in[d]) along dimension $d, expected $nin"))
   sz_out = Base.setindex(sz_in, σ == -1 ? nhalf(n) : n, d)
   line = RealLine{T}(n, σ)
-  RealPassPlan{T,N,typeof(line)}(σ, d, n, sz_in, sz_out, line, thread_buffers(T, n, 5nt), nt)
+  nlines = prod(sz_in) ÷ nin
+  RealPassPlan{T,N,typeof(line)}(σ, d, n, sz_in, sz_out,
+    Vector{Int}(undef, nlines), Vector{Int}(undef, nlines), line, thread_buffers(T, n, 5nt), nt)
 end
 
 """
@@ -37,7 +41,8 @@ end
 Plan for the batched r2c transform along dimension `d` of arrays with the size of `v`: the output
 has the half spectrum `nhalf(size(v, d))` along `d`. Apply with `mul!(w, p, v)`, where `v` and `w`
 may be strided views (dimension 1 of each line may be strided too). Same packing as `FFTL.rfft`
-for each line.
+for each line. The input and output strides may differ and may change between calls; with
+`threads = 1`, warmed execution with `mul!` is allocation-free.
 """
 function plan_r2c_pass(v::StridedArray{T,N}, d::Integer; threads::Integer = 1) where {T<:FFTLFloat,N}
   1 <= d <= N || throw(ArgumentError("dimension $d is not within 1:$N"))
@@ -52,7 +57,8 @@ Plan for the batched unnormalised c2r transform along dimension `d` from the hal
 (`size(v, d) == nhalf(n)`) to a real array with length `n` along `d`. Apply with `mul!(w, p, v)`
 (`w` of size `size(v)` with `n` instead of `size(v, d)` along `d`, may be a strided view). `n`
 must be given for odd lengths. The imaginary parts of the zero and Nyquist values are ignored, as
-in `FFTL.irfft`.
+in `FFTL.irfft`. The input and output strides may differ and may change between calls; with
+`threads = 1`, warmed execution with `mul!` is allocation-free.
 """
 function plan_c2r_pass(v::StridedArray{Complex{T},N}, d::Integer; n::Integer = 2(size(v, d) - 1),
                        threads::Integer = 1) where {T<:FFTLFloat,N}
@@ -77,8 +83,10 @@ end
 function LinearAlgebra.mul!(w::StridedArray{Complex{T},N}, p::RealPassPlan{T,N}, v::StridedArray{T,N}) where {T,N}
   p.σ == -1 || throw(ArgumentError("c2r pass plan applied to a real input"))
   check_realpass(p, v, w)
+  pass_offsets!(p.offs_in, p.sz_in, strides(v), p.d)
+  pass_offsets!(p.offs_out, p.sz_out, strides(w), p.d)
   GC.@preserve v w p r2c_lines!(Ptr{Complex{T}}(pointer(w)), Ptr{T}(pointer(v)),
-    pass_offsets(p.sz_out, strides(w), p.d), pass_offsets(p.sz_in, strides(v), p.d),
+    p.offs_out, p.offs_in,
     strides(w)[p.d], strides(v)[p.d], p.line, p.bufs, p.nthreads)
   w
 end
@@ -86,14 +94,22 @@ end
 function LinearAlgebra.mul!(w::StridedArray{T,N}, p::RealPassPlan{T,N}, v::StridedArray{Complex{T},N}) where {T,N}
   p.σ == 1 || throw(ArgumentError("r2c pass plan applied to a complex input"))
   check_realpass(p, v, w)
+  pass_offsets!(p.offs_in, p.sz_in, strides(v), p.d)
+  pass_offsets!(p.offs_out, p.sz_out, strides(w), p.d)
   GC.@preserve v w p c2r_lines!(Ptr{T}(pointer(w)), Ptr{Complex{T}}(pointer(v)),
-    pass_offsets(p.sz_out, strides(w), p.d), pass_offsets(p.sz_in, strides(v), p.d),
+    p.offs_out, p.offs_in,
     strides(w)[p.d], strides(v)[p.d], p.line, p.bufs, p.nthreads)
   w
 end
 
 # Line offsets of an array of size sz and strides st, for all dimensions except d.
-function pass_offsets(sz::NTuple{N,Int}, st::NTuple{N,Int}, d::Int) where {N}
-  outer = Tuple(i for i in 1:N if i != d)
-  line_offsets(sz, st, outer)
+function pass_offsets!(offs::Vector{Int}, sz::NTuple{N,Int}, st::NTuple{N,Int}, d::Int) where {N}
+  for (i, I) in enumerate(CartesianIndices(Base.setindex(sz, 1, d)))
+    off = 0
+    for j in 1:N
+      off += (I[j] - 1) * st[j]
+    end
+    offs[i] = off
+  end
+  offs
 end

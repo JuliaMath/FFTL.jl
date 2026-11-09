@@ -63,6 +63,32 @@ maximum(abs, W[1:8, :] - full[1:8, :])
 Passes are single-threaded by default. A caller that already threads over many arrays keeps
 `threads = 1`; see [Threads](@ref "Threads").
 
+## Passes for real data
+
+`FFTL.plan_r2c_pass(v, d)` transforms real lines into half spectra; `FFTL.plan_c2r_pass(v, d; n)`
+transforms them back without normalisation. Give the real length `n` explicitly for odd lengths.
+These plans fix the input and output sizes, but read each operand's strides on every `mul!`.
+The strides may differ between input and output and change between calls, including stepped
+views along the transformed dimension. With `threads = 1` (the default), warmed `mul!` execution
+is allocation-free.
+
+```@example dims
+source = randn(21, 6)
+x = view(source, 2:2:18, 2:5)             # nine real samples per line
+spectra = zeros(ComplexF64, 7, 8)
+X = view(spectra, 2:6, 3:6)              # five half-spectrum values per line
+pf = FFTL.plan_r2c_pass(x, 1)
+mul!(X, pf, x)
+
+pb = FFTL.plan_c2r_pass(X, 1; n = 9)
+y = zeros(size(x))
+mul!(y, pb, X)
+y ./ 9 ≈ x
+```
+
+Only the output view is written; padding in its parent and the input are preserved. The same
+plans can also execute with dense operands of these sizes.
+
 ## Passes for real-to-real kinds
 
 `FFTL.plan_r2r_pass(v, d, kind)` is the same for one real-to-real kind along one dimension (see

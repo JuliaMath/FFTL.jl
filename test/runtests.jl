@@ -19,6 +19,19 @@ relerr(a, b) = norm(a - b, Inf) / norm(b, Inf)
 tol(::Type{Float64}) = 1e-13
 tol(::Type{Float32}) = 2e-6
 
+# Same shapes with dense, column-block, padded, stepped and reversed layouts.
+function realpass_layouts(::Type{T}, sz::NTuple{N,Int}) where {T,N}
+  block = ntuple(i -> i == N ? (3:sz[i]+2) : (1:sz[i]), N)
+  padded = ntuple(i -> 2:sz[i]+1, N)
+  stepped = ntuple(i -> 2:2:2sz[i], N)
+  reversed = ntuple(i -> sz[i]+1:-1:2, N)
+  (fill(T(7), sz),
+   view(fill(T(7), Base.setindex(sz, sz[N] + 4, N)), block...),
+   view(fill(T(7), sz .+ 4), padded...),
+   view(fill(T(7), 2 .* sz .+ 4), stepped...),
+   view(fill(T(7), sz .+ 4), reversed...))
+end
+
 using SIMD: Vec
 
 # Default: a quick run that covers every feature with fewer sizes (CI on every push).
@@ -233,6 +246,51 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       yv = view(Y, ntuple(i -> 2:sz[i]+1, 2)...)
       mul!(yv, pc, X)
       @test relerr(yv ./ n, x) < 10tol(T)
+    end
+    # Reuse each plan while changing input strides, output strides, both, then back to dense.
+    for (sz, d) in (((8,), 1), ((9, 4), 1), ((3, 8, 2), 2), ((2, 37, 1), 2), ((3, 1, 2), 2))
+      n = sz[d]
+      x = randn(T, sz)
+      osz = Base.setindex(sz, n ÷ 2 + 1, d)
+      ref = mapslices(u -> dft(u)[1:n ÷ 2 + 1], x; dims = d)
+      for forward in (true, false)
+        inputs = realpass_layouts(forward ? T : Complex{T}, forward ? sz : osz)
+        outputs = realpass_layouts(forward ? Complex{T} : T, forward ? osz : sz)
+        for v in inputs
+          v .= forward ? x : ref             # inverse input from the reference, not our r2c
+        end
+        p = forward ? FFTL.plan_r2c_pass(inputs[1], d) : FFTL.plan_c2r_pass(inputs[1], d; n)
+        expected = forward ? ref : n .* x
+        for (a, b) in ((1, 1), (2, 1), (2, 3), (3, 4), (4, 5), (5, 2), (1, 1))
+          v, w = inputs[a], outputs[b]
+          before = copy(parent(v))
+          fill!(parent(w), 7)
+          mask = trues(size(parent(w)))
+          view(mask, parentindices(w)...) .= false
+          @test mul!(w, p, v) === w
+          @test relerr(w, expected) < 10tol(T)
+          @test parent(v) == before
+          @test all(==(7), parent(w)[mask])
+        end
+      end
+    end
+    # Enough work to execute on multiple tasks, with independently strided operands.
+    if Threads.nthreads() > 1
+      x = randn(T, 128, 512)
+      v = view(zeros(T, 260, 514), 2:2:256, 2:513); v .= x
+      w = view(fill(Complex{T}(7), 69, 514), 2:66, 2:513)
+      y = view(fill(T(7), 260, 514), 2:2:256, 2:513)
+      ref = FFTL.plan_rfft(x, 1; threads = 1) * x
+      mul!(w, FFTL.plan_r2c_pass(v, 1; threads = 2), v)
+      @test relerr(w, ref) < 10tol(T)
+      w .= ref
+      mul!(y, FFTL.plan_c2r_pass(w, 1; n = 128, threads = 2), w)
+      @test relerr(y, 128 .* x) < 10tol(T)
+      @test v == x && w == ref
+      for out in (w, y)
+        mask = trues(size(parent(out))); view(mask, parentindices(out)...) .= false
+        @test all(==(7), parent(out)[mask])
+      end
     end
     # sizes and lengths that do not match are errors
     x = randn(T, 10, 3)
