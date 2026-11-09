@@ -9,10 +9,10 @@ KernelAbstractions on GPUs, and as a C library ([`libfftl`](@ref "C library (lib
 compiled from the same Julia code.
 
 !!! warning "Experimental"
-    FFTL.jl is under development and not registered yet. The interface can still change; the
+    FFTL.jl is under development and was recently registered. The interface can still change; the
     documented parts are the ones tested in CI.
 
-## How FFTL came about
+## Background
 
 FFTL was written by a coding agent under the guidance of a domain expert. Julia makes a library
 of this scope possible in one language: the compiler generates the codelets for the radix,
@@ -25,9 +25,9 @@ history.
 FFTL is meant to be developed further by the Julia community, as one FFT that the ecosystem
 shares. [Contribute](@ref "Contribute") says where help is most useful.
 
-## What FFTL covers
+## Scope / Coverage
 
-**Transforms, number types and platforms, in Julia.**
+**Fourier and discrete cosine transforms written in Julia, with wide support for number types and CPU and GPU execution.**
 
 - Complex, real-input and all eleven real-to-real kinds (DCT-I to DCT-IV, DST-I to DST-IV,
   Hartley, halfcomplex), along any set of dimensions of any rank.
@@ -35,7 +35,7 @@ shares. [Contribute](@ref "Contribute") says where help is most useful.
   through Bluestein's algorithm, no padding to powers of two.
 - `BigFloat` and other floating-point types in their own precision, not converted to `Float64`.
 - GPUs through KernelAbstractions.jl, with the same functions.
-- Threads where the transform is large enough, and the four-step algorithm for one long line
+- Multithreading where the transform is large enough, and the four-step algorithm for one long line
   (see [Threads](@ref "Threads")).
 
 **A C library made from the Julia code.** [libfftl](@ref "C library (libfftl)") is the package
@@ -87,7 +87,7 @@ C = dct(r)                  # orthonormal DCT-II; idct inverts it
 idct(C) ≈ r
 ```
 
-## Where to go
+## Further reading
 
 | If you want to | read |
 |:--|:--|

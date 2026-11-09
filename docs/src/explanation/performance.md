@@ -3,7 +3,7 @@
 This page describes what the design does for speed and how speed is measured. The numbers themselves
 come with the [benchmark release](@ref "Benchmarks"), not here.
 
-## What is fast, and where
+## Where the speed comes from
 
 Speed depends on four things, and each has its own part of the code:
 
@@ -20,7 +20,7 @@ Speed depends on four things, and each has its own part of the code:
 Plans carry everything that does not change between transforms, so the cost of planning is paid
 once. The plan cache and the precompile workload remove the compilation cost from the first call.
 
-## How speed is measured
+## Benchmark protocol
 
 A claim about speed is a measurement made under a fixed protocol. The benchmark release will
 follow this one:
@@ -44,7 +44,7 @@ Three costs are separate in every measurement: the first plan in a fresh process
 the plan once compiled, and the transform itself. Benchmarks report them separately, because in an
 application they happen at different times.
 
-## Where the design gives up speed
+## Trade-offs
 
 - Other number types take the generic path, which has no SIMD and no threads.
 - DCT-I and DST-I are computed through a real DFT of about twice the length, and DCT-IV of odd

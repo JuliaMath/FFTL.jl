@@ -78,7 +78,7 @@ p = plan_fft(x)
 roundtrip(p, x) ≈ x
 ```
 
-## What FFTL adds
+## Beyond FFTW.jl
 
 - Number types beyond `Float32` and `Float64`, computed in their own precision
   ([Number types](@ref "Number types")).

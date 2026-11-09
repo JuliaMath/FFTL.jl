@@ -83,7 +83,7 @@ end
 Markdown.parse(join(["| data | FFTL commit | measured |", "|:--|:--|:--|", rows...], "\n"))
 ```
 
-## What the campaign covers
+## Scope of the benchmark campaign
 
 - **Complex, real and real-to-real transforms** on the CPU, 1D to 3D, Float32 and Float64, against
   the competitors that support the same kind. Each kind has its own column; kinds without a
@@ -96,7 +96,7 @@ Markdown.parse(join(["| data | FFTL commit | measured |", "|:--|:--|:--|", rows.
 - **Planning.** The cost of the first plan in a fresh process, separate from the execution time.
 - **Accuracy.** Error against a high-precision reference over the same sizes.
 
-## How it is measured
+## Protocol
 
 The protocol is described on the [Performance](@ref "Performance") page: A/B runs on the same
 machine, medians of interleaved runs, A/A runs for the noise band, and sizes reported separately
