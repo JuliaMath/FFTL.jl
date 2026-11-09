@@ -73,6 +73,25 @@
     @test_broken @inferred FFTL.plan_pass(v, 2)
   end
   # real transforms
+  # Real passes reuse their offset storage even on the first call with new stride values.
+  for (sz, d) in (((8,), 1), ((3, 9, 2), 2), ((2, 37, 1), 2), ((3, 1, 2), 2), ((10240, 4), 1))
+    n = sz[d]; osz = Base.setindex(sz, n ÷ 2 + 1, d)
+    for forward in (true, false)
+      inputs = realpass_layouts(forward ? T : Complex{T}, forward ? sz : osz)
+      outputs = realpass_layouts(forward ? Complex{T} : T, forward ? osz : sz)
+      p = forward ? FFTL.plan_r2c_pass(inputs[1], d) : FFTL.plan_c2r_pass(inputs[1], d; n)
+      for (a, b) in ((1, 1), (2, 1), (2, 3), (3, 4), (4, 5), (5, 2), (1, 1))
+        v, w = inputs[a], outputs[b]
+        # Compile and warm measurement on a separate plan, so p has not seen these strides.
+        warm = forward ? FFTL.plan_r2c_pass(v, d) : FFTL.plan_c2r_pass(v, d; n)
+        @test (@inferred mul!(w, warm, v)) === w
+        @allocated mul!(w, warm, v)
+        @test (@allocated mul!(w, p, v)) == 0
+        @test (@inferred mul!(w, p, v)) === w
+        @test (@allocated mul!(w, p, v)) == 0
+      end
+    end
+  end
   let x = randn(T, 16), y = FFTL.plan_rfft(x) * x
     p = FFTL.plan_rfft(x)
     mul!(y, p, x)
