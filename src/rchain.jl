@@ -19,13 +19,18 @@ for T in (Float32, Float64)
   @eval @inline ladder_ncomplex(::Type{$T}) = $(map(ncomplex, vec_ladder(T)))
 end
 
-# Codelet index of (sign, vector type vi of vec_ladder(T), radix): one integer, so that the
-# dispatch below is a single switch.
-@inline function codelet_index(::Type{T}, σ::Int, vi::Int, r::Int) where {T}
-  ri = 0
-  for (i, R) in enumerate(RADICES)
-    R == r && (ri = i)
+# Position of each radix in RADICES (0 for radices without a codelet).
+const RADIX_POS = let t = zeros(Int, maximum(RADICES))
+  for (i, r) in enumerate(RADICES)
+    t[r] = i
   end
+  t
+end
+
+# Codelet index of (sign, vector type vi of vec_ladder(T), radix): one integer, so that the
+# dispatch below is a single switch. Called per stage, so it is a table lookup.
+@inline function codelet_index(::Type{T}, σ::Int, vi::Int, r::Int) where {T}
+  ri = r <= length(RADIX_POS) ? RADIX_POS[r] : 0
   ri == 0 && throw(ArgumentError("radix without a codelet in RADICES"))
   ((σ == 1 ? 1 : 0) * length(ladder_ncomplex(T)) + vi - 1) * length(RADICES) + ri
 end
