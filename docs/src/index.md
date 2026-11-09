@@ -27,7 +27,7 @@ shares. [Contribute](@ref "Contribute") says where help is most useful.
 
 ## Scope / Coverage
 
-**Transforms, number types and platforms, in Julia.**
+**Fourier and discrete cosine transforms written in Julia, with wide support for number types and CPU and GPU execution.**
 
 - Complex, real-input and all eleven real-to-real kinds (DCT-I to DCT-IV, DST-I to DST-IV,
   Hartley, halfcomplex), along any set of dimensions of any rank.

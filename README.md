@@ -79,9 +79,9 @@ using FFTL, Metal, KernelAbstractions          # or CUDA
 yd = FFTL.fft(MtlArray(randn(ComplexF32, 1024, 1024)))
 ```
 
-## What FFTL covers
+## Features
 
-**Transforms, number types and platforms, in Julia.**
+**Fourier and discrete cosine transforms written in Julia, with wide support for number types and CPU and GPU execution.**
 
 - Complex, real-input and all eleven real-to-real kinds of FFTW, along any subset of
   dimensions, for any length (the part of a length made of prime factors above 31 through
