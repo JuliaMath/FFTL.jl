@@ -150,6 +150,10 @@ function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, S:
     py == px || unsafe_copyto!(py, px, 2S)
     return nothing
   end
+  if S == 1 && P.n <= SMALL_N && SMALL_INDEX[P.n] > 0
+    i = SMALL_INDEX[P.n] + (P.σ == 1 ? 1 : 0)
+    small_run!(py, px, pw1, pw2, P, i) && return nothing
+  end
   S == 1 && return run_single!(py, px, pw1, pw2, P)
   ncs = ladder_ncomplex(T)
   nv = length(ncs)
@@ -273,4 +277,54 @@ function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{
     end
   end
   nothing
+end
+
+# Small lengths: the stage loop of a single line runs as compiled code for each smooth length up
+# to SMALL_N and both signs. The entries of a length are consecutive (σ = -1, then σ = +1); one
+# table lookup per call finds them. The compiled chain uses the tables of the RChain, and its
+# radix sequence is checked against the compiled one, so any other plan takes the stage loop.
+const SMALL_N = 128
+const SMALL_ENTRIES = [(n, σ) for n in 2:SMALL_N if smooth(n) for σ in (-1, 1)]
+const SMALL_INDEX = let t = zeros(Int, SMALL_N)
+  for (i, (n, σ)) in enumerate(SMALL_ENTRIES)
+    σ == -1 && (t[n] = i)
+  end
+  t
+end
+
+@noinline function small_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T},
+                              ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
+  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
+  GC.@preserve P run!(py, px, pw1, pw2, c, 1)
+end
+
+# Binary tree of compares over the entry index (a flat chain of ~120 compares costs ~50 ns per
+# call). Each leaf checks the radix sequence of the RChain against the compiled one.
+function small_tree(T, lo, hi)
+  if lo == hi
+    n, σ = SMALL_ENTRIES[lo]
+    rs = Tuple(radices(n, 1; esize = sizeof(Complex{T})))
+    K = length(rs)
+    same = Any[:(i == $lo), :(length(P.rs) == $K)]
+    for (j, r) in enumerate(rs)
+      push!(same, :(P.rs[$j] == $r))
+    end
+    return :(if $(Expr(:&&, same...))
+               small_chain!(py, px, pw1, pw2, P, Chain{$T,$rs,$σ,$K}, Val($K))
+               return true
+             end)
+  end
+  mid = (lo + hi) ÷ 2
+  :(if i <= $mid
+      $(small_tree(T, lo, mid))
+    else
+      $(small_tree(T, mid + 1, hi))
+    end)
+end
+
+for T in (Float32, Float64)
+  @eval function small_run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::RChain{$T}, i::Int)
+    $(small_tree(T, 1, length(SMALL_ENTRIES)))
+    false
+  end
 end
