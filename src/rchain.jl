@@ -46,7 +46,7 @@ has_lazy_factor(n::Int) = any(in(LAZY_RADICES), keys(factorize(n)[1]))
 # Codelet dispatch: one function per kind of stage call, a switch over the codelet index,
 # generated for both element types so that every call has constant type arguments. Codelets of
 # LAZY_RADICES are not in the switch; `<kind>_lazy` takes their index and calls the stage kernel
-# with run-time types, which compiles it at the first call.
+# through a callable that is created and compiled at the first call.
 for T in (Float32, Float64)
   ladder = vec_ladder(T)
   LTYPES = Tuple(ladder)
@@ -80,15 +80,29 @@ for T in (Float32, Float64)
       $fallback
     end
     isempty(LAZY_RADICES) && continue
+    # One callable singleton per (radix, sign, vector type): the first call of a codelet creates it
+    # and compiles its kernel, later calls find it in a table by index. A call through the table
+    # is a dynamic call of a single method, much cheaper than the dispatch of the stage kernel
+    # on run-time `Val`s.
+    callable = Symbol(name, :_, T, :_codelet)
+    table = Symbol(name, :_, T, :_codelets)
+    @eval struct $callable{R,σ,VT} end
+    @eval function (::$callable{R,σ,VT})($(typed...)) where {R,σ,VT}
+      return $(call(:R, :σ, :VT, :((1 << R) - 1)))
+    end
+    @eval const $table = Any[nothing for _ in 1:2 * $NL * $NR]
     # Index c = ((si - 1) * NL + vi - 1) * NR + ri, with ri = 1 … NR into RADICES.
-    dyn = (:(r = RADICES[ri]), :(σ = si == 2 ? 1 : -1), :(VT = $LTYPES[vi]))
-    @eval @noinline function $(Symbol(name, :_lazy))($(typed...), c::Int)
+    @eval @noinline function $(Symbol(name, :_, T, :_make))(c::Int)
       ri = (c - 1) % $NR + 1
       rest = (c - 1) ÷ $NR
       vi = rest % $NL + 1
       si = rest ÷ $NL + 1
-      $(dyn...)
-      return $(call(:r, :σ, :VT, :((1 << r) - 1)))
+      return $callable{RADICES[ri], si == 2 ? 1 : -1, $LTYPES[vi]}()
+    end
+    @eval @noinline function $(Symbol(name, :_lazy))($(typed...), c::Int)
+      f = $table[c]
+      f === nothing && (f = $table[c] = $(Symbol(name, :_, T, :_make))(c))
+      return f($(args...))
     end
   end
 end
