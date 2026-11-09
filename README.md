@@ -20,14 +20,14 @@ coding agent makes it possible to implement, test and measure the many details s
 needs. The aim now is to develop it further as a project of the Julia community (see
 [Contributing](#contributing)).
 
-FFTL is experimental and not registered yet; the interface can still change. The manual is at
+FFTL is experimental and was recently registered; the interface can still change. The manual is at
 [JuliaMath.github.io/FFTL.jl](https://JuliaMath.github.io/FFTL.jl).
 
 ## Installation
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/JuliaMath/FFTL.jl")
+Pkg.add("FFTL")
 ```
 
 ## Usage

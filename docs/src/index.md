@@ -9,7 +9,7 @@ KernelAbstractions on GPUs, and as a C library ([`libfftl`](@ref "C library (lib
 compiled from the same Julia code.
 
 !!! warning "Experimental"
-    FFTL.jl is under development and not registered yet. The interface can still change; the
+    FFTL.jl is under development and was recently registered. The interface can still change; the
     documented parts are the ones tested in CI.
 
 ## How FFTL came about
