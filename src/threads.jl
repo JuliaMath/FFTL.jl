@@ -210,8 +210,7 @@ function fourstep_split(n)
   best
 end
 
-# C: the chain type of the two factors (Chain, or RChain for run-time plans)
-function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C}
+function FourStep{T}(n::Int, σ::Int, nt::Int, ::Type{C} = RChain) where {T,C}
   n1 = fourstep_split(n)
   n2 = n ÷ n1
   k1 = C{T}(n1, σ, radices(n1, n2; esize = sizeof(Complex{T})))
@@ -315,7 +314,7 @@ end
 
 function BluesteinMT{T}(n::Int, σ::Int, nt::Int) where {T}
   M = bluestein_mt_length(T, n)
-  ser = Chain{T}(M, -1)
+  ser = RChain{T}(M, -1)
   w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
   chirp, b = cached(() -> bluestein_tables(T, n, σ, ser, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
                    )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
@@ -345,7 +344,7 @@ end
 function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
   s, q = composite_split(T, n)
   c1 = first_kernel(T, s, σ, q, 1)
-  chains = [c1; [c1 isa Chain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
+  chains = [c1; [c1 isa AnyChain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
   b1 = Bluestein{T}(q, σ)
   blues = [b1; [Bluestein{T}(q, σ) for _ in 2:nt]]
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
@@ -472,10 +471,7 @@ function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Union{Chain{T},RChain{T}}, k
   parallel_items(outer, ntasks) do c, o
     local pw1 = cptr(p.tbuf[2c-1]); local pw2 = cptr(p.tbuf[2c])
     local base = o * step
-    for j in 0:n2-1
-      local off = base + j * n1 * CT
-      run!(py + off, px + off, pw1, pw2, k1, 1)
-    end
+    run_rows!(py + base, px + base, pw1, pw2, k1, n2, n1)
     # dimension 2 of the plane in lane blocks that stay in L2
     local B = lane_block(n1, n2, 1)
     for i0 in 0:B:n1-1
