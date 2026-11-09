@@ -471,10 +471,7 @@ function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Union{Chain{T},RChain{T}}, k
   parallel_items(outer, ntasks) do c, o
     local pw1 = cptr(p.tbuf[2c-1]); local pw2 = cptr(p.tbuf[2c])
     local base = o * step
-    for j in 0:n2-1
-      local off = base + j * n1 * CT
-      run!(py + off, px + off, pw1, pw2, k1, 1)
-    end
+    run_rows!(py + base, px + base, pw1, pw2, k1, n2, n1)
     # dimension 2 of the plane in lane blocks that stay in L2
     local B = lane_block(n1, n2, 1)
     for i0 in 0:B:n1-1

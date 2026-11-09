@@ -353,3 +353,46 @@ for T in (Float32, Float64)
     false
   end
 end
+
+# Rows of a plane: `count` single lines of the chain, row j at py + j·rowstride complex values.
+# A compiled chain takes all rows in one call: one dispatch per plane instead of one per row.
+@noinline function small_rows_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T},
+                                     count::Int, rowstride::Int, ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
+  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
+  bytes = rowstride * 2 * sizeof(T)
+  GC.@preserve P for j in 0:count-1
+    run!(py + j * bytes, px + j * bytes, pw1, pw2, c, 1)
+  end
+  nothing
+end
+
+for T in (Float32, Float64)
+  @eval function small_rows_run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::RChain{$T},
+                                 i::Int, count::Int, rowstride::Int)
+    $(small_tree(T, 1, length(SMALL_ENTRIES),
+                 (C, K) -> :(small_rows_chain!(py, px, pw1, pw2, P, count, rowstride, $C, Val($K))))
+    )
+    false
+  end
+end
+
+# Generic: one call of run! per row (any kernel), compiled chains through their dispatch.
+function run_rows!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, count::Int, rowstride::Int) where {T}
+  if P.n <= SMALL_N && SMALL_INDEX[P.n] > 0
+    i = SMALL_INDEX[P.n] + (P.σ == 1 ? 1 : 0)
+    small_rows_run!(py, px, pw1, pw2, P, i, count, rowstride) && return nothing
+  end
+  bytes = rowstride * 2 * sizeof(T)
+  for j in 0:count-1
+    run!(py + j * bytes, px + j * bytes, pw1, pw2, P, 1)
+  end
+  nothing
+end
+
+function run_rows!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Kernel{T}, count::Int, rowstride::Int) where {T}
+  bytes = rowstride * 2 * sizeof(T)
+  for j in 0:count-1
+    run!(py + j * bytes, px + j * bytes, pw1, pw2, P, 1)
+  end
+  nothing
+end
