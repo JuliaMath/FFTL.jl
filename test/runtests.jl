@@ -83,7 +83,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
                    2 * 37 * 41 * 43, 6 * 37^2 * 41],
                   [2 * 37, 29 * 37, 2 * 37 * 41, 6 * 1009])
       x = randn(Complex{T}, n)
-      @test FFTL.plan_fft(x).kernels[1] isa FFTL.Composite
+      @test FFTL.plan_fft(x; threads = 1).kernels[1] isa FFTL.Composite
       @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
       @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < 10tol(T)
     end
