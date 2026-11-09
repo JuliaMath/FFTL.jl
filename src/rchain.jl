@@ -155,9 +155,9 @@ function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, S:
     py == px || unsafe_copyto!(py, px, 2S)
     return nothing
   end
-  if S == 1 && P.n <= SMALL_N && SMALL_INDEX[P.n] > 0
+  if P.n <= SMALL_N && SMALL_INDEX[P.n] > 0
     i = SMALL_INDEX[P.n] + (P.σ == 1 ? 1 : 0)
-    small_run!(py, px, pw1, pw2, P, i) && return nothing
+    small_run!(py, px, pw1, pw2, P, i, S) && return nothing
   end
   S == 1 && return run_single!(py, px, pw1, pw2, P)
   ncs = ladder_ncomplex(T)
@@ -301,10 +301,10 @@ const SMALL_INDEX = let t = zeros(Int, SMALL_N)
   t
 end
 
-@noinline function small_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T},
+@noinline function small_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, S::Int,
                               ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
   c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
-  GC.@preserve P run!(py, px, pw1, pw2, c, 1)
+  GC.@preserve P run!(py, px, pw1, pw2, c, S)
 end
 
 @noinline function small_lanes_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T},
@@ -339,9 +339,9 @@ function small_tree(T, lo, hi, leaf)
 end
 
 for T in (Float32, Float64)
-  @eval function small_run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::RChain{$T}, i::Int)
+  @eval function small_run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::RChain{$T}, i::Int, S::Int)
     $(small_tree(T, 1, length(SMALL_ENTRIES),
-                 (C, K) -> :(small_chain!(py, px, pw1, pw2, P, $C, Val($K))))
+                 (C, K) -> :(small_chain!(py, px, pw1, pw2, P, S, $C, Val($K))))
     )
     false
   end
