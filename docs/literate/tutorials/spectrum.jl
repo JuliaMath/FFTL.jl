@@ -1,7 +1,7 @@
 # # Spectrum of a sampled signal
 #
-# The most common use of a Fourier transform: which frequencies are in a measured signal, and
-# how strong are they? Here a signal of 1 s sampled at 8192 Hz contains two tones and some noise.
+# The most common use of a Fourier transform is to answer the question: which frequencies are in a measured signal, and how strong are they?
+# Here a signal of 1 s sampled at 8192 Hz contains two tones and some noise.
 # The record is exactly one second long, so each frequency bin is 1 Hz wide and the tones fall
 # on bins without leakage.
 

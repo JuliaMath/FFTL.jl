@@ -14,7 +14,7 @@ Random.seed!(1);
 
 n = 8
 x = randn(ComplexF64, n);
-X_direct = [sum(x[j + 1] * cis(-2π * j * k / n) for j in 0:n-1) for k in 0:n-1]
+X_direct = [sum(x[j + 1] * exp(-2π * im * j * k / n) for j in 0:n-1) for k in 0:n-1]
 X = fft(x)
 norm(X - X_direct)
 

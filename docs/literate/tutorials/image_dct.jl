@@ -1,6 +1,6 @@
 # # Compressing an image with the DCT
 #
-# The JPEG idea in a few lines. A smooth image has most of its energy in few low-frequency
+# The discrete cosine transform (DCT) is the math behind JPEG's image compression. A smooth image has most of its energy in few low-frequency
 # cosine coefficients. The two-dimensional DCT-II moves the image into that basis; keeping only
 # the largest coefficients and transforming back gives a compressed image.
 #

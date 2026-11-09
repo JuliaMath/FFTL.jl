@@ -42,7 +42,7 @@ libfftl's own functions (`fftl.h`):
 | `fftl_last_error(buf, len)` | the message of the last failed call on this thread: every `NULL` plan, rejected executions and failed allocations leave one |
 | `fftl_version(buf, len)` | the library version as `"major.minor.patch"` |
 
-## What differs from FFTW
+## Differences from FFTW
 
 The list at the top of [`fftw3.h`](@ref "C header (fftw3.h)") is the complete one. In short:
 
@@ -69,7 +69,7 @@ The list at the top of [`fftw3.h`](@ref "C header (fftw3.h)") is the complete on
 - **Split plans** execute through `fftw_execute` or the split execute functions only, and
   interleaved plans through the interleaved ones.
 
-## What is missing
+## Not implemented
 
 | item | why |
 |:--|:--|
