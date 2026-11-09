@@ -837,7 +837,13 @@ end
 # along the one dimension d of `region` (pre hook in the first pass, post hook in the last);
 # dropped as a whole (plan.rhook = 0) when the workgroups of the first or last pass do not fit
 # the hooks (see pass_kernel).
-function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = 64, rhook = 0, rtab = nothing, xreal = false,
+# Largest lanes per workgroup for a pass: on CUDA, one-dimensional transforms of 2^13 to 2^18
+# values run best with 8 lanes (A6000 kernel times, F32 c2c: 8192 4.6 µs against 9.0 µs with 64,
+# 65536 6.0 against 8.0; 2^12 and 2^20 do not change or prefer 16–64).
+plan_gmax(backend, dims) =
+  nameof(typeof(backend)) === :CUDABackend && length(dims) == 1 && 2^13 <= dims[1] <= 2^18 ? 8 : 64
+
+function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radices = nothing, gmax = plan_gmax(backend, dims), rhook = 0, rtab = nothing, xreal = false,
                 lim = device_limits(backend, T),   # override: hardware limits (rule tuning)
                 pad = default_pad(dims, region, T, device_profile(backend), lim)) where {T,D}
   region = FFTL.normregion(region, D)
