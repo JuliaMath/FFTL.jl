@@ -252,6 +252,10 @@ function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{
     lane_copy!(py, px, Sy, Sx, B, 1)
     return nothing
   end
+  if P.n <= SMALL_N && SMALL_INDEX[P.n] > 0
+    i = SMALL_INDEX[P.n] + (P.σ == 1 ? 1 : 0)
+    small_lanes_run!(py, px, pw1, pw2, P, i, Sx, Sy, B) && return nothing
+  end
   ncs = ladder_ncomplex(T)
   # widest vector type whose complex count divides B, else the narrowest
   vi = length(ncs)
@@ -303,9 +307,16 @@ end
   GC.@preserve P run!(py, px, pw1, pw2, c, 1)
 end
 
+@noinline function small_lanes_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T},
+                                      Sx::Int, Sy::Int, B::Int, ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
+  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
+  GC.@preserve P run_lanes!(py, px, pw1, pw2, c, Sx, Sy, B)
+end
+
 # Binary tree of compares over the entry index (a flat chain of ~120 compares costs ~50 ns per
-# call). Each leaf checks the radix sequence of the RChain against the compiled one.
-function small_tree(T, lo, hi)
+# call). Each leaf checks the radix sequence of the RChain against the compiled one. `leaf` gives
+# the statement of a leaf for the chain type C with K stages.
+function small_tree(T, lo, hi, leaf)
   if lo == hi
     n, σ = SMALL_ENTRIES[lo]
     rs = Tuple(radices(n, 1; esize = sizeof(Complex{T})))
@@ -315,21 +326,30 @@ function small_tree(T, lo, hi)
       push!(same, :(P.rs[$j] == $r))
     end
     return :(if $(Expr(:&&, same...))
-               small_chain!(py, px, pw1, pw2, P, Chain{$T,$rs,$σ,$K}, Val($K))
+               $(leaf(:(Chain{$T,$rs,$σ,$K}), K))
                return true
              end)
   end
   mid = (lo + hi) ÷ 2
   :(if i <= $mid
-      $(small_tree(T, lo, mid))
+      $(small_tree(T, lo, mid, leaf))
     else
-      $(small_tree(T, mid + 1, hi))
+      $(small_tree(T, mid + 1, hi, leaf))
     end)
 end
 
 for T in (Float32, Float64)
   @eval function small_run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::RChain{$T}, i::Int)
-    $(small_tree(T, 1, length(SMALL_ENTRIES)))
+    $(small_tree(T, 1, length(SMALL_ENTRIES),
+                 (C, K) -> :(small_chain!(py, px, pw1, pw2, P, $C, Val($K))))
+    )
+    false
+  end
+  @eval function small_lanes_run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::RChain{$T},
+                                  i::Int, Sx::Int, Sy::Int, B::Int)
+    $(small_tree(T, 1, length(SMALL_ENTRIES),
+                 (C, K) -> :(small_lanes_chain!(py, px, pw1, pw2, P, Sx, Sy, B, $C, Val($K))))
+    )
     false
   end
 end
