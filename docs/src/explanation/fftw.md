@@ -64,15 +64,16 @@ setting (`MEASURE`, built with native CPU flags).
 
 ## References
 
-[^1] J. W. Cooley and J. W. Tukey, "An algorithm for the machine calculation of complex Fourier
-  series", *Mathematics of Computation* 19 (1965), 297–301.
-[^2] M. T. Heideman, D. H. Johnson and C. S. Burrus, "Gauss and the history of the fast Fourier
-  transform", *IEEE ASSP Magazine* 1(4) (1984), 14–21.
-[^3] M. Frigo and S. G. Johnson, "FFTW: an adaptive software architecture for the FFT",
-  *Proc. ICASSP* 1998, vol. 3, 1381–1384.
-[^4] M. Frigo, "A fast Fourier transform compiler", *Proc. ACM SIGPLAN PLDI* 1999, 169–180.
-[^5] M. Frigo and S. G. Johnson, "The design and implementation of FFTW3", *Proceedings of the
-  IEEE* 93(2) (2005), 216–231.
-[^6] S. G. Johnson and M. Frigo, "A modified split-radix FFT with fewer arithmetic operations",
-  *IEEE Transactions on Signal Processing* 55(1) (2007), 111–119.
-[^7] FFTW website and manual: [fftw.org](https://www.fftw.org).
+[^1]: J. W. Cooley and J. W. Tukey, "An algorithm for the machine calculation of complex Fourier series", *Mathematics of Computation* 19 (1965), 297–301.
+
+[^2]: M. T. Heideman, D. H. Johnson and C. S. Burrus, "Gauss and the history of the fast Fourier transform", *IEEE ASSP Magazine* 1(4) (1984), 14–21.
+
+[^3]: M. Frigo and S. G. Johnson, "FFTW: an adaptive software architecture for the FFT", *Proc. ICASSP* 1998, vol. 3, 1381–1384.
+
+[^4]: M. Frigo, "A fast Fourier transform compiler", *Proc. ACM SIGPLAN PLDI* 1999, 169–180.
+
+[^5]: M. Frigo and S. G. Johnson, "The design and implementation of FFTW3", *Proceedings of the IEEE* 93(2) (2005), 216–231.
+
+[^6]: S. G. Johnson and M. Frigo, "A modified split-radix FFT with fewer arithmetic operations", *IEEE Transactions on Signal Processing* 55(1) (2007), 111–119.
+
+[^7]: FFTW website and manual: [fftw.org](https://www.fftw.org).
