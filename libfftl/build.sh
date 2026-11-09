@@ -10,8 +10,6 @@
 # from the process's CPU affinity. Plans may request more threads than are baked; they run
 # correctly on fewer workers, which gives no speedup. See include/fftl.h, section Threading.
 set -e
-# juliac compiles ahead of time only: every radix codelet is compiled with the package.
-export FFTL_LAZY_RADICES=
 cd "$(dirname "$0")"
 julia --project=jc -e 'using Pkg; Pkg.instantiate()'
 julia --project=jc -e 'using Pkg; print("juliac ", Pkg.dependencies()[Base.UUID("acedd4c2-ced6-4a15-accc-2607eb759ba2")].version)'

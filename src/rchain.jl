@@ -36,14 +36,9 @@ end
 end
 
 # Radices whose codelets are compiled on first use, not with the package: their stage kernels
-# are large (about 85 % of the stored IR of the stage kernels for 17–31) and rarely needed. The
-# environment variable is read when FFTL is precompiled; changing it needs a new precompilation
-# (delete the compiled FFTL cache). The trimmed library (libfftl) sets it to empty, because
-# juliac cannot compile at run time.
-const LAZY_RADICES = let s = get(ENV, "FFTL_LAZY_RADICES", "17,19,23,29,31")
-  Tuple(parse.(Int, split(s, ','; keepempty = false)))
-end
-all(in(RADICES), LAZY_RADICES) || error("FFTL_LAZY_RADICES must list radices from RADICES")
+# are about 85 % of the stored IR of the stage kernels and rarely needed.
+const LAZY_RADICES = (17, 19, 23, 29, 31)
+all(in(RADICES), LAZY_RADICES) || error("LAZY_RADICES must be radices from RADICES")
 
 # Whether the factorisation of n has a prime factor whose codelet is compiled on first use.
 has_lazy_factor(n::Int) = any(in(LAZY_RADICES), keys(factorize(n)[1]))
