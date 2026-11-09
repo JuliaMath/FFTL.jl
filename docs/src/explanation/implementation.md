@@ -101,6 +101,21 @@ These measurements used eight interleaved rounds in separate warmed processes. T
 allocated 592 bytes; gathering adds no plan storage. This is evidence for these layouts on this
 processor, not a claim for every strided transform.
 
+### Real plans
+
+High-level real plans retain their dense offsets and refill separate input and output offset
+vectors for strided execution. Keeping the two sets separate allows a plan to alternate between
+dense arrays and views without corrupting its dense layout. The extra payload is
+`2 * number_of_lines * sizeof(Int)`, or 64 bytes for four lines on a 64-bit machine, plus vector
+metadata. The inverse spectrum scratch is allocated in its final shape during planning, so
+preserving the input during complex passes needs no execution-time reshape or extra element storage.
+
+On the same processor and Julia version, with one thread, a `Float64` forward `10240×4` column
+block took 43.39 µs and allocated zero bytes. The explicit dense-copy workaround at `289e9c6`
+took 59.85 µs and allocated 671,904 bytes; native real-view `mul!` is unavailable at that baseline.
+Eight interleaved rounds gave a 27.5% time reduction, against a maximum paired A/A difference of
+2.41%. The [real-data guide](@ref "Real data") shows the layout contract and an executable example.
+
 ## Element types
 
 The fast path is written for `Float32` and `Float64`. Other floating-point types use `GPlan`

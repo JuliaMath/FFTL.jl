@@ -191,11 +191,13 @@ mutable struct RFFTLPlan{T<:FFTLFloat,N,K,C,D,F} <: AbstractFFTs.Plan{T}
   S::Int
   offs_r::Vector{Int}
   offs_c::Vector{Int}
+  strided_r::Vector{Int}
+  strided_c::Vector{Int}
   nthreads::Int
   bufs::Vector{Vector{Complex{T}}}  # three per thread, plus line buffers for strided lines
   pinv::AbstractFFTs.Plan
   RFFTLPlan{T,N,K,C,D,F}(sz, region, line, four, cplan, S, offs_r, offs_c, nt, bufs) where {T,N,K,C,D,F} =
-    new{T,N,K,C,D,F}(sz, region, line, four, cplan, S, offs_r, offs_c, nt, bufs)
+    new{T,N,K,C,D,F}(sz, region, line, four, cplan, S, offs_r, offs_c, similar(offs_r), similar(offs_c), nt, bufs)
 end
 
 """
@@ -214,12 +216,14 @@ mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C,D,F} <: AbstractFFTs.Plan{Complex{T
   S::Int
   offs_r::Vector{Int}
   offs_c::Vector{Int}
+  strided_r::Vector{Int}
+  strided_c::Vector{Int}
   nthreads::Int
   bufs::Vector{Vector{Complex{T}}}
-  copy::Vector{Complex{T}}          # the input, transformed along the complex dimensions
+  copy::Array{Complex{T},N}        # the input, transformed along the complex dimensions
   pinv::AbstractFFTs.Plan
   BRFFTLPlan{T,N,K,C,D,F}(sz, d, region, line, four, cplan, S, offs_r, offs_c, nt, bufs, copy) where {T,N,K,C,D,F} =
-    new{T,N,K,C,D,F}(sz, d, region, line, four, cplan, S, offs_r, offs_c, nt, bufs, copy)
+    new{T,N,K,C,D,F}(sz, d, region, line, four, cplan, S, offs_r, offs_c, similar(offs_r), similar(offs_c), nt, bufs, copy)
 end
 
 sortregion(region, N) = Tuple(normregion(region, N))
@@ -259,7 +263,7 @@ function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Thr
   bufs = thread_buffers(T, d, 5nt)
   four = length(offs_r) == 1 && use_real_fourstep(T, d, nt) ? FourStep{T}(d ÷ 2, 1, nt) : nothing
   BRFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg),typeof(four)}(sz, d, reg, line, four, cplan, S, offs_r, offs_c, nt, bufs,
-                                              Vector{Complex{T}}(undef, prod(sz)))
+                                              Array{Complex{T},N}(undef, sz))
 end
 
 line_fourstep(p::Union{RFFTLPlan,BRFFTLPlan}) = p.four
@@ -314,6 +318,25 @@ function LinearAlgebra.mul!(y::Array{Complex{T},N}, p::RFFTLPlan{T,N}, x::Array{
   y
 end
 
+# Keep the dense offsets intact: a plan may alternate between dense and strided operands.
+function LinearAlgebra.mul!(y::StridedArray{Complex{T},N}, p::RFFTLPlan{T,N}, x::StridedArray{T,N}) where {T,N}
+  size(x) == p.sz || throw(DimensionMismatch("r2c plan for size $(p.sz) applied to size $(size(x))"))
+  size(y) == AbstractFFTs.output_size(p) || throw(DimensionMismatch("output of size $(size(y)), expected $(AbstractFFTs.output_size(p))"))
+  if dense_layout(x) && dense_layout(y)
+    GC.@preserve x y p begin
+      p.S == 1 ? r2c_contiguous!(pointer(y), pointer(x), p) : r2c_strided!(pointer(y), pointer(x), p)
+    end
+  else
+    d = p.region[1]
+    pass_offsets!(p.strided_r, p.sz, strides(x), d)
+    pass_offsets!(p.strided_c, size(y), strides(y), d)
+    GC.@preserve x y p r2c_lines!(pointer(y), pointer(x), p.strided_c, p.strided_r,
+                                 stride(y, d), stride(x, d), p.line, p.bufs, p.nthreads)
+  end
+  p.cplan === nothing || mul!(y, p.cplan, y)
+  y
+end
+
 # Separate functions for contiguous and strided lines: a shared closure body is 30–70 ns slower
 # on short lines.
 function r2c_contiguous!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T}
@@ -352,12 +375,50 @@ function LinearAlgebra.mul!(y::Array{T,N}, p::BRFFTLPlan{T,N}, x::Array{Complex{
   size(y) == AbstractFFTs.output_size(p) || throw(DimensionMismatch("output of size $(size(y)), expected $(AbstractFFTs.output_size(p))"))
   xc = x
   if p.cplan !== nothing
-    xc = reshape(p.copy, p.sz)
+    xc = p.copy
     mul!(xc, p.cplan, x)
   end
   GC.@preserve xc y p begin
     p.S == 1 ? c2r_contiguous!(pointer(y), pointer(xc), p) : c2r_strided!(pointer(y), pointer(xc), p)
   end
+  y
+end
+
+function LinearAlgebra.mul!(y::StridedArray{T,N}, p::BRFFTLPlan{T,N}, x::StridedArray{Complex{T},N}) where {T,N}
+  size(x) == p.sz || throw(DimensionMismatch("c2r plan for size $(p.sz) applied to size $(size(x))"))
+  size(y) == AbstractFFTs.output_size(p) || throw(DimensionMismatch("output of size $(size(y)), expected $(AbstractFFTs.output_size(p))"))
+  xc = x
+  if p.cplan !== nothing
+    xc = p.copy
+    mul!(xc, p.cplan, x)
+  end
+  if dense_layout(xc) && dense_layout(y)
+    GC.@preserve xc y p begin
+      p.S == 1 ? c2r_contiguous!(pointer(y), pointer(xc), p) : c2r_strided!(pointer(y), pointer(xc), p)
+    end
+  else
+    d = p.region[1]
+    pass_offsets!(p.strided_r, size(y), strides(y), d)
+    pass_offsets!(p.strided_c, p.sz, strides(xc), d)
+    GC.@preserve xc y p c2r_lines!(pointer(y), pointer(xc), p.strided_r, p.strided_c,
+                                  stride(y, d), stride(xc, d), p.line, p.bufs, p.nthreads)
+  end
+  y
+end
+
+# Preserve output identity through normalisation, as for complex strided plans.
+function LinearAlgebra.mul!(y::StridedArray{T,N},
+                            p::AbstractFFTs.ScaledPlan{<:Any,<:BRFFTLPlan{T,N}},
+                            x::StridedArray{Complex{T},N}) where {T,N}
+  mul!(y, p.p, x)
+  LinearAlgebra.lmul!(p.scale, y)
+  y
+end
+function LinearAlgebra.mul!(y::StridedArray{Complex{T},N},
+                            p::AbstractFFTs.ScaledPlan{<:Any,<:RFFTLPlan{T,N}},
+                            x::StridedArray{T,N}) where {T,N}
+  mul!(y, p.p, x)
+  LinearAlgebra.lmul!(p.scale, y)
   y
 end
 
@@ -396,6 +457,11 @@ r2c_strided!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T} =
   r2c_lines!(py, px, p.offs_c, p.offs_r, p.S, p.S, p.line, p.bufs, p.nthreads)
 c2r_strided!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T} =
   c2r_lines!(py, px, p.offs_r, p.offs_c, p.S, p.S, p.line, p.bufs, p.nthreads)
+
+Base.:*(p::RFFTLPlan{T,N}, x::StridedArray{T,N}) where {T,N} =
+  mul!(Array{Complex{T},N}(undef, AbstractFFTs.output_size(p)), p, x)
+Base.:*(p::BRFFTLPlan{T,N}, x::StridedArray{Complex{T},N}) where {T,N} =
+  mul!(Array{T,N}(undef, AbstractFFTs.output_size(p)), p, x)
 
 Base.:*(p::RFFTLPlan{T,N}, x::AbstractArray{<:Real,N}) where {T,N} =
   mul!(Array{Complex{T},N}(undef, AbstractFFTs.output_size(p)), p, convert(Array{T,N}, x))

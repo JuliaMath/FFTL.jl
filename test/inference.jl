@@ -87,6 +87,22 @@
       end
     end
   end
+  # High-level real plans and their inverses, with independent and changing layouts.
+  for (sz, region) in (((10240, 4), (1,)), ((3, 8, 2), (2, 3)), ((3, 37, 2), (2,)), ((3, 1, 2), (2,)))
+    d = first(region); n = sz[d]; osz = Base.setindex(sz, n ÷ 2 + 1, d)
+    reals = realpass_layouts(T, sz); spectra = realpass_layouts(Complex{T}, osz)
+    pf = FFTL.plan_rfft(reals[2], region; threads = 1)
+    pb = FFTL.plan_brfft(spectra[2], n, region; threads = 1)
+    pi = FFTL.plan_irfft(spectra[2], n, region; threads = 1)
+    for (p, forward) in ((pf, true), (pb, false), (pi, false), (inv(pf), false), (inv(pb), true))
+      inputs, outputs = forward ? (reals, spectra) : (spectra, reals)
+      for (a, b) in ((2, 2), (3, 4), (4, 5), (1, 1))
+        v, w = inputs[a], outputs[b]
+        @test (@inferred mul!(w, p, v)) === w
+        @test (@allocated mul!(w, p, v)) == 0
+      end
+    end
+  end
   # real transforms
   # Real passes reuse their offset storage even on the first call with new stride values.
   for (sz, d) in (((8,), 1), ((3, 9, 2), 2), ((2, 37, 1), 2), ((3, 1, 2), 2), ((10240, 4), 1))

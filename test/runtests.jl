@@ -315,6 +315,103 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     @test !any(k -> k isa FFTL.LinesMT, FFTL.plan_fft(x; threads = 3).kernels)
   end
 
+  @testset "real strided plans, $T" for T in (Float64, Float32)
+    for (sz, region) in (((1,), (1,)), ((8,), (1,)), ((9, 4), (1,)), ((3, 37, 2), (2,)),
+                         ((4, 6), (1, 2)), ((4, 5), (2, 1)), ((3, 8, 2), (2, 3)),
+                         ((8, 3, 4), (1, 3)), ((3, 1, 2), (2,)))
+      # Preserve the existing sorted region and choice of the halved dimension.
+      dims = sort(collect(region)); d = first(dims); n = sz[d]
+      osz = Base.setindex(sz, n ÷ 2 + 1, d)
+      x = randn(T, sz)
+      full = dftn(x, dims)
+      ref = Array(view(full, ntuple(j -> j == d ? (1:osz[j]) : Colon(), length(sz))...))
+      pf = FFTL.plan_rfft(x, region; threads = 1)
+      pb = FFTL.plan_brfft(Complex{T}.(ref), n, region; threads = 1)
+      pi = FFTL.plan_irfft(Complex{T}.(ref), n, region; threads = 1)
+      for (p, forward, expected) in ((pf, true, ref), (pb, false, prod(sz[j] for j in dims) .* x), (pi, false, x))
+        inputs = realpass_layouts(forward ? T : Complex{T}, forward ? sz : osz)
+        outputs = realpass_layouts(forward ? Complex{T} : T, forward ? osz : sz)
+        for v in inputs
+          v .= forward ? x : ref
+        end
+        for (a, b) in ((1, 2), (2, 1), (2, 3), (3, 4), (4, 5), (5, 2), (1, 1))
+          v, w = inputs[a], outputs[b]
+          before = copy(parent(v)); fill!(parent(w), 7)
+          mask = trues(size(parent(w))); view(mask, parentindices(w)...) .= false
+          @test mul!(w, p, v) === w
+          @test relerr(w, expected) < 10tol(T)
+          @test parent(v) == before
+          @test all(==(7), parent(w)[mask])
+        end
+        v = inputs[4]
+        @test relerr(p * v, expected) < 10tol(T)
+        @test relerr(inv(p) * (p * v), v) < 10tol(T)
+      end
+    end
+    x = realpass_layouts(T, (8, 3))[4]
+    X = realpass_layouts(Complex{T}, (5, 3))[4]
+    p = FFTL.plan_rfft(x, 1)
+    q = FFTL.plan_brfft(X, 8, 1)
+    @test_throws DimensionMismatch mul!(zeros(Complex{T}, 4, 3), p, x)
+    @test_throws DimensionMismatch mul!(X, p, zeros(T, 7, 3))
+    @test_throws DimensionMismatch mul!(zeros(T, 9, 3), q, X)
+    @test_throws DimensionMismatch mul!(x, q, zeros(Complex{T}, 4, 3))
+    @test_throws ArgumentError FFTL.plan_rfft(x, 0)
+    @test_throws ArgumentError FFTL.plan_rfft(x, ())
+    @test_throws ArgumentError FFTL.plan_brfft(X, 0, 1)
+    @test_throws DimensionMismatch FFTL.plan_brfft(X, 10, 1)
+    if Threads.nthreads() > 1
+      for (sz, region) in (((128, 512), (1,)), ((32, 64, 32), (1, 3)), ((65536,), (1,)))
+        d = first(region); n = sz[d]; osz = Base.setindex(sz, n ÷ 2 + 1, d)
+        x = randn(T, sz)
+        inputs = realpass_layouts(T, sz); spectra = realpass_layouts(Complex{T}, osz)
+        outputs = realpass_layouts(T, sz)
+        p = FFTL.plan_rfft(inputs[4], region; threads = 2)
+        q = FFTL.plan_irfft(spectra[5], n, region; threads = 2)
+        ref = FFTL.plan_rfft(x, region; threads = 1) * x
+        for (a, b) in ((4, 5), (2, 2), (1, 1))
+          v, w, y = inputs[a], spectra[b], outputs[a]; v .= x
+          @test relerr(mul!(w, p, v), ref) < 10tol(T)
+          @test v == x
+          w .= ref
+          @test relerr(mul!(y, q, w), x) < 10tol(T)
+          @test w == ref
+          for out in (w, y)
+            mask = trues(size(parent(out))); view(mask, parentindices(out)...) .= false
+            @test all(==(7), parent(out)[mask])
+          end
+        end
+      end
+      # The complex passes of real plans also select LinesMT, including inverse passes into
+      # the plan's dense scratch. Use independent dense references for the inverse inputs.
+      for (sz, region) in (((4, 1009, 32), (1, 2)), ((8, 65, 129), (1, 3)), ((65, 8, 129), (2, 3)))
+        d = first(region); n = sz[d]; osz = Base.setindex(sz, n ÷ 2 + 1, d)
+        x = randn(T, sz)
+        ref = FFTL.plan_rfft(x, region; threads = 1) * x
+        for nt in (2, 3)
+          pf = FFTL.plan_rfft(x, region; threads = nt)
+          pb = FFTL.plan_brfft(ref, n, region; threads = nt)
+          pi = FFTL.plan_irfft(ref, n, region; threads = nt)
+          for (p, forward, expected) in ((pf, true, ref), (pb, false, prod(sz[j] for j in region) .* x), (pi, false, x))
+            raw = p === pi ? p.p : p
+            @test any(k -> k isa FFTL.LinesMT, raw.cplan.kernels)
+            inputs = realpass_layouts(forward ? T : Complex{T}, forward ? sz : osz)
+            outputs = realpass_layouts(forward ? Complex{T} : T, forward ? osz : sz)
+            for (a, b) in ((2, 2), (4, 2), (4, 5), (3, 4), (5, 3), (1, 1))
+              v, w = inputs[a], outputs[b]; v .= forward ? x : ref
+              before = copy(parent(v)); fill!(parent(w), 7)
+              mask = trues(size(parent(w))); view(mask, parentindices(w)...) .= false
+              @test (@inferred mul!(w, p, v)) === w
+              @test relerr(w, expected) < 10tol(T)
+              @test parent(v) == before
+              @test all(==(7), parent(w)[mask])
+            end
+          end
+        end
+      end
+    end
+  end
+
   @testset "real passes, $T" for T in (Float64, Float32)
     # r2c along each dimension of a strided view, into a dense output and into a strided view of a
     # padded output (the RNFFT grid); the padding of the output is not written
