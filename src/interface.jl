@@ -114,20 +114,20 @@ check_size(p, x) = size(x) == p.sz ||
 
 # Dimensions one after the other; the tuple of kernels is peeled so that each call is static.
 # Dimensions 1 and 2 are fused per plane when a plane fits in cache (`run_planes!`).
-function apply_dims!(y::Array{Complex{T}}, x::Array{Complex{T}}, p::FFTLPlan{T}, ks::Tuple, ds::Tuple) where {T}
-  isempty(ks) && return y
+function apply_dims!(y::StridedArray{Complex{T}}, x::StridedArray{Complex{T}}, p::FFTLPlan{T}, ks::Tuple, ds::Tuple) where {T}
+  isempty(ks) && return nothing
   if length(ks) >= 2 && ds[1] == 1 && ds[2] == 2 && ks[1] isa AnyChain && ks[2] isa AnyChain
     n1, n2 = p.sz[1], p.sz[2]
     outer = dim_extent(p.sz, 2)[2]
     if fuse_planes(n1, n2, outer, p.nthreads)
-      GC.@preserve x y p run_planes!(cptr(y), cptr(x), p, ks[1], ks[2], n1, n2, outer)
+      GC.@preserve x y p run_planes!(Ptr{T}(pointer(y)), Ptr{T}(pointer(x)), p, ks[1], ks[2], n1, n2, outer)
       return apply_dims!(y, y, p, Base.tail(Base.tail(ks)), Base.tail(Base.tail(ds)))
     end
   end
   k, d = first(ks), first(ds)
   S, outer = dim_extent(p.sz, d)
   n = p.sz[d]
-  GC.@preserve x y p run_dim!(cptr(y), cptr(x), p, k, S, n, outer)
+  GC.@preserve x y p run_dim!(Ptr{T}(pointer(y)), Ptr{T}(pointer(x)), p, k, S, n, outer)
   apply_dims!(y, y, p, Base.tail(ks), Base.tail(ds))
 end
 
@@ -135,12 +135,123 @@ function LinearAlgebra.mul!(y::Array{Complex{T},N}, p::FFTLPlan{T,N}, x::Array{C
   check_size(p, x); check_size(p, y)
   isempty(p.region) && return copyto!(y, x)
   apply_dims!(y, x, p, p.kernels, p.region)
+  y
+end
+
+# Contiguous views can use the same fused and threaded passes as dense arrays.
+function dense_layout(x::StridedArray)
+  s = 1
+  for d in 1:ndims(x)
+    size(x, d) == 1 || stride(x, d) == s || return false
+    s *= size(x, d)
+  end
+  true
+end
+
+function LinearAlgebra.mul!(y::StridedArray{Complex{T},N}, p::FFTLPlan{T,N}, x::StridedArray{Complex{T},N}) where {T,N}
+  check_size(p, x); check_size(p, y)
+  isempty(p.region) && return copyto!(y, x)
+  if dense_layout(x) && dense_layout(y)
+    apply_dims!(y, x, p, p.kernels, p.region)
+  else
+    apply_strided_dims!(y, x, p, p.kernels, p.region)
+  end
+  y
+end
+
+# Keep the output identity visible to inference through normalisation as well (Julia 1.10).
+function LinearAlgebra.mul!(y::StridedArray{Complex{T},N},
+                            p::AbstractFFTs.ScaledPlan{<:Any,<:FFTLPlan{T,N}},
+                            x::StridedArray{Complex{T},N}) where {T,N}
+  mul!(y, p.p, x)
+  LinearAlgebra.lmul!(p.scale, y)
+  y
+end
+
+function apply_strided_dims!(y, x, p::FFTLPlan{T}, ks::Tuple, ds::Tuple) where {T}
+  isempty(ks) && return nothing
+  GC.@preserve x y p run_strided_dim!(Ptr{T}(pointer(y)), Ptr{T}(pointer(x)), p,
+                                     first(ks), first(ds), strides(y), strides(x))
+  apply_strided_dims!(y, y, p, Base.tail(ks), Base.tail(ds))
+end
+
+# As in PassPlan, merge contiguous leading dimensions into lanes, but require contiguity in
+# both operands. Remaining dimensions are batch groups; their offsets use independent strides.
+function strided_lanes(sz, sx, sy, d)
+  lanes = 1; m = 0
+  for j in 1:d-1
+    (sz[j] == 1 || sx[j] == sy[j] == lanes) || break
+    lanes *= sz[j]; m = j
+  end
+  lanes, m
+end
+
+function run_strided_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, d::Int,
+                          sy::NTuple{N,Int}, sx::NTuple{N,Int}) where {T,N}
+  n = p.sz[d]
+  lanes, m = strided_lanes(p.sz, sx, sy, d)
+  groups = CartesianIndices(ntuple(j -> j <= m || j == d ? 1 : p.sz[j], N))
+  # LinesMT owns a kernel and buffers per task; a composite kernel holds at most k.B lanes.
+  nt = k isa LinesMT ? min(p.nthreads, length(k.kernels)) :
+       k isa AnyChain && threaded(lanes, n, length(groups), p.nthreads) &&
+       length(p.tbuf[1]) >= n ? p.nthreads : 1
+  nw = nt == 1 ? length(p.work1) : length(p.tbuf[1])
+  B = k isa LinesMT ? min(lanes, k.B) : min(lanes, lane_block(lanes, n, nt), nw ÷ n)
+  nb = cld(lanes, B); CT = 2sizeof(T)
+  parallel_items(length(groups) * nb, nt) do c, it
+    local g, b; g, b = divrem(it, nb)
+    local I = groups[g + 1]; local i0 = b * B
+    local ox = i0; local oy = i0
+    for j in 1:N
+      ox += (I[j] - 1) * sx[j]
+      oy += (I[j] - 1) * sy[j]
+    end
+    local line = k isa LinesMT ? k.kernels[c] : k
+    local pw1 = cptr(k isa LinesMT ? k.tbuf[2c-1] : nt == 1 ? p.work1 : p.tbuf[2c-1])
+    local pw2 = cptr(k isa LinesMT ? k.tbuf[2c] : nt == 1 ? p.work2 : p.tbuf[2c])
+    if k isa LinesMT && line isa Composite && B == 1 && sx[d] != 1 && length(p.tbuf[1]) >= n
+      # Packing one line lets the composite's first stage run in blocks instead of one tiny
+      # transform per leftover element. LinesMT uses its own scratch, leaving p.tbuf available.
+      local w = p.tbuf[2c-1]; local cx = Ptr{Complex{T}}(px + ox * CT)
+      @inbounds for j in 1:n
+        w[j] = unsafe_load(cx, 1 + (j - 1) * sx[d])
+      end
+      run_lanes!(py + oy * CT, cptr(w), pw1, pw2, line, 1, sy[d], 1)
+    elseif B == 1 && sx[d] == sy[d] == 1
+      run!(py + oy * CT, px + ox * CT, pw1, pw2, line, 1)
+    else
+      run_lanes!(py + oy * CT, px + ox * CT, pw1, pw2, line, sx[d], sy[d], min(B, lanes - i0))
+    end
+  end
+  nothing
+end
+
+# These kernels represent a single long line and own their transform buffers. Reuse the plan's
+# serial workspace to gather/scatter only when that line is not contiguous.
+function run_strided_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Union{FourStep{T},BluesteinMT{T},CompositeMT{T}},
+                          d::Int, sy::NTuple{N,Int}, sx::NTuple{N,Int}) where {T,N}
+  n = p.sz[d]
+  if sx[d] == sy[d] == 1
+    return run_dim!(py, px, p, k, 1, n, 1)
+  end
+  cx = Ptr{Complex{T}}(px); cy = Ptr{Complex{T}}(py)
+  @inbounds for j in 1:n
+    p.work1[j] = unsafe_load(cx, 1 + (j - 1) * sx[d])
+  end
+  run_dim!(cptr(p.work2), cptr(p.work1), p, k, 1, n, 1)
+  @inbounds for j in 1:n
+    unsafe_store!(cy, p.work2[j], 1 + (j - 1) * sy[d])
+  end
+  nothing
 end
 
 function LinearAlgebra.mul!(y::AbstractArray{Complex{T},N}, p::FFTLPlan{T,N}, x::AbstractArray{Complex{T},N}) where {T,N}
   check_size(p, x); check_size(p, y)
   copyto!(y, mul!(Array{Complex{T},N}(undef, p.sz), p, Array{Complex{T},N}(x)))
 end
+
+Base.:*(p::FFTLPlan{T,N}, x::StridedArray{Complex{T},N}) where {T,N} =
+  mul!(Array{Complex{T},N}(undef, p.sz), p, x)
 
 Base.:*(p::FFTLPlan{T,N}, x::AbstractArray{<:Number,N}) where {T,N} =
   mul!(Array{Complex{T},N}(undef, p.sz), p, convert(Array{Complex{T},N}, x))
@@ -229,7 +340,7 @@ Base.show(io::IO, q::InplacePlan) = (print(io, "in-place "); show(io, q.p))
 
 # The complex CPU plans may run with y === x: every pass loads a line before it stores it.
 # Other plans go through a temporary.
-inplace!(p::Union{FFTLPlan{T},AbstractFFTs.ScaledPlan{<:Any,<:FFTLPlan{T}}}, x::Array{Complex{T}}) where {T} = mul!(x, p, x)
+inplace!(p::Union{FFTLPlan{T},AbstractFFTs.ScaledPlan{<:Any,<:FFTLPlan{T}}}, x::StridedArray{Complex{T}}) where {T} = mul!(x, p, x)
 inplace!(p::AbstractFFTs.Plan, x::AbstractArray) = copyto!(x, p * x)
 
 """

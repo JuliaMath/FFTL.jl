@@ -78,6 +78,29 @@ measurements the rule was derived from, and the constants in it are not tuned at
 change to the rule needs a measurement on the machines it is meant for: the rule that is best on
 one architecture can be slower on another.
 
+## Strided layouts
+
+Complex plans fix the shape, but read the input and output strides independently on every call.
+Contiguous views use the dense executors, including plane fusion. Other strided layouts merge
+leading dimensions into lanes only while both operands are contiguous there; the remaining
+dimensions supply independent batch offsets. This avoids full-array copies without adding plan
+storage. Arrays outside `StridedArray` retain the copying fallback.
+
+`LinesMT` owns a child kernel and scratch buffers per task. The strided executor uses that task's
+buffers and never passes more lanes than the child was built to hold. For a single strided
+`Composite` line, it gathers the input into the plan's separate task scratch when that scratch
+is large enough. A packed input lets the first stage process blocks instead of one small
+transform per leftover element. The output is written directly with its own stride; insufficient
+scratch keeps the direct strided path.
+
+On an Apple M5 Max, macOS arm64, Julia 1.13.3 and two threads, `Float32` forward transforms of
+`65×2018` views along dimension 2, with input step 2 and output step 3, took a median 469.80 µs
+against 622.13 µs for the copying fallback at `289e9c6`. Forward, backward and normalized inverse
+times were 24–25% lower; the maximum paired A/A differences were 1.96–3.77% across those cases.
+These measurements used eight interleaved rounds in separate warmed processes. Threaded calls
+allocated 592 bytes; gathering adds no plan storage. This is evidence for these layouts on this
+processor, not a claim for every strided transform.
+
 ## Element types
 
 The fast path is written for `Float32` and `Float64`. Other floating-point types use `GPlan`

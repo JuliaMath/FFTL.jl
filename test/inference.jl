@@ -72,6 +72,21 @@
     @test (@allocated FFTL.apply!(pne, u)) == 0 broken = VERSION < v"1.11"
     @test_broken @inferred FFTL.plan_pass(v, 2)
   end
+  # Complex views: independent layouts, multidimensional passes and the large column block.
+  for (sz, region) in (((10240, 4), (1,)), ((3, 8, 2), (1, 3)), ((4, 37, 2), (2,)), ((3, 1, 2), (2,)))
+    inputs = realpass_layouts(Complex{T}, sz)
+    outputs = realpass_layouts(Complex{T}, sz)
+    for mk in (FFTL.plan_fft, FFTL.plan_bfft, FFTL.plan_ifft)
+      p = mk(inputs[2], region; threads = 1)
+      for (a, b) in ((2, 2), (3, 4), (4, 5))
+        v, w = inputs[a], outputs[b]
+        @test (@inferred mul!(w, p, v)) === w
+        @test (@allocated mul!(w, p, v)) == 0
+        @test (@inferred mul!(v, p, v)) === v
+        @test (@allocated mul!(v, p, v)) == 0
+      end
+    end
+  end
   # real transforms
   # Real passes reuse their offset storage even on the first call with new stride values.
   for (sz, d) in (((8,), 1), ((3, 9, 2), 2), ((2, 37, 1), 2), ((3, 1, 2), 2), ((10240, 4), 1))
