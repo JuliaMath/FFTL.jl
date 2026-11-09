@@ -114,7 +114,7 @@ check_size(p, x) = size(x) == p.sz ||
 # Dimensions 1 and 2 are fused per plane when a plane fits in cache (`run_planes!`).
 function apply_dims!(y::Array{Complex{T}}, x::Array{Complex{T}}, p::FFTLPlan{T}, ks::Tuple, ds::Tuple) where {T}
   isempty(ks) && return y
-  if length(ks) >= 2 && ds[1] == 1 && ds[2] == 2 && ks[1] isa RChain && ks[2] isa RChain
+  if length(ks) >= 2 && ds[1] == 1 && ds[2] == 2 && ks[1] isa AnyChain && ks[2] isa AnyChain
     n1, n2 = p.sz[1], p.sz[2]
     outer = dim_extent(p.sz, 2)[2]
     if fuse_planes(n1, n2, outer, p.nthreads)

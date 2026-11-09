@@ -96,6 +96,9 @@ struct RChain{T} <: Kernel{T}
   single::Vector{StageCall}           # the stage calls of a single line
 end
 
+# Either kind of Stockham chain: the compiled Chain (short smooth lengths) or the run-time RChain.
+const AnyChain = Union{Chain,RChain}
+
 RChain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
   cached(() -> build_rchain(T, n, σ, rs), CacheKey(:rchain, T, n, σ, collect(Int, rs)))::RChain{T}
 
