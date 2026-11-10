@@ -13,6 +13,8 @@ most useful where one developer with two machines cannot reach:
 Open an issue with the case (size, type, transform, machine, the numbers), or a pull request.
 Every change is checked against the tests, and every claim about speed against a measurement.
 This page shows how to set up, what to run, and what a change must come with.
+The reasons behind the design are on the [Design decisions](@ref "Design decisions") page, and `AGENTS.md` in
+the repository lists the rules for contributors, human or not.
 
 ## Set up
 
@@ -70,6 +72,7 @@ The [Performance](@ref "Performance") page describes the protocol.
 | `src/kernels.jl`, `src/complexvec.jl` | codelets on SIMD vectors, the complex arithmetic |
 | `src/factor.jl` | the radix sequence chosen for a length |
 | `src/plan.jl`, `src/rchain.jl` | Stockham chains and Bluestein's algorithm; `rchain.jl` is the form that libfftl compiles |
+| `src/kernel_methods.jl` | the stage kernels and short chains of the fixed codelet set as plain methods (see [Package size and load time](@ref "Package size and load time")) |
 | `src/threads.jl` | threads, lane blocks, the four-step algorithm |
 | `src/interface.jl` | the complex plans and the public functions |
 | `src/real.jl` | real transforms (r2c, c2r) |

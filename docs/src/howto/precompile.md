@@ -27,7 +27,8 @@ precompilation.
 
 `FFTL.PRECOMPILE_WORKLOAD` reports the value the package was built with.
 
-The trade-off is size against latency. On an Apple M1 Max, the lean workload took about 32 s to
-precompile and makes the package image about 96 MB. The first plan and transform of a covered size
+The trade-off is size against latency. On an Apple M1 Max, FFTL takes about 25 s to precompile with the
+lean workload and the package image is about 32 MB (12 MB with `"none"`); see
+[Package size and load time](@ref "Package size and load time"). The first plan and transform of a covered size
 then take milliseconds instead of seconds. Choose `"none"` when the image size matters more than
 the first call, for example in continuous integration.

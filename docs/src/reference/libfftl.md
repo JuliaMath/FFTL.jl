@@ -92,7 +92,7 @@ The list at the top of [`fftw3.h`](@ref "C header (fftw3.h)") is the complete on
 
 ## Build and size
 
-On macOS (arm64), the build output in `libfftl/build/lib` is 25 MB: the library (15 MB) and the
+On macOS (arm64), the build output in `libfftl/build/lib` is 32 MB: the library (23 MB) and the
 Julia runtime next to it (10 MB). No Julia installation is needed to run a program that links it. The build
 needs Julia 1.12 or newer with `juliac`. See [C library (libfftl)](@ref "C library (libfftl)")
 for the build variables.

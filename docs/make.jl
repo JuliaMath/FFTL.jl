@@ -71,6 +71,8 @@ makedocs(;
       "FFTW and FFTL" => "explanation/fftw.md",
       "Algorithms" => "explanation/algorithms.md",
       "Implementation" => "explanation/implementation.md",
+      "Design decisions" => "explanation/design-decisions.md",
+      "Package size and load time" => "explanation/image-size.md",
       "Performance" => "explanation/performance.md",
     ],
     "Reference" => [

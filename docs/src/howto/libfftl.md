@@ -27,7 +27,7 @@ cd libfftl
 ./build.sh
 ```
 
-The result is in `libfftl/build/lib`: the library (15 MB on macOS arm64) and the Julia runtime
+The result is in `libfftl/build/lib`: the library (23 MB on macOS arm64) and the Julia runtime
 next to it (10 MB: `libjulia` and the few libraries it loads, without LLVM and without BLAS).
 Next to `libfftl` the script creates the FFTW library names as links to it: `libfftw3`,
 `libfftw3f`, `libfftw3_threads`, `libfftw3f_threads`, `libfftw3_omp` and `libfftw3f_omp`

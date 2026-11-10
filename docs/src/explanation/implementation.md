@@ -60,16 +60,23 @@ container for the buffers, not a stateless function.
 
 There are two representations of a Stockham chain:
 
-- `Chain` (`src/plan.jl`) has the radix sequence in its type. It is the fastest form, and what
-  the normal API uses.
-- `RChain` (`src/rchain.jl`) has the radix sequence as data, and calls codelets from a fixed set
-  of radices and signs in a plain loop.
+- `Chain` (`src/plan.jl`) has the radix sequence in its type and the stage sequence is unrolled at compile
+  time. It is the fastest form for short lines: a call carries no dispatch.
+- `RChain` (`src/rchain.jl`) has the radix sequence as data and calls codelets from a fixed set (radix ×
+  sign × vector type × element type) in a plain loop, selected by an integer index.
 
-The second form exists for the C library. `juliac --trim` removes everything it cannot resolve
-at build time, and a chain whose type is only known at run time cannot be compiled that way.
-`RChain` keeps every call resolvable. The price is a little run-time dispatch per stage, which
-is why the Julia API uses `Chain`. The [libfftl how-to](@ref "C library (libfftl)") describes
-what the library is built from.
+The plan chooses when it is built: `Chain` for smooth lengths up to `SMALL_N` = 128, `RChain` for every
+other smooth length. A new radix sequence of `Chain` is a new type, so the first plan of such a size is
+compilation; `RChain` has no per-size compilation, and its codelet set is finite, so it can be
+precompiled completely. On x86 the run-time choice of the codelet costs 9–20 ns per call, which is why
+the short lengths keep the compiled form.
+
+`RChain` is also what the C library is built from. `juliac --trim` removes everything it cannot resolve
+at build time, and a chain whose type is only known at run time cannot be compiled that way. The
+[libfftl how-to](@ref "C library (libfftl)") describes what the library is built from, and
+[Design decisions](@ref "Design decisions") gives the measurements behind the split. The stage kernels of
+the fixed codelet set are plain methods, not `@generated` ones, to keep the package image small; see
+[Package size and load time](@ref "Package size and load time").
 
 ## Lengths and the factorisation rule
 
