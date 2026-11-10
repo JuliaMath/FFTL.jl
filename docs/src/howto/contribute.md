@@ -33,9 +33,9 @@ describe what the code does now, not how it got there.
 using Pkg; Pkg.test("FFTL")
 ```
 
-This runs a quick selection that covers every feature. On a 256-thread AMD EPYC 7702 with two Julia
-threads it takes about 40 minutes, so run it in the background or on the CI runner. Two environment
-variables change it:
+This runs a quick selection that covers every feature. With two Julia threads it takes about 5 minutes
+on a 256-thread AMD EPYC 7702, and it is the check to run before every push. Two environment variables
+change it:
 
 | variable | effect |
 |:--|:--|

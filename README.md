@@ -156,7 +156,7 @@ describes the setup and what a change must come with.
 
 ## Tests
 
-`] test FFTL` runs a quick selection that covers every feature (about 1.5 min). Set
+`] test FFTL` runs a quick selection that covers every feature (about 5 min with two threads). Set
 `FFTL_TEST_FULL=true` for the full lists and `FFTL_TEST_VERBOSE=true` for the time of every test
 set. CI runs the quick tests on Linux and macOS for pushes to `main` and pull requests, the full
 lists and the oldest supported Julia (1.10) once a week, and builds and tests the C library.
