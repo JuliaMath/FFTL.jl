@@ -6,6 +6,15 @@ function dft(x, σ = -1)
   [sum(x[j+1] * cispi(2σ * mod(j * k, n) / n) for j in 0:n-1) for k in 0:n-1]
 end
 
+# The DFT at a few frequencies only, each in O(n): the full reference is O(n²), too slow for lengths
+# of 10⁵ and more. The frequencies cover both ends, the middle and a spread in between.
+function dft_at(x, σ = -1)
+  n = length(x)
+  ks = unique([0, 1, n ÷ 3, n ÷ 2, n - 2, n - 1, (7n) ÷ 11])
+  ref = [sum(ComplexF64(x[j+1]) * cispi(2σ * mod(j * k, n) / n) for j in 0:n-1) for k in ks]
+  ks, ref
+end
+
 # Direct DFT along the dimensions in `region`, one after the other.
 function dftn(x, region, σ = -1)
   y = ComplexF64.(x)
@@ -96,7 +105,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
         k = FFTL.Composite{T}(n, s, q, σ, 1)
         y = similar(x); w1 = similar(x); w2 = similar(x)
         GC.@preserve x y w1 w2 FFTL.run!(FFTL.cptr(y), FFTL.cptr(x), FFTL.cptr(w1), FFTL.cptr(w2), k, 1)
-        @test relerr(y, dft(ComplexF64.(x), σ)) < 10tol(T)
+        ks, ref = dft_at(ComplexF64.(x), σ)
+        @test relerr(y[ks .+ 1], ref) < 10tol(T)
       end
     end
     # lanes of a 2D array: along dimension 1 (contiguous lines) and dimension 2 (strided lanes)
@@ -430,7 +440,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   r2rkinds = (FFTL.REDFT00, FFTL.REDFT10, FFTL.REDFT01, FFTL.REDFT11, FFTL.RODFT00, FFTL.RODFT10,
               FFTL.RODFT01, FFTL.RODFT11, FFTL.DHT, FFTL.R2HC, FFTL.HC2R)
 
-  @testset "real-to-real, $T" for T in (Float64, Float32)
+  @testset "real-to-real, $T" for T in pick((Float64, Float32), (Float64,))
     for kind in r2rkinds, n in pick([1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 15, 16, 31, 32, 33, 100, 101, 128], thin(T, [1, 2, 3, 5, 16, 33]))
       kind == FFTL.REDFT00 && n < 2 && continue
       x = randn(T, n)

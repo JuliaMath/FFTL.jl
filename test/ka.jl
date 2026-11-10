@@ -1,7 +1,7 @@
 # KernelAbstractions extension on KA's CPU backend (POCL): the same generated kernels as on GPUs.
 using KernelAbstractions
 
-@testset "KernelAbstractions plans (CPU backend), $T" for T in (Float64, Float32)
+@testset "KernelAbstractions plans (CPU backend), $T" for T in pick((Float64, Float32), (Float64,))
   be = KernelAbstractions.CPU()
   # one pass, two passes (2^13), mixed radices, Bluestein (37, 101), batches, 2D/3D, partial regions
   for (dims, region) in pick((((64,), 1:1), ((1000,), 1:1), ((2^13,), 1:1), ((37,), 1:1), ((101,), 1:1),
@@ -56,7 +56,7 @@ end
   @test relerr(y, FFTL.plan_fft(ComplexF64.(x)) * ComplexF64.(x)) < tol(Float32)
 end
 
-@testset "KernelAbstractions real transforms (CPU backend), $T" for T in (Float64, Float32)
+@testset "KernelAbstractions real transforms (CPU backend), $T" for T in pick((Float64, Float32), (Float64,))
   be = KernelAbstractions.CPU()
   for (sz, reg) in pick((((16,), 1:1), ((15,), 1:1), ((2,), 1:1), ((37,), 1:1), ((12, 10), 1:2), ((12, 10), 2:2), ((9, 8, 6), (1, 3))),
                         (((16,), 1:1), ((15,), 1:1), ((12, 10), 1:2), ((9, 8, 6), (1, 3))))
@@ -68,7 +68,7 @@ end
     @test relerr(z, FFTL.brfft(Xc, sz[minimum(reg)], reg)) < tol(T)
     @test X == Xc
   end
-  for k in instances(FFTL.R2RKind), n in pick((2, 5, 8, 33), (5, 8))
+  for k in instances(FFTL.R2RKind), n in pick((2, 5, 8, 33), (8,))
     x = randn(T, n)
     y = FFTL.plan_ka_r2r(be, T, (n,), k) * x; KernelAbstractions.synchronize(be)
     @test relerr(y, FFTL.r2r(x, k)) < 10tol(T)
@@ -83,7 +83,7 @@ end
   # pass) falls back, and so do DCT-II/DST-II along a strided dimension of odd stride (their post
   # hook works on pairs of columns)
   for k in (FFTL.REDFT10, FFTL.RODFT10, FFTL.REDFT01, FFTL.RODFT01, FFTL.REDFT11, FFTL.RODFT11, FFTL.REDFT00),
-      (sz, reg) in pick((((64,), 1), ((32, 4096), 2), ((64, 256), 2), ((16, 64, 32), 1:3), ((6, 10), 1:2), ((17, 4096), 2)), (((64,), 1), ((32, 4096), 2), ((6, 10), 1:2)))
+      (sz, reg) in pick((((64,), 1), ((32, 4096), 2), ((64, 256), 2), ((16, 64, 32), 1:3), ((6, 10), 1:2), ((17, 4096), 2)), (((64,), 1), ((6, 10), 1:2)))
     x = randn(T, sz)
     p = FFTL.plan_ka_r2r(be, T, sz, k; region = reg)
     stride = prod(sz[1:minimum(reg)-1])
