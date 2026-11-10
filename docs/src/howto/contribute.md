@@ -33,7 +33,8 @@ describe what the code does now, not how it got there.
 using Pkg; Pkg.test("FFTL")
 ```
 
-This runs a quick selection that covers every feature, in about 1.5 minutes. Two environment
+This runs a quick selection that covers every feature. On a 256-thread AMD EPYC 7702 with two Julia
+threads it takes about 40 minutes, so run it in the background or on the CI runner. Two environment
 variables change it:
 
 | variable | effect |
