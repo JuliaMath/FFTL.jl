@@ -83,7 +83,7 @@ roundtrip(p, x) ≈ x
 - Number types beyond `Float32` and `Float64`, computed in their own precision
   ([Number types](@ref "Number types")).
 - GPU arrays with the same functions ([GPU](gpu.md)).
-- Passes over one dimension of a strided array, with pruning
+- Passes over one dimension of a strided array
   ([Transforms along dimensions](@ref "Passes: one dimension of a strided array")).
 - A C library compiled from the Julia code, with FFTW3's C and Fortran interfaces
   ([libfftl](@ref "C library (libfftl)")).

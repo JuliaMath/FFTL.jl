@@ -161,20 +161,6 @@ function first_twiddles(::Type{T}, W::Vector{ComplexF64}, r::Int) where {T}
   t
 end
 
-"""
-    Pruning{FM,LM}
-
-Pruned first and last stage of a chain on lines with zero inputs or unneeded outputs: the first
-stage runs segment i over p ∈ `first[i]` with zero-input mask FM[i], the last stage segment i over
-q ∈ `last[i]` (q0 in lane blocks) with needed-output mask LM[i]. The masks are type parameters so
-that each segment calls its own generated codelet; an empty tuple means no pruning there.
-"""
-struct Pruning{FM,LM}
-  first::Vector{UnitRange{Int}}
-  last::Vector{UnitRange{Int}}
-end
-const NOPRUNE = Pruning{(),()}(UnitRange{Int}[], UnitRange{Int}[])
-
 # Stage calls of a chain from `src` through `dsts` (one destination per stage). `base` is a
 # number of complex values known to divide S (1 if nothing is known); stage i has stride
 # S·(R_1⋯R_(i-1)) and takes the widest vector type whose complex count divides base·R_1⋯R_(i-1).
@@ -182,37 +168,36 @@ const NOPRUNE = Pruning{(),()}(UnitRange{Int}[], UnitRange{Int}[])
 # Stage calls with the q (or butterfly) remainder known at generation time: divisible stages
 # take the plain kernels (the same calls as before the tail batching), single lines with a
 # scalar remainder get the vectorised range plus the scalar tail emitted directly.
-# rem === nothing (a runtime stride, e.g. an odd batch size, or pruned ranges) takes the
+# rem === nothing (a runtime stride, e.g. an odd batch size) takes the
 # splitting wrappers, which divide at run time.
 function mid_call(dst, src, tw, r, σ, V, V1, rem)
   rem === nothing && return :(stage_split!($dst, $src, $tw, m, s, Val($r), Val($σ), $V))
   rem == 0 && return :(stage!($dst, $src, $tw, m, s, Val($r), Val($σ), $V))
   quote
-    stage_range!($dst, $src, $tw, m, s, 0, s - $rem, 0, m, Val($r), Val($σ), $V, Val(0))
-    stage_range!($dst, $src, $tw, m, s, s - $rem, s, 0, m, Val($r), Val($σ), $V1, Val(0))
+    stage_range!($dst, $src, $tw, m, s, 0, s - $rem, 0, m, Val($r), Val($σ), $V)
+    stage_range!($dst, $src, $tw, m, s, s - $rem, s, 0, m, Val($r), Val($σ), $V1)
   end
 end
 
 function last_call(dst, src, r, σ, V, V1, rem)
-  need = (1 << r) - 1
   rem === nothing && return :(stage_last_split!($dst, $src, s, Val($r), Val($σ), $V))
   rem == 0 && return :(stage_last!($dst, $src, s, Val($r), Val($σ), $V))
   quote
-    stage_last!($dst, $src, s, 0, s - $rem, Val($r), Val($σ), $V, Val($need))
-    stage_last!($dst, $src, s, s - $rem, s, Val($r), Val($σ), $V1, Val($need))
+    stage_last!($dst, $src, s, 0, s - $rem, Val($r), Val($σ), $V)
+    stage_last!($dst, $src, s, s - $rem, s, Val($r), Val($σ), $V1)
   end
 end
 
 function group_call(dst, src, tw1, r, σ, GV, V1, rem)
   rem === nothing && return :(stage_first_group!($dst, $src, $tw1, m, Val($r), Val($σ), $GV))
-  rem == 0 && return :(stage_first_group_range!($dst, $src, $tw1, m, 0, m, Val($r), Val($σ), $GV, Val(0)))
+  rem == 0 && return :(stage_first_group_range!($dst, $src, $tw1, m, 0, m, Val($r), Val($σ), $GV))
   quote
-    stage_first_group_range!($dst, $src, $tw1, m, 0, m - $rem, Val($r), Val($σ), $GV, Val(0))
-    stage_first_group_1!($dst, $src, $tw1, m, m - $rem, m, Val($r), Val($σ), $V1, Val(0))
+    stage_first_group_range!($dst, $src, $tw1, m, 0, m - $rem, Val($r), Val($σ), $GV)
+    stage_first_group_1!($dst, $src, $tw1, m, m - $rem, m, Val($r), Val($σ), $V1)
   end
 end
 
-function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
+function chain_body(T, Rs, σ, src, dsts, base, single)
   K = length(Rs)
   n = prod(Rs; init = 1)
   ladder = vec_ladder(T)
@@ -233,40 +218,20 @@ function chain_body(T, Rs, σ, src, dsts, base, single, FM = (), LM = ())
                     ladder[findfirst(V -> (base * sst) % ncomplex(V) == 0, ladder)]
     # the q remainder of this stage: a compile-time constant for single lines, provably zero
     # for batched lines (their stride is a multiple of the vector type), runtime for odd batch
-    # sizes and pruned ranges
+    # sizes
     rem = single ? sst % ncomplex(V) : (base > 1 ? 0 : nothing)
     if i == K
-      if isempty(LM) || K == 1
-        push!(body, last_call(dst, src, r, σ, V, single_vec(T), rem))
-      else
-        for (j, need) in enumerate(LM)
-          push!(body, :(stage_last!($dst, $src, s, first(Pr.last[$j]), last(Pr.last[$j]) + 1, Val($r), Val($σ), $V, Val($need))))
-        end
-      end
+      push!(body, last_call(dst, src, r, σ, V, single_vec(T), rem))
     elseif single && i == 1 && group !== nothing && ncomplex(V) == 1
       # the first stage of a single line: vectorised over the butterflies (scalar remainder
       # handled by the kernel)
       push!(body, :(m = L ÷ $r))
       GV = ladder[group]
-      if isempty(FM)
-        push!(body, group_call(dst, src, :(cptr(P.tw1)), r, σ, GV, single_vec(T), (n ÷ r) % ncomplex(GV)))
-      else
-        for (j, zin) in enumerate(FM)
-          push!(body, :(stage_first_group!($dst, $src, cptr(P.tw1), m, first(Pr.first[$j]), last(Pr.first[$j]) + 1,
-                                           Val($r), Val($σ), $(ladder[group]), Val($zin))))
-        end
-      end
+      push!(body, group_call(dst, src, :(cptr(P.tw1)), r, σ, GV, single_vec(T), (n ÷ r) % ncomplex(GV)))
       push!(body, :(L = m), :(s *= $r))
     else
       push!(body, :(m = L ÷ $r))
-      if i > 1 || isempty(FM)
-        push!(body, mid_call(dst, src, :(cptr(P.tw[$i])), r, σ, V, single_vec(T), rem))
-      else
-        for (j, zin) in enumerate(FM)
-          push!(body, :(stage!($dst, $src, cptr(P.tw[$i]), m, s, first(Pr.first[$j]), last(Pr.first[$j]) + 1,
-                               Val($r), Val($σ), $V, Val($zin))))
-        end
-      end
+      push!(body, mid_call(dst, src, :(cptr(P.tw[$i])), r, σ, V, single_vec(T), rem))
       push!(body, :(L = m), :(s *= $r))
     end
     src = dst
@@ -292,10 +257,7 @@ end
 Transform S interleaved sequences of length `P.n` from `px` into `py` (which may equal `px`),
 using the work buffers `pw1`, `pw2` (S·n complex values each).
 """
-run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, S::Int) where {T} =
-  run!(py, px, pw1, pw2, P, S, NOPRUNE)
-
-function run_body(::Type{T}, Rs, σ::Int, K::Int, FM, LM) where {T}
+function run_body(::Type{T}, Rs, σ::Int, K::Int) where {T}
   K == 0 && return :(py == px || unsafe_copyto!(py, px, 2S); nothing)
   # Out of place: the stages alternate between py and pw1 and end in py; px is only read.
   oop = [iseven(K - i) ? :py : :pw1 for i in 1:K]
@@ -307,7 +269,7 @@ function run_body(::Type{T}, Rs, σ::Int, K::Int, FM, LM) where {T}
     ip[i] = isodd(K - i) ? :pw1 : :pw2
   end
   dispatch(dsts) = stride_dispatch(T, (base, single) -> quote
-    $(chain_body(T, Rs, σ, :px, dsts, base, single, FM, LM)...)
+    $(chain_body(T, Rs, σ, :px, dsts, base, single)...)
   end)
   inplace = dispatch(ip)
   quote
@@ -322,9 +284,8 @@ function run_body(::Type{T}, Rs, σ::Int, K::Int, FM, LM) where {T}
   end
 end
 
-@generated function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K}, S::Int,
-                         Pr::Pruning{FM,LM}) where {T,Rs,σ,K,FM,LM}
-  run_body(T, Rs, σ, K, FM, LM)
+@generated function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K}, S::Int) where {T,Rs,σ,K}
+  run_body(T, Rs, σ, K)
 end
 
 """
@@ -608,10 +569,7 @@ end
 Transform a block of B lanes; element j of lane i at `px + i + Sx·j` and `py + i + Sy·j`
 (py may equal px). The work buffers hold B·n complex values each.
 """
-run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T}, Sx::Int, Sy::Int, B::Int) where {T} =
-  run_lanes!(py, px, pw1, pw2, P, Sx, Sy, B, NOPRUNE)
-
-function run_lanes_body(::Type{T}, Rs, σ::Int, K::Int, FM, LM) where {T}
+function run_lanes_body(::Type{T}, Rs, σ::Int, K::Int) where {T}
   function body(V)
     ex = Any[:(L = P.n), :(s0 = 1)]
     src, srcS = :px, :Sx
@@ -620,24 +578,10 @@ function run_lanes_body(::Type{T}, Rs, σ::Int, K::Int, FM, LM) where {T}
       last = i == K
       dst, dstS = last ? (:py, :Sy) : (isodd(i) ? :pw1 : :pw2, :B)
       if last
-        if isempty(LM)
-          push!(ex, :(stage_last_lanes!($dst, $src, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
-        else
-          for (j, need) in enumerate(LM)
-            push!(ex, :(stage_last_lanes!($dst, $src, s0, $srcS, $dstS, B, first(Pr.last[$j]), last(Pr.last[$j]) + 1,
-                                          Val($r), Val($σ), $V, Val($need))))
-          end
-        end
+        push!(ex, :(stage_last_lanes!($dst, $src, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
       else
         push!(ex, :(m = L ÷ $r))
-        if i > 1 || isempty(FM)
-          push!(ex, :(stage_lanes!($dst, $src, cptr(P.tw[$i]), m, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
-        else
-          for (j, zin) in enumerate(FM)
-            push!(ex, :(stage_lanes!($dst, $src, cptr(P.tw[$i]), m, s0, $srcS, $dstS, B, first(Pr.first[$j]), last(Pr.first[$j]) + 1,
-                                     Val($r), Val($σ), $V, Val($zin))))
-          end
-        end
+        push!(ex, :(stage_lanes!($dst, $src, cptr(P.tw[$i]), m, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
         push!(ex, :(L = m), :(s0 *= $r))
       end
       src, srcS = dst, dstS
@@ -670,8 +614,8 @@ function run_lanes_body(::Type{T}, Rs, σ::Int, K::Int, FM, LM) where {T}
 end
 
 @generated function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K},
-                               Sx::Int, Sy::Int, B::Int, Pr::Pruning{FM,LM}) where {T,Rs,σ,K,FM,LM}
-  run_lanes_body(T, Rs, σ, K, FM, LM)
+                               Sx::Int, Sy::Int, B::Int) where {T,Rs,σ,K}
+  run_lanes_body(T, Rs, σ, K)
 end
 
 # y[i + Sy·j] = x[i + Sx·j] for B lanes and n elements

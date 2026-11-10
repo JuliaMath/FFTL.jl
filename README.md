@@ -103,10 +103,9 @@ only dependency is the Julia runtime shipped next to it. On macOS arm64 the libr
 the runtime 10 MB. The run-time plans the library uses (`FFTL.RPlan`, `FFTL.RRFFTPlan`,
 `FFTL.RR2RPlan`) are public, so Julia programs that use them can be trimmed the same way.
 
-**Entry points for special variants.** `FFTL.plan_pass(v, d; nonzero, needed)` transforms all
-lines of a strided view along one dimension and can skip zero inputs and unneeded outputs
-(pruning); `FFTL.plan_r2r_pass` does the same for real-to-real kinds. Libraries that build their
-own transforms from one-dimensional passes use these; NFFT.jl is one of them.
+**Entry points for special variants.** `FFTL.plan_pass(v, d)` transforms all lines of a strided view
+along one dimension, and `FFTL.plan_r2r_pass` does the same for real-to-real kinds. Libraries that build
+their own transforms from one-dimensional passes use these; NFFT.jl is one of them.
 
 ## Performance
 
@@ -157,7 +156,7 @@ describes the setup and what a change must come with.
 
 ## Tests
 
-`] test FFTL` runs a quick selection that covers every feature (about 1.5 min). Set
+`] test FFTL` runs a quick selection that covers every feature (about 5 min with two threads). Set
 `FFTL_TEST_FULL=true` for the full lists and `FFTL_TEST_VERBOSE=true` for the time of every test
 set. CI runs the quick tests on Linux and macOS for pushes to `main` and pull requests, the full
 lists and the oldest supported Julia (1.10) once a week, and builds and tests the C library.

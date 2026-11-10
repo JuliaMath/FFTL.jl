@@ -15,7 +15,7 @@ available.
 | DST-II | ✓ | ✓ | ✓ | ✓ |
 | DST-I, DST-III, DST-IV | ✓ | ✓ | ◐ partly tuned | ✓ |
 | DHT, `R2HC`, `HC2R` | ✓ | ✓ | ◐ not tuned | ✓ |
-| batched 1D passes (`plan_pass`, `plan_r2r_pass`) with pruning | ✓ | – | – | – |
+| batched 1D passes (`plan_pass`, `plan_r2r_pass`) | ✓ | – | – | – |
 | any rank and any subset of dimensions | ✓ | ✓ | ✓ | ✓ |
 | any length (Bluestein above prime factor 31) | ✓ | ✓ | ✓ | ✓ |
 

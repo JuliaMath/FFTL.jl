@@ -54,15 +54,14 @@ for T in (Float32, Float64)
   ladder = vec_ladder(T)
   LTYPES = Tuple(ladder)
   NR = length(RADICES); NL = length(ladder)
-  need(r) = (1 << r) - 1
   kinds = (
-    (:cstage!,       (:py, :px, :pt, :m, :s),                 (r, σ, V, nd) -> :(stage!(py, px, pt, m, s, Val($r), Val($σ), $V))),
-    (:cstage_range!, (:py, :px, :pt, :m, :s, :qlo, :qhi),     (r, σ, V, nd) -> :(stage_range!(py, px, pt, m, s, qlo, qhi, 0, m, Val($r), Val($σ), $V, Val(0)))),
-    (:cstage_last!,  (:py, :px, :s),                          (r, σ, V, nd) -> :(stage_last!(py, px, s, Val($r), Val($σ), $V))),
-    (:cstage_last_range!, (:py, :px, :s, :qlo, :qhi),         (r, σ, V, nd) -> :(stage_last!(py, px, s, qlo, qhi, Val($r), Val($σ), $V, Val($nd)))),
-    (:cstage_group!, (:py, :px, :pt, :m),                     (r, σ, V, nd) -> :(stage_first_group!(py, px, pt, m, Val($r), Val($σ), $V))),
-    (:cstage_lanes!, (:py, :px, :pt, :m, :s0, :sx, :sy, :B),  (r, σ, V, nd) -> :(stage_lanes!(py, px, pt, m, s0, sx, sy, B, Val($r), Val($σ), $V))),
-    (:cstage_last_lanes!, (:py, :px, :s0, :sx, :sy, :B),      (r, σ, V, nd) -> :(stage_last_lanes!(py, px, s0, sx, sy, B, Val($r), Val($σ), $V))))
+    (:cstage!,       (:py, :px, :pt, :m, :s),                 (r, σ, V) -> :(stage!(py, px, pt, m, s, Val($r), Val($σ), $V))),
+    (:cstage_range!, (:py, :px, :pt, :m, :s, :qlo, :qhi),     (r, σ, V) -> :(stage_range!(py, px, pt, m, s, qlo, qhi, 0, m, Val($r), Val($σ), $V))),
+    (:cstage_last!,  (:py, :px, :s),                          (r, σ, V) -> :(stage_last!(py, px, s, Val($r), Val($σ), $V))),
+    (:cstage_last_range!, (:py, :px, :s, :qlo, :qhi),         (r, σ, V) -> :(stage_last!(py, px, s, qlo, qhi, Val($r), Val($σ), $V))),
+    (:cstage_group!, (:py, :px, :pt, :m),                     (r, σ, V) -> :(stage_first_group!(py, px, pt, m, Val($r), Val($σ), $V))),
+    (:cstage_lanes!, (:py, :px, :pt, :m, :s0, :sx, :sy, :B),  (r, σ, V) -> :(stage_lanes!(py, px, pt, m, s0, sx, sy, B, Val($r), Val($σ), $V))),
+    (:cstage_last_lanes!, (:py, :px, :s0, :sx, :sy, :B),      (r, σ, V) -> :(stage_last_lanes!(py, px, s0, sx, sy, B, Val($r), Val($σ), $V))))
   for (name, args, call) in kinds
     typed = [a in (:py, :px, :pt) ? :($a::Ptr{$T}) : :($a::Int) for a in args]
     cases = Any[]
@@ -73,7 +72,7 @@ for T in (Float32, Float64)
       name === :cstage_group! && !(ncomplex(V) in (2, 4)) && continue
       r in LAZY_RADICES && continue
       c = ((si - 1) * NL + vi - 1) * NR + ri
-      push!(cases, :(c == $c && return $(call(r, σ, V, need(r)))))
+      push!(cases, :(c == $c && return $(call(r, σ, V))))
     end
     # Without lazy radices there is no run-time call at all (the trimmed library needs none).
     fallback = isempty(LAZY_RADICES) ? :(throw(ArgumentError("no codelet for this index"))) :
@@ -91,7 +90,7 @@ for T in (Float32, Float64)
     table = Symbol(name, :_, T, :_codelets)
     @eval struct $callable{R,σ,VT} end
     @eval function (::$callable{R,σ,VT})($(typed...)) where {R,σ,VT}
-      return $(call(:R, :σ, :VT, :((1 << R) - 1)))
+      return $(call(:R, :σ, :VT))
     end
     @eval const $table = Any[nothing for _ in 1:2 * $NL * $NR]
     # Index c = ((si - 1) * NL + vi - 1) * NR + ri, with ri = 1 … NR into RADICES.
