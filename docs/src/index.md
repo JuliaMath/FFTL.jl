@@ -45,8 +45,8 @@ library needs no Julia installation. The run-time plans it is built from are pub
 programs that use them can be trimmed as well.
 
 **Entry points for special variants.** [Passes](@ref "Passes: one dimension of a strided array")
-transform one dimension of a strided array and can skip zero inputs and unneeded outputs.
-Libraries that assemble their own transforms from such passes, such as NFFT.jl, use them.
+transform one dimension of a strided array. Libraries that assemble their own transforms from such
+passes, such as NFFT.jl, use them.
 
 **The interface of the ecosystem.** FFTL exports FFTW.jl's names with FFTW.jl's conventions and
 scalings, so `using FFTL` can take the place of `using FFTW`, and it is a backend of

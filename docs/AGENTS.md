@@ -29,12 +29,12 @@ rules there apply to everything written here as well. Everything in this folder 
   with the DCT, Poisson with the DST (second-order convergence shown), fast convolution. Each has
   at least one figure (CairoMakie) next to its printed results.
 - **How-to Guides** (`src/howto/`): coming from FFTW.jl, plans and reuse, transforms along dimensions
-  (including `plan_pass` with pruning, which NFFT.jl uses), real data, cosine/sine/Hartley transforms,
+  (including `plan_pass`, which NFFT.jl uses), real data, cosine/sine/Hartley transforms,
   threads, number types, precompilation, GPU, C library (libfftl), compiling ahead of time (the run-time
   plans `RPlan`, `RRFFTPlan`, `RR2RPlan`), contribute.
 - **Explanation** (`src/explanation/`): the DFT and its conventions, FFTW and FFTL (history, papers, what
   FFTL takes from FFTW; written from papers and documentation only), algorithms (Stockham chains,
-  codelets, pruning, Bluestein, multidimensional without transposition, four-step, real and real-to-real
+  codelets, Bluestein, multidimensional without transposition, four-step, real and real-to-real
   reductions), implementation (type specialisation, SIMD, kernel cache, cache sizes, the two chain forms,
   why libfftl needs `RChain`), design decisions (what was decided and why, with the evidence), package
   size and load time, performance (measurement protocol).

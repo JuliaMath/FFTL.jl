@@ -45,8 +45,8 @@ later Julia versions, so re-run the count below after an upgrade.
 1. **Plain methods for the fixed set.** The stage kernels that `RChain` dispatches to (radix × sign ×
    vector type, empty zero-input mask or full output mask) and the compiled chains of the smooth lengths
    up to `SMALL_N` are defined in `src/kernel_methods.jl` with `@eval`, from the same body-building
-   functions the generators call. The `@generated` methods stay as the fallback for everything else
-   (pruned stages, other chains), so behaviour is unchanged. A plain method keeps its (compressed) source
+   functions the generators call. The `@generated` methods stay as the fallback for every other combination
+   (other radices, vector types and chains), so behaviour is unchanged. A plain method keeps its (compressed) source
    and its machine code, not its optimised IR.
 2. **Lazy radices.** The codelets of the radices in `LAZY_RADICES` (17, 19, 23, 29, 31 by default; the
    preference `lazy_radices`, read in `src/rchain.jl`) are 54 % of the statements of the stage kernels and are rarely needed. They are not
@@ -90,8 +90,8 @@ Further steps that were considered:
 | no `Float32` in the workload | 16 MB (at 73 MB) | 6 s at the first `Float32` call |
 
 Replacing the preference by environment variables did not shorten the load, and Julia does not notice a
-changed variable, so a stale image would stay in use. Removing the pruned kernels from the workload was not
-needed: no pruned kernel is in the image.
+changed variable, so a stale image would stay in use. The pass plans do not take zero masks any more (their
+kernels were `@generated` with a mask per segment), so no pruned kernel exists to store.
 
 ## Checking it
 

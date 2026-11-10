@@ -38,27 +38,8 @@ a 3D array costs little more than one for a 1D line.
 
 `FFTL.plan_pass` transforms along one dimension of a strided view, applied to all lines at once.
 It is the building block of the transforms above, and the entry point for libraries that build
-special variants of the transform themselves, such as NFFT.jl on its oversampled grid. Two
-optional declarations let it skip work:
-
-- `nonzero` says that each line is zero outside the given ranges of indices along `d`. The first
-  stage then does not read the zeros.
-- `needed` says that only the given output indices are used. The last stage computes only those.
-
-The result on the declared outputs is identical to the full transform. Here, the input is zero
-outside its first 16 of 64 entries, and only the first 8 outputs are needed:
-
-```@example dims
-n = 64
-V = zeros(ComplexF64, n, 10)
-V[1:16, :] .= randn(ComplexF64, 16, 10)
-
-full = fft(V, 1)
-pass = FFTL.plan_pass(V, 1; nonzero = (1:16,), needed = (1:8,))
-W = similar(V)
-mul!(W, pass, V)
-maximum(abs, W[1:8, :] - full[1:8, :])
-```
+special variants of the transform themselves, such as NFFT.jl on its oversampled grid. The plan is
+made for the size and strides of the view, and applied with `mul!` or `apply!`.
 
 Passes are single-threaded by default. A caller that already threads over many arrays keeps
 `threads = 1`; see [Threads](@ref "Threads").

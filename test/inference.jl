@@ -44,7 +44,7 @@
     @test (@inferred mul!(y, p, x)) === y
     @test (@allocated mul!(y, p, x)) == 0
   end
-  # pass plans on views of a padded array: unpruned in place and out of place, pruned in place
+  # pass plans on views of a padded array, in place and out of place
   let G = randn(Complex{T}, 40, 36, 30), W = similar(G)
     v = view(G, 3:34, 2:33, 2:25)
     w = view(W, 3:34, 2:33, 2:25)
@@ -57,19 +57,6 @@
     mul!(w, p, v)
     @test (@inferred mul!(w, p, v)) === w
     @test (@allocated mul!(w, p, v)) == 0
-    n = 64
-    N = 10
-    rng = (1:(N - N ÷ 2), (n - N ÷ 2 + 1):n)
-    P = randn(Complex{T}, n + 4, 37)
-    u = view(P, 2 .+ (1:n), 3:35)
-    pnz = FFTL.plan_pass(u, 1; sign = -1, threads = 1, nonzero = rng)
-    FFTL.apply!(pnz, u)
-    @test (@inferred FFTL.apply!(pnz, u)) === u
-    @test (@allocated FFTL.apply!(pnz, u)) == 0 broken = VERSION < v"1.11"
-    pne = FFTL.plan_pass(u, 1; sign = 1, threads = 1, needed = rng)
-    FFTL.apply!(pne, u)
-    @test (@inferred FFTL.apply!(pne, u)) === u
-    @test (@allocated FFTL.apply!(pne, u)) == 0 broken = VERSION < v"1.11"
     @test_broken @inferred FFTL.plan_pass(v, 2)
   end
   # real transforms

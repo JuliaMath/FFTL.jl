@@ -38,13 +38,6 @@ The generated code runs on complex SIMD vectors (`src/complexvec.jl`), with the 
 the element type. On aarch64 the complex add-and-rotate and the complex multiply are single
 instructions (`FCADD`, `FCMLA`).
 
-## Pruned codelets
-
-When the input is known to be zero outside some range, or only some outputs are used, the
-generator drops the terms that are zero and the statements that feed no needed output. A pass
-that transforms a zero-padded array therefore does not read the padding, and an NFFT that needs
-only part of the spectrum does not compute the rest. See [transforms along dimensions](@ref "Transforms along dimensions").
-
 ## Bluestein's algorithm
 
 Lengths with a prime factor above 31 go through Bluestein's identity. With ``jk = (j^2 + k^2 - (k-j)^2)/2``,
@@ -156,6 +149,6 @@ listed on [the cosine, sine and Hartley page](@ref "Cosine, sine and Hartley tra
 ## Passes
 
 `plan_pass` applies one 1D transform to all lines of a strided array with the same kernel. It
-lets a library assemble its own multidimensional transform one dimension at a time and declare,
-per dimension, which inputs are zero and which outputs it needs; both declarations use the
-pruned codelets above. NFFT.jl transforms its oversampled grid this way.
+lets a library assemble its own multidimensional transform one dimension at a time. NFFT.jl
+transforms its oversampled grid this way; it skips the boxes of the grid that it does not need
+itself, so the passes themselves carry no pruning.
