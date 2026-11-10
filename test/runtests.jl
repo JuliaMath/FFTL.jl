@@ -370,7 +370,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     for d in (2, 3), (b1, b2, b3) in ((3:34, 2:33, 2:25), (1:40, 1:36, 1:30))
       v = view(G0, b1, b2, b3)
       ref = FFTL.plan_pass(v, d); rt = FFTL.plan_pass_runtime(v, d)
-      w1 = similar(Array(v)); w2 = similar(Array(v))
+      W1 = similar(G0); W2 = similar(G0)
+      w1 = view(W1, b1, b2, b3); w2 = view(W2, b1, b2, b3)
       mul!(w1, ref, v); mul!(w2, rt, v)
       @test relerr(w2, w1) < 10tol(T)
     end
