@@ -103,8 +103,8 @@ cost of about 0.02 µs per transform.
 
 **Why.** These radices were 54 % of the statements of the stage kernels and are rarely needed. The image
 shrinks from 50 MB to 32 MB. Making 11 and 13 lazy as well would save 4 MB more; it was not done, because
-lengths with those factors are common. The trimmed C library is built from a copy of the package with
-the list of lazy radices empty, because `juliac` compiles nothing at run time.
+lengths with those factors are common. The list is the preference `lazy_radices`; the trimmed C library
+sets it to empty, because `juliac` compiles nothing at run time.
 
 ## The interface: FFTW.jl's names, FFTL's own functions, AbstractFFTs as a backend
 

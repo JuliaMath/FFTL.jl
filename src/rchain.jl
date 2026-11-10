@@ -35,9 +35,12 @@ end
   ((σ == 1 ? 1 : 0) * length(ladder_ncomplex(T)) + vi - 1) * length(RADICES) + ri
 end
 
-# Radices whose codelets are compiled on first use, not with the package: their stage kernels
-# are about 85 % of the stored IR of the stage kernels and rarely needed.
-const LAZY_RADICES = (17, 19, 23, 29, 31)
+# Radices whose codelets are compiled on first use, not with the package: they are 54 % of the
+# statements of the stage kernels and rarely needed. The preference `lazy_radices` is a list of
+# radices from RADICES; an empty list compiles every codelet with the package, which a trimmed build
+# needs because juliac compiles nothing at run time.
+using Preferences: @load_preference
+const LAZY_RADICES = Tuple(Int.(@load_preference("lazy_radices", [17, 19, 23, 29, 31])))
 all(in(RADICES), LAZY_RADICES) || error("LAZY_RADICES must be radices from RADICES")
 
 # Whether the factorisation of n has a prime factor whose codelet is compiled on first use.

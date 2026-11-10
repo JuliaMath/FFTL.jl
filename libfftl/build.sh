@@ -14,6 +14,7 @@ cd "$(dirname "$0")"
 julia --project=jc -e 'using Pkg; Pkg.instantiate()'
 julia --project=jc -e 'using Pkg; print("juliac ", Pkg.dependencies()[Base.UUID("acedd4c2-ced6-4a15-accc-2607eb759ba2")].version)'
 julia -e 'println(", Julia ", VERSION)'
+julia --project=. -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'
 # One CPU target: a library built for several targets (Julia's default) hangs at the first garbage
 # collection triggered by a second host thread, https://github.com/JuliaLang/JuliaC.jl/issues/190.
 if [ -z "$JULIA_CPU_TARGET" ]; then
@@ -38,19 +39,7 @@ FFTL_TRIM="${FFTL_TRIM:-safe}"
 trim_args=()
 [ "$FFTL_TRIM" = "off" ] || trim_args=(--trim="$FFTL_TRIM")
 rm -rf build
-# juliac compiles nothing at run time, so every radix codelet must be compiled with the package.
-# The library is therefore built from a copy of the package in which LAZY_RADICES is empty
-# (build/fftl-trim), in an environment that points to that copy (build/trim-env).
-mkdir -p build/fftl-trim build/trim-env
-cp -R ../Project.toml ../src ../ext build/fftl-trim/
-sed -i.bak 's/^const LAZY_RADICES = .*/const LAZY_RADICES = ()/' build/fftl-trim/src/rchain.jl
-rm -f build/fftl-trim/src/rchain.jl.bak
-grep -q '^const LAZY_RADICES = ()$' build/fftl-trim/src/rchain.jl || { echo "LAZY_RADICES substitution failed"; exit 1; }
-sed 's|path = ".."|path = "../fftl-trim"|' Project.toml > build/trim-env/Project.toml
-sed 's|path = ".."|path = "../fftl-trim"|' Manifest.toml > build/trim-env/Manifest.toml
-cp LocalPreferences.toml build/trim-env/
-julia --project=build/trim-env -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'
-julia --project=jc -m JuliaC --output-lib build/libfftl --project build/trim-env --bundle build \
+julia --project=jc -m JuliaC --output-lib build/libfftl --project . --bundle build \
   "${trim_args[@]}" --compile-ccallable --experimental \
   --jl-option threads=$FFTL_THREADS --jl-option handle-signals=yes "$@" src/libfftl.jl
 # Libraries of the Julia installation that the library never loads (checked on the Mac with

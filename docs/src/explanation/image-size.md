@@ -48,19 +48,26 @@ later Julia versions, so re-run the count below after an upgrade.
    functions the generators call. The `@generated` methods stay as the fallback for everything else
    (pruned stages, other chains), so behaviour is unchanged. A plain method keeps its (compressed) source
    and its machine code, not its optimised IR.
-2. **Lazy radices.** The codelets of the radices in `LAZY_RADICES` (17, 19, 23, 29, 31 in
-   `src/rchain.jl`) are 54 % of the statements of the stage kernels and are rarely needed. They are not
+2. **Lazy radices.** The codelets of the radices in `LAZY_RADICES` (17, 19, 23, 29, 31 by default; the
+   preference `lazy_radices`, read in `src/rchain.jl`) are 54 % of the statements of the stage kernels and are rarely needed. They are not
    in the image. A call with such a codelet index reaches `cstage_*_lazy`, which finds a callable object
    for the (radix, sign, vector type) in a table and creates it at the first call; Julia compiles its
    kernel then. A first call of a length with such a factor takes 70–100 ms; later calls cost about
    0.02 µs more than a precompiled codelet. Calling the stage kernel with run-time `Val` arguments
    instead of the table cost 0.22 µs per transform, 10 % at n = 1088.
 
-   `juliac` compiles nothing at run time, so `libfftl/build.sh` builds the trimmed library from a copy of
-   the package in which `LAZY_RADICES` is empty. Every codelet is then compiled into the library.
+   `juliac` compiles nothing at run time, so a program that is compiled with `--trim` sets the preference
+   `lazy_radices = []`: every codelet is then compiled into it. `libfftl/LocalPreferences.toml` does this
+   for the C library; a project that builds FFTL into its own trimmed library sets it in its
+   `LocalPreferences.toml` (the project must have FFTL as a direct dependency):
+
+   ```toml
+   [FFTL]
+   lazy_radices = []
+   ```
 
 To add a radix, put it in `RADICES`; `kernel_methods.jl` defines its plain methods. To make a radix lazy,
-put it in `LAZY_RADICES`.
+add it to the default of the preference in `src/rchain.jl`.
 
 ## What is left
 
