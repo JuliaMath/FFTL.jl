@@ -57,3 +57,24 @@ size(rfft(Z, (2, 1)))
 `plan_rfft`, `plan_irfft` and `plan_brfft` return plans with the same rules as the complex ones,
 including `inv` for the normalised inverse. Use them when the same real size is transformed many
 times; see [Plans and reuse](@ref "Plans and reuse").
+
+Real Float32 and Float64 plans support strided inputs and outputs, including column blocks,
+padded interiors and stepped views. Their shapes must match the plan; input and output strides
+are independent and may change between calls. Warmed single-threaded `mul!` execution is
+allocation-free. Out-of-place execution preserves the input and writes only the output view.
+
+```@example real
+using LinearAlgebra
+source = randn(21, 6)
+xv = view(source, 2:2:18, 2:5)
+spectra = zeros(ComplexF64, 7, 8)
+Xv = view(spectra, 2:6, 3:6)
+p = plan_rfft(xv, 1; threads = 1)
+mul!(Xv, p, xv)
+
+result = zeros(22, 7)
+yv = view(result, 3:2:19, 2:5)
+q = plan_irfft(Xv, 9, 1; threads = 1)
+mul!(yv, q, Xv)
+yv ≈ xv
+```

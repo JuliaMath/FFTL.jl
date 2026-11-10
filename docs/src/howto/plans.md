@@ -14,6 +14,27 @@ mul!(y, p, x)               # out of place, into a preallocated y
 y ≈ fft(x)
 ```
 
+## Complex plans on views
+
+Complex Float32 and Float64 plans accept strided input and output arrays of the planned size.
+Their strides may differ and may change between calls. Contiguous column blocks execute directly;
+padded and stepped views use the same kernels and the plan's existing workspace. Warmed
+single-threaded `mul!` execution does not allocate.
+
+```@example plans
+source = randn(ComplexF64, 128, 8)
+target = zeros(ComplexF64, 128, 8)
+v = view(source, :, 2:5)
+w = view(target, :, 3:6)
+pv = plan_fft(v, 1; threads = 1)
+mul!(w, pv, v)
+w ≈ fft(Array(v), 1)
+```
+
+Only the output view is written. Identical-view in-place execution is supported; partially
+overlapping input and output views are not supported. Views with arbitrary index arrays use
+the generic copying fallback.
+
 ## In place
 
 A plan can transform an array into itself, as `mul!(x, p, x)`. The plan's buffers are used
