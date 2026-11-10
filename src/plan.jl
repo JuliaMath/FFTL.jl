@@ -595,7 +595,7 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, S::Int) 
   run_lanes!(py, px, pw1, pw2, P, S, S, S)
 
 function kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T}
-  smooth(n) && n <= SMALL_N && return Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
+  smooth(n) && n <= SMALL_N && !has_lazy_factor(n) && return Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
   smooth(n) && return RChain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
   s, q = composite_split(T, n)
   s == 1 && return Bluestein{T}(n, σ)

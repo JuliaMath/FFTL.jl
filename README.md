@@ -99,7 +99,7 @@ legacy Fortran routines and the Fortran 2003 interface. Programs written for FFT
 it without source changes (`-lfftw3`, `-lfftw3f`; the library carries FFTW's library names as
 links); `libfftl/include/fftw3.h` lists what differs from FFTW. No transform is written in C:
 the library is the trimmed Julia code. A program that links it needs no Julia installation; its
-only dependency is the Julia runtime shipped next to it. On macOS arm64 the library is 15 MB and
+only dependency is the Julia runtime shipped next to it. On macOS arm64 the library is 23 MB and
 the runtime 10 MB. The run-time plans the library uses (`FFTL.RPlan`, `FFTL.RRFFTPlan`,
 `FFTL.RR2RPlan`) are public, so Julia programs that use them can be trimmed the same way.
 

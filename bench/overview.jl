@@ -4,17 +4,17 @@
 # The data lives in bench/results/ (versioned with the package): one CSV and one .meta per
 # overview run. The .meta carries the provenance (FFTL commit, Julia version, machine, load
 # averages, start and end); its `end:` line marks a finished run. Fresh data is produced by the
-# workspace benchmark harness (FastJuliaFFT/bench/overview) and copied in here.
+# benchmark harness and copied in here.
 
 const BENCH = @__DIR__
 const RES = joinpath(BENCH, "results")
 
 const PANELS = [
     (key = "m1t1",   title = "Apple M1 Max CPU, 1 thread",    file = "overview-m1-t1-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc", "vdsp"]),
-    (key = "epyct1", title = "AMD EPYC 7702 CPU, 1 thread",   file = "overview-reco2-t1-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc"]),
+    (key = "epyct1", title = "AMD EPYC 7702 CPU, 1 thread",   file = "overview-epyc7702-t1-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc"]),
     (key = "m1gpu",  title = "Apple M1 Max GPU",              file = "overview-m1-gpu-kinds-e75616c.csv", comps = ["metal", "vkfft"]),
     (key = "m1t8",   title = "Apple M1 Max CPU, 8 threads",   file = "overview-m1-t8-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc"], single = "overview-m1-t1-kinds-8e31d3a.csv"),
-    (key = "epyct16", title = "AMD EPYC 7702 CPU, 16 threads", file = "overview-reco2-t16-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc"], single = "overview-reco2-t1-kinds-8e31d3a.csv"),
+    (key = "epyct16", title = "AMD EPYC 7702 CPU, 16 threads", file = "overview-epyc7702-t16-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc"], single = "overview-epyc7702-t1-kinds-8e31d3a.csv"),
     (key = "a6000",  title = "NVIDIA RTX A6000 GPU",          file = "overview-a6000-gpu.csv",          comps = ["cufft", "vkfft"]),
 ]
 const COMPNAME = Dict("fftw_measure" => "FFTW", "ducc" => "ducc0", "vdsp" => "vDSP",
