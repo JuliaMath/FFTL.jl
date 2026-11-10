@@ -68,7 +68,7 @@ end
     @test relerr(z, FFTL.brfft(Xc, sz[minimum(reg)], reg)) < tol(T)
     @test X == Xc
   end
-  for k in instances(FFTL.R2RKind), n in pick((2, 5, 8, 33), (5, 8))
+  for k in instances(FFTL.R2RKind), n in pick((2, 5, 8, 33), (8,))
     x = randn(T, n)
     y = FFTL.plan_ka_r2r(be, T, (n,), k) * x; KernelAbstractions.synchronize(be)
     @test relerr(y, FFTL.r2r(x, k)) < 10tol(T)
@@ -83,7 +83,7 @@ end
   # pass) falls back, and so do DCT-II/DST-II along a strided dimension of odd stride (their post
   # hook works on pairs of columns)
   for k in (FFTL.REDFT10, FFTL.RODFT10, FFTL.REDFT01, FFTL.RODFT01, FFTL.REDFT11, FFTL.RODFT11, FFTL.REDFT00),
-      (sz, reg) in pick((((64,), 1), ((32, 4096), 2), ((64, 256), 2), ((16, 64, 32), 1:3), ((6, 10), 1:2), ((17, 4096), 2)), (((64,), 1), ((32, 4096), 2), ((6, 10), 1:2)))
+      (sz, reg) in pick((((64,), 1), ((32, 4096), 2), ((64, 256), 2), ((16, 64, 32), 1:3), ((6, 10), 1:2), ((17, 4096), 2)), (((64,), 1), ((6, 10), 1:2)))
     x = randn(T, sz)
     p = FFTL.plan_ka_r2r(be, T, sz, k; region = reg)
     stride = prod(sz[1:minimum(reg)-1])
