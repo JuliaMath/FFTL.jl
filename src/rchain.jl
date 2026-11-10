@@ -35,19 +35,31 @@ end
   ((σ == 1 ? 1 : 0) * length(ladder_ncomplex(T)) + vi - 1) * length(RADICES) + ri
 end
 
+# Radices whose codelets are compiled on first use, not with the package: their stage kernels
+# are about 85 % of the stored IR of the stage kernels and rarely needed.
+const LAZY_RADICES = (17, 19, 23, 29, 31)
+all(in(RADICES), LAZY_RADICES) || error("LAZY_RADICES must be radices from RADICES")
+
+# Whether the factorisation of n has a prime factor whose codelet is compiled on first use.
+has_lazy_factor(n::Int) = any(in(LAZY_RADICES), keys(factorize(n)[1]))
+
 # Codelet dispatch: one function per kind of stage call, a switch over the codelet index,
-# generated for both element types so that every call has constant type arguments.
+# generated for both element types so that every call has constant type arguments. Codelets of
+# LAZY_RADICES are not in the switch; `<kind>_lazy` takes their index and calls the stage kernel
+# through a callable that is created and compiled at the first call.
 for T in (Float32, Float64)
   ladder = vec_ladder(T)
+  LTYPES = Tuple(ladder)
+  NR = length(RADICES); NL = length(ladder)
   need(r) = (1 << r) - 1
   kinds = (
-    (:cstage!,       (:py, :px, :pt, :m, :s),                 (r, σ, V) -> :(stage!(py, px, pt, m, s, Val($r), Val($σ), $V))),
-    (:cstage_range!, (:py, :px, :pt, :m, :s, :qlo, :qhi),     (r, σ, V) -> :(stage_range!(py, px, pt, m, s, qlo, qhi, 0, m, Val($r), Val($σ), $V, Val(0)))),
-    (:cstage_last!,  (:py, :px, :s),                          (r, σ, V) -> :(stage_last!(py, px, s, Val($r), Val($σ), $V))),
-    (:cstage_last_range!, (:py, :px, :s, :qlo, :qhi),         (r, σ, V) -> :(stage_last!(py, px, s, qlo, qhi, Val($r), Val($σ), $V, Val($(need(r)))))),
-    (:cstage_group!, (:py, :px, :pt, :m),                     (r, σ, V) -> :(stage_first_group!(py, px, pt, m, Val($r), Val($σ), $V))),
-    (:cstage_lanes!, (:py, :px, :pt, :m, :s0, :sx, :sy, :B),  (r, σ, V) -> :(stage_lanes!(py, px, pt, m, s0, sx, sy, B, Val($r), Val($σ), $V))),
-    (:cstage_last_lanes!, (:py, :px, :s0, :sx, :sy, :B),      (r, σ, V) -> :(stage_last_lanes!(py, px, s0, sx, sy, B, Val($r), Val($σ), $V))))
+    (:cstage!,       (:py, :px, :pt, :m, :s),                 (r, σ, V, nd) -> :(stage!(py, px, pt, m, s, Val($r), Val($σ), $V))),
+    (:cstage_range!, (:py, :px, :pt, :m, :s, :qlo, :qhi),     (r, σ, V, nd) -> :(stage_range!(py, px, pt, m, s, qlo, qhi, 0, m, Val($r), Val($σ), $V, Val(0)))),
+    (:cstage_last!,  (:py, :px, :s),                          (r, σ, V, nd) -> :(stage_last!(py, px, s, Val($r), Val($σ), $V))),
+    (:cstage_last_range!, (:py, :px, :s, :qlo, :qhi),         (r, σ, V, nd) -> :(stage_last!(py, px, s, qlo, qhi, Val($r), Val($σ), $V, Val($nd)))),
+    (:cstage_group!, (:py, :px, :pt, :m),                     (r, σ, V, nd) -> :(stage_first_group!(py, px, pt, m, Val($r), Val($σ), $V))),
+    (:cstage_lanes!, (:py, :px, :pt, :m, :s0, :sx, :sy, :B),  (r, σ, V, nd) -> :(stage_lanes!(py, px, pt, m, s0, sx, sy, B, Val($r), Val($σ), $V))),
+    (:cstage_last_lanes!, (:py, :px, :s0, :sx, :sy, :B),      (r, σ, V, nd) -> :(stage_last_lanes!(py, px, s0, sx, sy, B, Val($r), Val($σ), $V))))
   for (name, args, call) in kinds
     typed = [a in (:py, :px, :pt) ? :($a::Ptr{$T}) : :($a::Int) for a in args]
     cases = Any[]
@@ -56,12 +68,41 @@ for T in (Float32, Float64)
       # never selects another vector type for it, and code compiled ahead of time must not
       # contain the call (its generator would fail)
       name === :cstage_group! && !(ncomplex(V) in (2, 4)) && continue
-      c = ((si - 1) * length(ladder) + vi - 1) * length(RADICES) + ri
-      push!(cases, :(c == $c && return $(call(r, σ, V))))
+      r in LAZY_RADICES && continue
+      c = ((si - 1) * NL + vi - 1) * NR + ri
+      push!(cases, :(c == $c && return $(call(r, σ, V, need(r)))))
     end
+    # Without lazy radices there is no run-time call at all (the trimmed library needs none).
+    fallback = isempty(LAZY_RADICES) ? :(throw(ArgumentError("no codelet for this index"))) :
+      :(return $(Symbol(name, :_lazy))($(args...), c))
     @eval function $name($(typed...), c::Int)
       $(cases...)
-      throw(ArgumentError("no codelet for this index"))
+      $fallback
+    end
+    isempty(LAZY_RADICES) && continue
+    # One callable singleton per (radix, sign, vector type): the first call of a codelet creates it
+    # and compiles its kernel, later calls find it in a table by index. A call through the table
+    # is a dynamic call of a single method, much cheaper than the dispatch of the stage kernel
+    # on run-time `Val`s.
+    callable = Symbol(name, :_, T, :_codelet)
+    table = Symbol(name, :_, T, :_codelets)
+    @eval struct $callable{R,σ,VT} end
+    @eval function (::$callable{R,σ,VT})($(typed...)) where {R,σ,VT}
+      return $(call(:R, :σ, :VT, :((1 << R) - 1)))
+    end
+    @eval const $table = Any[nothing for _ in 1:2 * $NL * $NR]
+    # Index c = ((si - 1) * NL + vi - 1) * NR + ri, with ri = 1 … NR into RADICES.
+    @eval @noinline function $(Symbol(name, :_, T, :_make))(c::Int)
+      ri = (c - 1) % $NR + 1
+      rest = (c - 1) ÷ $NR
+      vi = rest % $NL + 1
+      si = rest ÷ $NL + 1
+      return $callable{RADICES[ri], si == 2 ? 1 : -1, $LTYPES[vi]}()
+    end
+    @eval @noinline function $(Symbol(name, :_lazy))($(typed...), c::Int)
+      f = $table[c]
+      f === nothing && (f = $table[c] = $(Symbol(name, :_, T, :_make))(c))
+      return f($(args...))
     end
   end
 end
@@ -296,7 +337,7 @@ end
 # table lookup per call finds them. The compiled chain uses the tables of the RChain, and its
 # radix sequence is checked against the compiled one, so any other plan takes the stage loop.
 const SMALL_N = 128
-const SMALL_ENTRIES = [(n, σ) for n in 2:SMALL_N if smooth(n) for σ in (-1, 1)]
+const SMALL_ENTRIES = [(n, σ) for n in 2:SMALL_N if smooth(n) && !has_lazy_factor(n) for σ in (-1, 1)]
 const SMALL_INDEX = let t = zeros(Int, SMALL_N)
   for (i, (n, σ)) in enumerate(SMALL_ENTRIES)
     σ == -1 && (t[n] = i)
