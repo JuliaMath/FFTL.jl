@@ -25,18 +25,18 @@ end
 
 # Plan for dimension d of an input of size sz_in; σ = -1 (r2c) reads n reals, σ = +1 (c2r) reads
 # nhalf(n) complex values along d.
-function realpass_plan(::Type{T}, σ::Int, sz_in::NTuple{N,Int}, d::Int, n::Int, nt::Int) where {T<:FFTLFloat,N}
+function realpass_plan(::Type{T}, σ::Int, sz_in::NTuple{N,Int}, d::Int, n::Int, nt::Int, runtime::Bool) where {T<:FFTLFloat,N}
   nin = σ == -1 ? n : nhalf(n)
   sz_in[d] == nin || throw(DimensionMismatch("input has length $(sz_in[d]) along dimension $d, expected $nin"))
   sz_out = Base.setindex(sz_in, σ == -1 ? nhalf(n) : n, d)
-  line = RealLine{T}(n, σ)
+  line = runtime ? RealLine{T}(n, σ, RChain) : RealLine{T}(n, σ)
   nlines = prod(sz_in) ÷ nin
-  RealPassPlan{T,N,typeof(line)}(σ, d, n, sz_in, sz_out,
+  RealPassPlan{T,N,runtime ? RealLine{T,RKern{T}} : typeof(line)}(σ, d, n, sz_in, sz_out,
     Vector{Int}(undef, nlines), Vector{Int}(undef, nlines), line, thread_buffers(T, n, 5nt), nt)
 end
 
 """
-    plan_r2c_pass(v::StridedArray{<:Real}, d; threads = 1)
+    plan_r2c_pass(v::StridedArray{<:Real}, d; threads = 1, runtime = false)
 
 Plan for the batched r2c transform along dimension `d` of arrays with the size of `v`: the output
 has the half spectrum `nhalf(size(v, d))` along `d`. Apply with `mul!(w, p, v)`, where `v` and `w`
@@ -44,14 +44,14 @@ may be strided views (dimension 1 of each line may be strided too). Same packing
 for each line. The input and output strides may differ and may change between calls; with
 `threads = 1`, warmed execution with `mul!` is allocation-free.
 """
-function plan_r2c_pass(v::StridedArray{T,N}, d::Integer; threads::Integer = 1) where {T<:FFTLFloat,N}
+function plan_r2c_pass(v::StridedArray{T,N}, d::Integer; threads::Integer = 1, runtime::Bool = false) where {T<:FFTLFloat,N}
   1 <= d <= N || throw(ArgumentError("dimension $d is not within 1:$N"))
   all(>=(1), size(v)) || throw(ArgumentError("array size must be positive"))
-  realpass_plan(T, -1, size(v), Int(d), size(v, d), max(1, Int(threads)))
+  realpass_plan(T, -1, size(v), Int(d), size(v, d), max(1, Int(threads)), runtime)
 end
 
 """
-    plan_c2r_pass(v::StridedArray{<:Complex}, d; n = 2(size(v, d) - 1), threads = 1)
+    plan_c2r_pass(v::StridedArray{<:Complex}, d; n = 2(size(v, d) - 1), threads = 1, runtime = false)
 
 Plan for the batched unnormalised c2r transform along dimension `d` from the half spectrum `v`
 (`size(v, d) == nhalf(n)`) to a real array with length `n` along `d`. Apply with `mul!(w, p, v)`
@@ -61,12 +61,12 @@ in `FFTL.irfft`. The input and output strides may differ and may change between 
 `threads = 1`, warmed execution with `mul!` is allocation-free.
 """
 function plan_c2r_pass(v::StridedArray{Complex{T},N}, d::Integer; n::Integer = 2(size(v, d) - 1),
-                       threads::Integer = 1) where {T<:FFTLFloat,N}
+                       threads::Integer = 1, runtime::Bool = false) where {T<:FFTLFloat,N}
   1 <= d <= N || throw(ArgumentError("dimension $d is not within 1:$N"))
   all(>=(1), size(v)) || throw(ArgumentError("array size must be positive"))
   n >= 1 || throw(ArgumentError("real length must be positive"))
   nhalf(n) == size(v, d) || throw(DimensionMismatch("half spectrum of length $(size(v, d)) does not belong to length $n"))
-  realpass_plan(T, 1, size(v), Int(d), Int(n), max(1, Int(threads)))
+  realpass_plan(T, 1, size(v), Int(d), Int(n), max(1, Int(threads)), runtime)
 end
 
 function Base.show(io::IO, p::RealPassPlan{T}) where {T}
