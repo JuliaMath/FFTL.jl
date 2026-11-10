@@ -1,8 +1,8 @@
-threads: 16; FFTL 8e31d3a; julia 1.13.3; workstation
+threads: 16; FFTL 8e31d3a; julia 1.13.3; AMD EPYC 7702
 start: 2026-11-07T10:37:40; load:  10:37:40 up 50 days, 21:03,  9 users,  load average: 2,35, 2,48, 4,21
 libraries: fftl,fftw_measure,ducc,vdsp
 resume from: c2c,120x120x120,Float32
-threads: 16; FFTL 8e31d3a; julia 1.13.3; workstation
+threads: 16; FFTL 8e31d3a; julia 1.13.3; AMD EPYC 7702
 start: 2026-11-07T10:51:20; load:  10:51:20 up 50 days, 21:17,  9 users,  load average: 2,16, 4,24, 4,71
 libraries: fftl,fftw_measure,ducc,vdsp
 end: 2026-11-07T11:12:26; load:  11:12:26 up 50 days, 21:38,  9 users,  load average: 7,50, 5,22, 4,44

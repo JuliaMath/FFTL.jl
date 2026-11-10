@@ -1,0 +1,5 @@
+threads: 16; FFTL f825bee; julia 1.13.3; AMD EPYC 7702
+start: 2026-11-06T08:54:37; load:  08:54:37 up 49 days, 19:20,  6 users,  load average: 5,52, 4,18, 3,88
+libraries: fftl,ducc
+end: 2026-11-06T09:00:09; load:  09:00:09 up 49 days, 19:26,  6 users,  load average: 5,17, 4,65, 4,18
+merged: FFTW rows from overview-epyc7702-t16-fftw-only-f825bee.csv (FFTW timed at 16 threads in a process with one Julia OS thread, wisdom kept); FFTL+ducc re-run with FFTW.jl spawnloop callback reset (fftw_pthreads!, FFTW on its own C threads)

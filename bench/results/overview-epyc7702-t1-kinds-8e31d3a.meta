@@ -1,4 +1,4 @@
-threads: 1; FFTL 8e31d3a; julia 1.13.3; workstation
+threads: 1; FFTL 8e31d3a; julia 1.13.3; AMD EPYC 7702
 start: 2026-11-07T10:11:48; load:  10:11:48 up 50 days, 20:37,  9 users,  load average: 74,06, 26,34, 12,50
 libraries: fftl,fftw_measure,ducc,vdsp
 end: 2026-11-07T10:37:36; load:  10:37:36 up 50 days, 21:03,  9 users,  load average: 2,39, 2,48, 4,22

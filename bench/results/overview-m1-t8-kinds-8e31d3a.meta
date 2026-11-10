@@ -1,4 +1,4 @@
-threads: 8; FFTL 8e31d3a; julia 1.13.3; MacBook-Pro-von-Tobias-3.fritz.box
+threads: 8; FFTL 8e31d3a; julia 1.13.3; Apple M1 Max
 start: 2026-11-07T11:23:38; load: 11:23  up 3 days, 21:46, 16 users, load averages: 4,71 4,76 5,06
 libraries: fftl,fftw_measure,ducc,vdsp
 end: 2026-11-07T11:38:52; load: 11:38  up 3 days, 22:01, 16 users, load averages: 8,84 7,09 6,25
