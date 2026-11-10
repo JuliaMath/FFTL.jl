@@ -22,12 +22,11 @@ zero_input(zin, j) = (zin >> (j - 1)) & 1 == 1
 stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
   stage!(py, px, pt, m, s, 0, m, Val(R), Val(σ), VT, Val(0))
 
-@generated function stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, plo::Int, phi::Int,
-                           ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+function stage_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, zin::Int) where {T,VT}
   stmts, a, X = codelet(R, σ, zin)
   C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload(VT, px + (q + s * (p + $(j - 1) * m)) * $B)) for j in 1:R if !zero_input(zin, j)]
-  twl = [:($(Symbol("w", k)) = cbroadcast(VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
+  loads = [:($(a[j]) = vload($VT, px + (q + s * (p + $(j - 1) * m)) * $B)) for j in 1:R if !zero_input(zin, j)]
+  twl = [:($(Symbol("w", k)) = cbroadcast($VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
   stores = Any[:(vstore($(X[1]), py + o * $B))]
   for k in 1:R-1
     push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (o + $k * s) * $B)))
@@ -44,6 +43,11 @@ stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, ::Val{R}, ::Val{σ}, 
     end
     nothing
   end
+end
+
+@generated function stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, plo::Int, phi::Int,
+                           ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+  stage_body(T, R, σ, VT, zin)
 end
 
 # Stage for strides that are not a multiple of the complex lanes of VT (odd batch sizes): the
@@ -63,12 +67,11 @@ end
 
 # Stage over a q range: the kernel behind the split of a single line, whose q extent is known
 # at generation time so the vectorised range and the scalar tail are emitted directly.
-@generated function stage_range!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, qlo::Int, qhi::Int,
-                                 plo::Int, phi::Int, ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+function stage_range_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, zin::Int) where {T,VT}
   stmts, a, X = codelet(R, σ, zin)
   C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload(VT, px + (q + s * (p + $(j - 1) * m)) * $B)) for j in 1:R if !zero_input(zin, j)]
-  twl = [:($(Symbol("w", k)) = cbroadcast(VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
+  loads = [:($(a[j]) = vload($VT, px + (q + s * (p + $(j - 1) * m)) * $B)) for j in 1:R if !zero_input(zin, j)]
+  twl = [:($(Symbol("w", k)) = cbroadcast($VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
   stores = Any[:(vstore($(X[1]), py + o * $B))]
   for k in 1:R-1
     push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (o + $k * s) * $B)))
@@ -87,15 +90,19 @@ end
   end
 end
 
+@generated function stage_range!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, qlo::Int, qhi::Int,
+                                 plo::Int, phi::Int, ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+  stage_range_body(T, R, σ, VT, zin)
+end
+
 # Last stage (m = 1): all twiddles are 1.
 stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
   stage_last!(py, px, s, 0, s, Val(R), Val(σ), VT, Val((1 << R) - 1))
 
-@generated function stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, qlo::Int, qhi::Int,
-                                ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{need}) where {T,R,σ,VT,need}
+function stage_last_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, need::Int) where {T,VT}
   stmts, a, X = codelet(R, σ, 0, need)
   C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload(VT, px + (q + s * $(j - 1)) * $B)) for j in 1:R]
+  loads = [:($(a[j]) = vload($VT, px + (q + s * $(j - 1)) * $B)) for j in 1:R]
   stores = [:(vstore($(X[k+1]), py + (q + $k * s) * $B)) for k in 0:R-1 if X[k+1] !== nothing]
   quote
     for q in qlo:$C:qhi-1
@@ -105,6 +112,11 @@ stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) whe
     end
     nothing
   end
+end
+
+@generated function stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, qlo::Int, qhi::Int,
+                                ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{need}) where {T,R,σ,VT,need}
+  stage_last_body(T, R, σ, VT, need)
 end
 
 # Last stage for strides that are not a multiple of the complex lanes of VT (odd batch sizes):
@@ -141,18 +153,17 @@ stage_first_group!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, ::Val{R}, ::Val{�
   end
 end
 
-@generated function stage_first_group_range!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, plo::Int, phi::Int,
-                                             ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+function stage_first_group_range_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, zin::Int) where {T,VT}
   C = ncomplex(VT)
   C in (2, 4) || error("the grouped first stage needs 2 or 4 complex values per vector")
   stmts, a, X = codelet(R, σ, zin)
   N = 2C; CB = 2sizeof(T)
-  loads = [:($(a[j]) = vload(VT, px + (p + $(j - 1) * m) * $CB)) for j in 1:R if !zero_input(zin, j)]
+  loads = [:($(a[j]) = vload($VT, px + (p + $(j - 1) * m) * $CB)) for j in 1:R if !zero_input(zin, j)]
   outs = Any[X[1]]
   twm = Any[]
   for k in 1:R-1
     b = Symbol("b", k)
-    push!(twm, :($b = ccmul($(X[k+1]), vload(VT, pt + ($(k - 1) * m + p) * $CB))))
+    push!(twm, :($b = ccmul($(X[k+1]), vload($VT, pt + ($(k - 1) * m + p) * $CB))))
     push!(outs, b)
   end
   # complex value l of vectors u and v as one vector of two complex values
@@ -185,19 +196,23 @@ end
   end
 end
 
+@generated function stage_first_group_range!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, plo::Int, phi::Int,
+                                             ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+  stage_first_group_range_body(T, R, σ, VT, zin)
+end
+
 # Scalar tail of the grouped first stage: one complex value per vector, the twiddle table in
 # the grouped layout (k-1)m + p, one store per output.
-@generated function stage_first_group_1!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, plo::Int, phi::Int,
-                                         ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+function stage_first_group_1_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, zin::Int) where {T,VT}
   ncomplex(VT) == 1 || error("the scalar tail of the grouped first stage needs one complex value per vector")
   stmts, a, X = codelet(R, σ, zin)
   CB = 2sizeof(T)
-  loads = [:($(a[j]) = vload(VT, px + (p + $(j - 1) * m) * $CB)) for j in 1:R if !zero_input(zin, j)]
+  loads = [:($(a[j]) = vload($VT, px + (p + $(j - 1) * m) * $CB)) for j in 1:R if !zero_input(zin, j)]
   twm = Any[]
   stores = Any[:(vstore($(X[1]), py + $R * p * $CB))]
   for k in 1:R-1
     b = Symbol("b", k)
-    push!(twm, :($b = ccmul($(X[k+1]), vload(VT, pt + ($(k - 1) * m + p) * $CB))))
+    push!(twm, :($b = ccmul($(X[k+1]), vload($VT, pt + ($(k - 1) * m + p) * $CB))))
     push!(stores, :(vstore($b, py + ($R * p + $k) * $CB)))
   end
   quote
@@ -211,6 +226,11 @@ end
   end
 end
 
+@generated function stage_first_group_1!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, plo::Int, phi::Int,
+                                         ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+  stage_first_group_1_body(T, R, σ, VT, zin)
+end
+
 # Stages on a block of B lanes (cache blocking of a dimension pass, and its unit of work among
 # threads): element j of lane i
 # is at i + Sx·j in the input and at i + Sy·j in the output, so a block can be read from the array
@@ -220,12 +240,11 @@ stage_lanes!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s0::Int, Sx::Int, Sy::I
              ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
   stage_lanes!(py, px, pt, m, s0, Sx, Sy, B, 0, m, Val(R), Val(σ), VT, Val(0))
 
-@generated function stage_lanes!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s0::Int, Sx::Int, Sy::Int,
-                                 B::Int, plo::Int, phi::Int, ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+function stage_lanes_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, zin::Int) where {T,VT}
   stmts, a, X = codelet(R, σ, zin)
   C = ncomplex(VT); Bt = 2sizeof(T)
-  loads = [:($(a[j]) = vload(VT, px + (i + Sx * (q0 + s0 * (p + $(j - 1) * m))) * $Bt)) for j in 1:R if !zero_input(zin, j)]
-  twl = [:($(Symbol("w", k)) = cbroadcast(VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
+  loads = [:($(a[j]) = vload($VT, px + (i + Sx * (q0 + s0 * (p + $(j - 1) * m))) * $Bt)) for j in 1:R if !zero_input(zin, j)]
+  twl = [:($(Symbol("w", k)) = cbroadcast($VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
   stores = Any[:(vstore($(X[1]), py + (i + Sy * o) * $Bt))]
   for k in 1:R-1
     push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (i + Sy * (o + $k * s0)) * $Bt)))
@@ -246,15 +265,19 @@ stage_lanes!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s0::Int, Sx::Int, Sy::I
   end
 end
 
+@generated function stage_lanes!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s0::Int, Sx::Int, Sy::Int,
+                                 B::Int, plo::Int, phi::Int, ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{zin}) where {T,R,σ,VT,zin}
+  stage_lanes_body(T, R, σ, VT, zin)
+end
+
 stage_last_lanes!(py::Ptr{T}, px::Ptr{T}, s0::Int, Sx::Int, Sy::Int, B::Int,
                   ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
   stage_last_lanes!(py, px, s0, Sx, Sy, B, 0, s0, Val(R), Val(σ), VT, Val((1 << R) - 1))
 
-@generated function stage_last_lanes!(py::Ptr{T}, px::Ptr{T}, s0::Int, Sx::Int, Sy::Int, B::Int, qlo::Int, qhi::Int,
-                                      ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{need}) where {T,R,σ,VT,need}
+function stage_last_lanes_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, need::Int) where {T,VT}
   stmts, a, X = codelet(R, σ, 0, need)
   C = ncomplex(VT); Bt = 2sizeof(T)
-  loads = [:($(a[j]) = vload(VT, px + (i + Sx * (q0 + s0 * $(j - 1))) * $Bt)) for j in 1:R]
+  loads = [:($(a[j]) = vload($VT, px + (i + Sx * (q0 + s0 * $(j - 1))) * $Bt)) for j in 1:R]
   stores = [:(vstore($(X[k+1]), py + (i + Sy * (q0 + s0 * $k)) * $Bt)) for k in 0:R-1 if X[k+1] !== nothing]
   quote
     for q0 in qlo:qhi-1
@@ -266,4 +289,9 @@ stage_last_lanes!(py::Ptr{T}, px::Ptr{T}, s0::Int, Sx::Int, Sy::Int, B::Int,
     end
     nothing
   end
+end
+
+@generated function stage_last_lanes!(py::Ptr{T}, px::Ptr{T}, s0::Int, Sx::Int, Sy::Int, B::Int, qlo::Int, qhi::Int,
+                                      ::Val{R}, ::Val{σ}, ::Type{VT}, ::Val{need}) where {T,R,σ,VT,need}
+  stage_last_lanes_body(T, R, σ, VT, need)
 end
