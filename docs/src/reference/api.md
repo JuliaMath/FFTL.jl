@@ -58,6 +58,11 @@ Batched one-dimensional transforms of strided arrays, the operations NFFT.jl bui
 
 ```@docs
 plan_pass
+plan_pass_runtime
+plan_r2c_pass
+plan_r2c_pass_runtime
+plan_c2r_pass
+plan_c2r_pass_runtime
 plan_r2r_pass
 apply!
 ```

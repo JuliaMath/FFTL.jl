@@ -548,6 +548,48 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "run-time pass plans, $T" for T in (Float64, Float32)
+    # the plan type depends on the element type and the dimension count only
+    for (sz, d) in (((100, 3), 1), ((1009, 3), 1), ((64, 5), 1), ((37, 6), 2), ((6, 130), 2))
+      p = FFTL.plan_pass_runtime(randn(Complex{T}, sz), d)
+      @test p isa FFTL.PassPlan{T,2,FFTL.RPassKern{T}}
+    end
+    # against the length-specialised plan, every kernel kind: smooth, Bluestein, composite, four-step
+    for (n, sz_other, nt) in ((64, 5, 1), (100, 7, 1), (1000, 3, 2), (1009, 4, 1), (2 * 37 * 41, 2, 1),
+                              (2^17, 1, 3))
+      x = randn(Complex{T}, n, sz_other)
+      for sign in (-1, 1)
+        ref = FFTL.plan_pass(x, 1; sign, threads = nt); rt = FFTL.plan_pass_runtime(x, 1; sign, threads = nt)
+        a = similar(x); b = similar(x)
+        mul!(a, ref, x); mul!(b, rt, x)
+        @test relerr(b, a) < 10tol(T)
+      end
+    end
+    # strided views of a padded array, dimensions 2 and 3
+    G0 = randn(Complex{T}, 40, 36, 30)
+    for d in (2, 3), (b1, b2, b3) in ((3:34, 2:33, 2:25), (1:40, 1:36, 1:30))
+      v = view(G0, b1, b2, b3)
+      ref = FFTL.plan_pass(v, d); rt = FFTL.plan_pass_runtime(v, d)
+      W1 = similar(G0); W2 = similar(G0)
+      w1 = view(W1, b1, b2, b3); w2 = view(W2, b1, b2, b3)
+      mul!(w1, ref, v); mul!(w2, rt, v)
+      @test relerr(w2, w1) < 10tol(T)
+    end
+    # a small case against the direct DFT
+    x = randn(Complex{T}, 60, 2)
+    w = similar(x); mul!(w, FFTL.plan_pass_runtime(x, 1; sign = -1), x)
+    @test relerr(w, mapslices(u -> dft(ComplexF64.(u), -1), ComplexF64.(x); dims = 1)) < 10tol(T)
+    # real passes: run-time plans have one type for all lengths; the results agree with the specialised ones
+    for (sz, d) in (((100, 3), 1), ((1009, 3), 1), ((30, 2), 1))
+      x = randn(T, sz)
+      @test FFTL.plan_r2c_pass_runtime(x, d) isa FFTL.RealPassPlan{T,2,FFTL.RealLine{T,Union{FFTL.RChain{T},FFTL.Bluestein{T,FFTL.RChain{T},FFTL.RChain{T}}}}}
+      ref = FFTL.plan_r2c_pass(x, d); rt = FFTL.plan_r2c_pass_runtime(x, d)
+      ya = zeros(Complex{T}, ref.sz_out); yb = similar(ya)
+      mul!(ya, ref, x); mul!(yb, rt, x)
+      @test relerr(yb, ya) < 10tol(T)
+    end
+  end
+
   @testset "real transforms, $T" for T in (Float64, Float32)
     for (sz, region) in pick([((8,), 1), ((9,), 1), ((10,), 1), ((15,), 1), ((16,), 1), ((37,), 1), ((100,), 1),
                               ((101,), 1), ((1024,), 1), ((1023,), 1), ((3 * 2^11,), 1),

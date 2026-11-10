@@ -106,6 +106,27 @@ shrinks from 50 MB to 32 MB. Making 11 and 13 lazy as well would save 4 MB more;
 lengths with those factors are common. The list is the preference `lazy_radices`; the trimmed C library
 sets it to empty, because `juliac` compiles nothing at run time.
 
+## Run-time pass plans for trimmed programs
+
+**Decision (2026-11-10).** A pass plan (`plan_pass`, `plan_r2c_pass`, `plan_c2r_pass`) built with
+`_runtime` (`plan_pass_runtime`, `plan_r2c_pass_runtime`, `plan_c2r_pass_runtime`) uses run-time kernels
+only: RChain, Bluestein and composite transforms over RChain, the four-step algorithm over RChain. Its
+type depends on the element type and the number of dimensions, not on the length. The specialised plans
+are unchanged.
+
+**Why.** A library that holds passes of many lengths in one container (as NFFT.jl does for its boxes)
+has a container of an abstract or length-dependent type, and `juliac --trim` cannot resolve the calls
+through it. The first attempt was a keyword `runtime = true`; the verifier then still checks the
+specialised branch, whose kernel types depend on the length, so the separate functions were needed.
+A probe library compiled with `juliac --trim=safe` holds run-time pass plans in a vector, applies them,
+and matches the direct DFT to 3·10⁻¹⁴ when called from C. Planning on 64 × 64 × 64 views is 1.8 µs for
+`d = 1` and 0.9 µs for `d = 2` on the M1 (the specialised plan: 4.7 µs and 2.8 µs). Applying the
+specialised and the run-time plans is within noise of each other on the same views.
+
+**Costs.** The run-time kernels dispatch per stage, which costs a little on short lines (the reason the
+specialised plans stay the default). For real lengths with large prime factors, the run-time kernel is a
+Bluestein transform, without the composite split of the specialised plan.
+
 ## The interface: FFTW.jl's names, FFTL's own functions, AbstractFFTs as a backend
 
 **Decision (2026-11-06).** FFTL exports FFTW.jl's names (`fft`, `bfft`, `ifft`, `rfft`, `brfft`,

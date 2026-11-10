@@ -26,12 +26,20 @@ end
 # Plan for dimension d of an input of size sz_in; σ = -1 (r2c) reads n reals, σ = +1 (c2r) reads
 # nhalf(n) complex values along d.
 function realpass_plan(::Type{T}, σ::Int, sz_in::NTuple{N,Int}, d::Int, n::Int, nt::Int) where {T<:FFTLFloat,N}
+  realpass_build(RealLine{T}(n, σ), σ, sz_in, d, n, nt)
+end
+
+# Run-time version (RChain kernels only): the plan type depends on T and N only.
+function realpass_plan_runtime(::Type{T}, σ::Int, sz_in::NTuple{N,Int}, d::Int, n::Int, nt::Int) where {T<:FFTLFloat,N}
+  realpass_build(RealLine{T}(n, σ, RChain), σ, sz_in, d, n, nt)
+end
+
+function realpass_build(line::L, σ::Int, sz_in::NTuple{N,Int}, d::Int, n::Int, nt::Int) where {T<:FFTLFloat,N,L<:RealLine{T}}
   nin = σ == -1 ? n : nhalf(n)
   sz_in[d] == nin || throw(DimensionMismatch("input has length $(sz_in[d]) along dimension $d, expected $nin"))
   sz_out = Base.setindex(sz_in, σ == -1 ? nhalf(n) : n, d)
-  line = RealLine{T}(n, σ)
   nlines = prod(sz_in) ÷ nin
-  RealPassPlan{T,N,typeof(line)}(σ, d, n, sz_in, sz_out,
+  RealPassPlan{T,N,L}(σ, d, n, sz_in, sz_out,
     Vector{Int}(undef, nlines), Vector{Int}(undef, nlines), line, thread_buffers(T, n, 5nt), nt)
 end
 
@@ -67,6 +75,33 @@ function plan_c2r_pass(v::StridedArray{Complex{T},N}, d::Integer; n::Integer = 2
   n >= 1 || throw(ArgumentError("real length must be positive"))
   nhalf(n) == size(v, d) || throw(DimensionMismatch("half spectrum of length $(size(v, d)) does not belong to length $n"))
   realpass_plan(T, 1, size(v), Int(d), Int(n), max(1, Int(threads)))
+end
+
+"""
+    plan_r2c_pass_runtime(v::StridedArray{<:Real}, d; threads = 1)
+
+The same transform as [`plan_r2c_pass`](@ref), with run-time kernels (RChain, and Bluestein over RChain
+for lengths with large prime factors). The plan type is `RealPassPlan{T,N,RealLine{T,RKern{T}}}`, the same
+for every length, so a library can compile it ahead of time (`juliac --trim`).
+"""
+function plan_r2c_pass_runtime(v::StridedArray{T,N}, d::Integer; threads::Integer = 1) where {T<:FFTLFloat,N}
+  1 <= d <= N || throw(ArgumentError("dimension $d is not within 1:$N"))
+  all(>=(1), size(v)) || throw(ArgumentError("array size must be positive"))
+  realpass_plan_runtime(T, -1, size(v), Int(d), size(v, d), max(1, Int(threads)))
+end
+
+"""
+    plan_c2r_pass_runtime(v::StridedArray{<:Complex}, d; n = 2(size(v, d) - 1), threads = 1)
+
+The same transform as [`plan_c2r_pass`](@ref) with run-time kernels, as [`plan_r2c_pass_runtime`](@ref).
+"""
+function plan_c2r_pass_runtime(v::StridedArray{Complex{T},N}, d::Integer; n::Integer = 2(size(v, d) - 1),
+                               threads::Integer = 1) where {T<:FFTLFloat,N}
+  1 <= d <= N || throw(ArgumentError("dimension $d is not within 1:$N"))
+  all(>=(1), size(v)) || throw(ArgumentError("array size must be positive"))
+  n >= 1 || throw(ArgumentError("real length must be positive"))
+  nhalf(n) == size(v, d) || throw(DimensionMismatch("half spectrum of length $(size(v, d)) does not belong to length $n"))
+  realpass_plan_runtime(T, 1, size(v), Int(d), Int(n), max(1, Int(threads)))
 end
 
 function Base.show(io::IO, p::RealPassPlan{T}) where {T}
