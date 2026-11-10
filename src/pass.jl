@@ -46,19 +46,14 @@ end
 # index of the dimensions `outer` (first index fastest). Plain loops over vectors: the code does not
 # depend on the number of dimensions at compile time (juliac --trim).
 function line_offsets(sz::NTuple{N,Int}, st::NTuple{N,Int}, outer::Vector{Int}) where {N}
-  cnt = Int[sz[o] for o in outer]
-  total = 1
-  for c in cnt
-    total *= c
-  end
-  offs = Vector{Int}(undef, total)
-  for k in 0:total-1
-    r = k; off = 0
-    for j in eachindex(outer)
-      r, c = divrem(r, cnt[j])
-      off += c * st[outer[j]]
+  offs = Int[0]
+  for j in eachindex(outer)
+    stride = st[outer[j]]; c = sz[outer[j]]; L = length(offs)
+    next = Vector{Int}(undef, L * c)
+    for i in 0:c-1, k in 1:L
+      next[i * L + k] = offs[k] + i * stride
     end
-    offs[k+1] = off
+    offs = next
   end
   offs
 end
