@@ -1,7 +1,7 @@
 # KernelAbstractions extension on KA's CPU backend (POCL): the same generated kernels as on GPUs.
 using KernelAbstractions
 
-@testset "KernelAbstractions plans (CPU backend), $T" for T in (Float64, Float32)
+@testset "KernelAbstractions plans (CPU backend), $T" for T in pick((Float64, Float32), (Float64,))
   be = KernelAbstractions.CPU()
   # one pass, two passes (2^13), mixed radices, Bluestein (37, 101), batches, 2D/3D, partial regions
   for (dims, region) in pick((((64,), 1:1), ((1000,), 1:1), ((2^13,), 1:1), ((37,), 1:1), ((101,), 1:1),
@@ -56,7 +56,7 @@ end
   @test relerr(y, FFTL.plan_fft(ComplexF64.(x)) * ComplexF64.(x)) < tol(Float32)
 end
 
-@testset "KernelAbstractions real transforms (CPU backend), $T" for T in (Float64, Float32)
+@testset "KernelAbstractions real transforms (CPU backend), $T" for T in pick((Float64, Float32), (Float64,))
   be = KernelAbstractions.CPU()
   for (sz, reg) in pick((((16,), 1:1), ((15,), 1:1), ((2,), 1:1), ((37,), 1:1), ((12, 10), 1:2), ((12, 10), 2:2), ((9, 8, 6), (1, 3))),
                         (((16,), 1:1), ((15,), 1:1), ((12, 10), 1:2), ((9, 8, 6), (1, 3))))

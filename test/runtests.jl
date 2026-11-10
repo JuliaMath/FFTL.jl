@@ -440,7 +440,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   r2rkinds = (FFTL.REDFT00, FFTL.REDFT10, FFTL.REDFT01, FFTL.REDFT11, FFTL.RODFT00, FFTL.RODFT10,
               FFTL.RODFT01, FFTL.RODFT11, FFTL.DHT, FFTL.R2HC, FFTL.HC2R)
 
-  @testset "real-to-real, $T" for T in (Float64, Float32)
+  @testset "real-to-real, $T" for T in pick((Float64, Float32), (Float64,))
     for kind in r2rkinds, n in pick([1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 15, 16, 31, 32, 33, 100, 101, 128], thin(T, [1, 2, 3, 5, 16, 33]))
       kind == FFTL.REDFT00 && n < 2 && continue
       x = randn(T, n)
