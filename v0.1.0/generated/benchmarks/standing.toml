@@ -1,0 +1,114 @@
+
+[a6000.cuFFT]
+fold = 0.93
+win_percent = 27
+coverage = 83
+total = 119
+
+[a6000.FFTL]
+fold = 0.88
+win_percent = 22
+coverage = 119
+total = 119
+
+[a6000.VkFFT]
+fold = 1.03
+win_percent = 60
+coverage = 119
+total = 119
+
+[epyct1.FFTW]
+fold = 0.8
+win_percent = 25
+coverage = 386
+total = 386
+
+[epyct1.FFTL]
+fold = 1.24
+win_percent = 74
+coverage = 386
+total = 386
+
+[epyct1.ducc0]
+fold = 0.36
+win_percent = 1
+coverage = 314
+total = 386
+
+[epyct16.FFTW]
+fold = 0.77
+win_percent = 27
+coverage = 386
+total = 386
+
+[epyct16.FFTL]
+fold = 1.25
+win_percent = 69
+coverage = 386
+total = 386
+
+[epyct16.ducc0]
+fold = 0.31
+win_percent = 4
+coverage = 314
+total = 386
+
+[m1gpu.FFTL]
+fold = 1.29
+win_percent = 73
+coverage = 119
+total = 119
+
+[m1gpu.MPSGraph]
+fold = 0.54
+win_percent = 2
+coverage = 83
+total = 119
+
+[m1gpu.VkFFT]
+fold = 0.75
+win_percent = 25
+coverage = 119
+total = 119
+
+[m1t8.FFTW]
+fold = 0.71
+win_percent = 12
+coverage = 386
+total = 386
+
+[m1t8.FFTL]
+fold = 1.39
+win_percent = 87
+coverage = 386
+total = 386
+
+[m1t8.ducc0]
+fold = 0.34
+win_percent = 2
+coverage = 314
+total = 386
+
+[m1t1.FFTW]
+fold = 0.71
+win_percent = 8
+coverage = 386
+total = 386
+
+[m1t1.FFTL]
+fold = 1.32
+win_percent = 89
+coverage = 386
+total = 386
+
+[m1t1.vDSP]
+fold = 0.98
+win_percent = 29
+coverage = 41
+total = 386
+
+[m1t1.ducc0]
+fold = 0.37
+win_percent = 0
+coverage = 314
+total = 386
