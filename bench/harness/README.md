@@ -81,6 +81,8 @@ the Julia project, the default thread counts, the load limit and the pinning per
 - `machines.local/<id>.toml` (in `bench/`, not versioned) overrides a public profile of the same id
   and adds private ones: host, `remote_root`, Julia binary, project path, load limit. Copy a public
   profile there and add the host fields. A profile with `host` runs over ssh.
+  On a remote host, `remote_root` is the bench directory there, and `project` must be an absolute
+  path (the remote command runs in its `harness/` directory).
 
 Adding a machine means adding a profile; no script changes.
 
