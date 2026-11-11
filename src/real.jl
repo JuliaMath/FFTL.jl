@@ -350,8 +350,9 @@ line_tasks(K, nt) = own_buffers(K) ? 1 : nt
 
 # One line kernel per task. A kernel with buffers of its own (Bluestein, composite) cannot run on two
 # tasks at once, so each task gets a copy; the other kernels are shared.
-task_reallines(line::RealLine{T}, n::Int, σ::Int, nt::Int) where {T} =
-  own_buffers(line) && nt > 1 ? [line; [RealLine{T}(n, σ) for _ in 2:nt]] : [line]
+# The copies have the kernel type of the line (C = RChain for the run-time plans).
+task_reallines(line::RealLine{T}, n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C} =
+  own_buffers(line) && nt > 1 ? [line; [RealLine{T}(n, σ, C) for _ in 2:nt]] : [line]
 rline_tasks(L, nt) = length(L) > 1 ? length(L) : line_tasks(L[1], nt)
 rline_task(L, c) = L[length(L) > 1 ? c : 1]
 

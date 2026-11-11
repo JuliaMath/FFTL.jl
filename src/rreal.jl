@@ -45,7 +45,7 @@ function RRFFTPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:In
   cplan = length(reg) > 1 ? RPlan{T}(csz, reg[2:end], Int(σ); threads = nt) : nothing
   S, offs_r, offs_c = line_layout(dims, d1)
   copybuf = Vector{Complex{T}}(undef, σ == 1 && cplan !== nothing ? prod(csz) : 0)
-  RRFFTPlan{T}(dims, reg, Int(σ), line, task_reallines(line, n, Int(σ), nt), cplan, S, offs_r, offs_c, nt,
+  RRFFTPlan{T}(dims, reg, Int(σ), line, task_reallines(line, n, Int(σ), nt, RChain), cplan, S, offs_r, offs_c, nt,
                thread_buffers(T, n, 5nt), copybuf, T[])
 end
 
