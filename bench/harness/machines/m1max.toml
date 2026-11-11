@@ -2,6 +2,7 @@
 # `label` is the public name written into the .meta files; never a host name.
 
 id = "m1max"
+group = "mac"                    # one physical machine with m1gpu: their jobs run one after another
 label = "Apple M1 Max"
 project = "."                     # Julia project, relative to bench/ (this directory is the environment)
 threads = [1, 8]                  # thread counts run by default (override with --threads)

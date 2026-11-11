@@ -2,6 +2,7 @@
 # processor name; the GPU is the device of that machine.
 
 id = "m1gpu"
+group = "mac"                    # one physical machine with m1max: their jobs run one after another
 label = "Apple M1 Max"
 device = "metal"                  # gpu.jl: Metal.jl, Float32 only
 project = "envs/metal"              # Metal, KernelAbstractions, FFTL dev'd

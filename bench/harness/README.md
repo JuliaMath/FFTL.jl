@@ -89,6 +89,7 @@ Adding a machine means adding a profile; no script changes.
 | field | meaning |
 |---|---|
 | `id`, `label` | profile name; public machine label, written into the output |
+| `group` | profiles on one physical machine (e.g. CPU and GPU of a Mac) share it: their jobs run one after another |
 | `project` | Julia environment (relative to `bench/`, or absolute on the machine) |
 | `threads` | default thread counts |
 | `max_load` | start refused when the 1-minute load is higher (`--force` overrides) |

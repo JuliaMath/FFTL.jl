@@ -2,7 +2,7 @@
 # bar per job (one job = one machine and one thread count).
 #
 #   julia --project=. harness/monitor.jl m1max mymachine [--tier=dev] [--force]
-#   julia --project=. harness/monitor.jl m1max:1,8 mymachine:16 --tier=smoke
+#   julia --project=. harness/monitor.jl m1max:1,8 m1gpu mymachine:16 --tier=smoke   (m1max and m1gpu run one after another)
 #
 # An argument is a machine profile (see profiles.jl), optionally with thread counts.
 # Machines run in parallel; the thread counts of one machine run one after another. A profile with
@@ -94,9 +94,10 @@ function wait_for_quiet(j, p, host, force)
 end
 
 # Runs the jobs of one machine one after another.
-function run_machine(jobs, p, tier, force)
-  host = get(p, "host", nothing)
-  for j in jobs
+# Items: (job, profile) pairs; the jobs of one group run one after another.
+function run_machine(items, tier, force)
+  for (j, p) in items
+    host = get(p, "host", nothing)
     try
       wait_for_quiet(j, p, host, force)
       j.started = time()
@@ -183,19 +184,26 @@ function main(args)
   force = haskey(opts, "force")
   stamp = Dates.format(now(), dateformat"yyyy-mm-ddTHHMMSS")
 
-  groups = Vector{Pair{Dict,Vector{Job}}}()
+  # Profiles with the same `group` (default: their id) share one physical machine: their jobs run one
+  # after another, groups run in parallel.
+  order = String[]
+  groups = Dict{String,Vector{Tuple{Job,Dict}}}()
+  all = Job[]
   for s in specs
     id, th = parse_spec(s)
     p = profile(id)
     threads = th === nothing ? Int.(p["threads"]) : th
     dir = joinpath(HERE, "out", id, tier, stamp)
-    jobs = [Job(id, nt, 0, 0, time(), :waiting, "", nothing, dir) for nt in threads]
-    push!(groups, p => jobs)
+    g = get(p, "group", id)
+    haskey(groups, g) || (push!(order, g); groups[g] = Tuple{Job,Dict}[])
+    for nt in threads
+      j = Job(id, nt, 0, 0, time(), :waiting, "", nothing, dir)
+      push!(all, j); push!(groups[g], (j, p))
+    end
   end
-  all = reduce(vcat, [g[2] for g in groups])
 
   print("\e[?25l")   # hide the cursor while drawing
-  tasks = [@async(run_machine(jobs, p, tier, force)) for (p, jobs) in groups]
+  tasks = [@async(run_machine(groups[g], tier, force)) for g in order]
   try
     render(all, true)
     while any(j -> j.state in (:waiting, :running), all)
