@@ -477,11 +477,26 @@ end
 # M1, DCT-II along dim 2 of n×n against the blocked lines: 0.46–0.64 on one thread (n = 32…1024)
 # and on 8 threads up to 128²; from 256² on 8 threads 0.97–1.7, as the half-length DFT needs three
 # parallel steps where the blocked lines need one.
-use_half_dft(S, n, outer, nt) = S >= 4 && iseven(n) && n >= 4 && (nt == 1 || S * n * outer < 1 << 16)
+# A single even line on several threads has no other parallel loop: it takes the half-length DFT too,
+# from 2^17 points on (M1, 8 threads: 32768 is 3× slower than one thread, 131072 is 1.4× faster).
+use_half_dft(S, n, outer, nt) = iseven(n) && n >= 4 &&
+  (S == 1 && outer == 1 ? nt > 1 && n >= 1 << 17 : S >= 4 && (nt == 1 || S * n * outer < 1 << 16))
 
 function half_dft(::Type{T}, sz, d, kind, z::Vector{Complex{T}}, nt) where {T}
   S, outer = dim_extent(sz, d)
   n = sz[d]
+  if S == 1 && outer == 1 && nt > 1 && n >= 1 << 17 && !iseven(n) && haskey(ODD_KINDS, kind)
+    return half_odd(T, n, ODD_KINDS[kind], nt)
+  end
+  if (kind == REDFT11 || kind == RODFT11) && S == 1 && outer == 1 && nt > 1 && n >= 1 << 17 && iseven(n)
+    return half_iv(T, n, kind == RODFT11, z, nt)
+  end
+  if (kind == REDFT01 || kind == RODFT01) && S == 1 && outer == 1 && nt > 1 && n >= 1 << 17 && iseven(n)
+    return half_iii(T, n, kind == RODFT01, nt)
+  end
+  if (kind == REDFT00 || kind == RODFT00) && S == 1 && outer == 1 && nt > 1 && n >= 1 << 17
+    return half_i(T, n, kind == RODFT00, nt)
+  end
   (kind == REDFT10 || kind == RODFT10 || kind == DHT) && use_half_dft(S, n, outer, nt) || return nothing
   M = n ÷ 2
   zz = reshape(z, S, M, outer)
@@ -490,12 +505,17 @@ function half_dft(::Type{T}, sz, d, kind, z::Vector{Complex{T}}, nt) where {T}
   HalfDFT{T,typeof(cplan)}(S, outer, n, kind == RODFT10, kind == DHT, cplan, zz, w, cis_table(T, M + 1, -1, 0, 2n))
 end
 
+# One line kernel per task. A kernel with buffers of its own (Bluestein, composite) cannot run on
+# two tasks at once, so each task gets a copy; the other kernels are shared.
+task_lines(K::R2RLine{T}, threads::Integer) where {T} =
+  own_buffers(K) && threads > 1 ? [K; [R2RLine{T}(K.kind, K.n) for _ in 2:threads]] : [K]
+
 function R2RPlan{T}(sz::NTuple{N,Int}, kinds, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = Tuple(collect(Int, region isa Integer ? (region,) : region))
   check_r2r_region(reg, N)
   ks = kinds isa R2RKind ? ntuple(_ -> kinds, length(reg)) : Tuple(kinds)
   length(ks) == length(reg) || throw(ArgumentError("one kind per transformed dimension"))
-  lines = Tuple(R2RLine{T}(k, sz[d]) for (k, d) in zip(ks, reg))
+  lines = Tuple(task_lines(R2RLine{T}(k, sz[d]), threads) for (k, d) in zip(ks, reg))
   nt = max(1, Int(threads))
   nmax = maximum((sz[d] for d in reg); init = 1)
   z = Vector{Complex{T}}(undef, prod(sz) ÷ 2)
@@ -531,29 +551,39 @@ Base.IndexStyle(::Type{<:StridedLine}) = IndexLinear()
 
 # one dimension of an Array, each line read and written in place through a StridedLine
 r2r_dim!(y::Array{T}, x::Array{T}, d::Int, K::R2RLine{T}, p::R2RPlan{T}) where {T} =
-  (GC.@preserve x y r2r_dim!(pointer(y), pointer(x), d, K, p); y)
+  (GC.@preserve x y r2r_dim!(pointer(y), pointer(x), d, (K,), p); y)
+r2r_dim!(y::Array{T}, x::Array{T}, d::Int, Ks::Vector{<:R2RLine{T}}, p::R2RPlan{T}) where {T} =
+  (GC.@preserve x y r2r_dim!(pointer(y), pointer(x), d, Ks, p); y)
 
 # p: a plan with sz, nthreads and bufs (R2RPlan, RR2RPlan)
-function r2r_dim!(py::Ptr{T}, px::Ptr{T}, d::Int, K::R2RLine{T}, p) where {T}
+# a tuple, not a vector: no allocation per call
+r2r_dim!(py::Ptr{T}, px::Ptr{T}, d::Int, K::R2RLine{T}, p) where {T} = r2r_dim!(py, px, d, (K,), p)
+
+# Ks: one kernel per task (see task_lines), or one shared kernel.
+function r2r_dim!(py::Ptr{T}, px::Ptr{T}, d::Int, Ks, p) where {T}
   S, outer = dim_extent(p.sz, d)
   n = p.sz[d]
-  S > 1 && return r2r_dim_blocked!(py, px, S, outer, n, K, p)
-  each_line(S * outer, n, line_tasks(K, p.nthreads)) do c, l
+  S > 1 && return r2r_dim_blocked!(py, px, S, outer, n, Ks, p)
+  each_line(S * outer, n, line_tasks_of(Ks, p.nthreads)) do c, l
     local o, i
     o, i = divrem(l, S)
     local off = (i + S * n * o) * sizeof(T)
-    r2r_line!(StridedLine{T}(py + off, S, n), StridedLine{T}(px + off, S, n), K, p.bufs[c])
+    r2r_line!(StridedLine{T}(py + off, S, n), StridedLine{T}(px + off, S, n), Ks[task_kernel(Ks, c)], p.bufs[c])
   end
   nothing
 end
 
+line_tasks_of(Ks, nt) = length(Ks) > 1 ? length(Ks) : line_tasks(Ks[1], nt)
+task_kernel(Ks, c) = length(Ks) > 1 ? c : 1
+
 # Strided lines in blocks of L neighbours: gather the block into a contiguous buffer (one line
 # after the other), transform each line there, scatter back. Reading the lines one by one would
 # use one value per cache line and no SIMD.
-function r2r_dim_blocked!(py::Ptr{T}, px::Ptr{T}, S::Int, outer::Int, n::Int, K::R2RLine{T}, p) where {T}
+function r2r_dim_blocked!(py::Ptr{T}, px::Ptr{T}, S::Int, outer::Int, n::Int, Ks, p) where {T}
   L = r2r_block(T)
   nb = cld(S, L)
-  each_line(nb * outer, n * L, line_tasks(K, p.nthreads)) do c, l
+  each_line(nb * outer, n * L, line_tasks_of(Ks, p.nthreads)) do c, l
+    local K = Ks[task_kernel(Ks, c)]
     local o, b
     o, b = divrem(l, nb)
     local i0 = b * L
@@ -579,6 +609,231 @@ function r2r_dim_blocked!(py::Ptr{T}, px::Ptr{T}, S::Int, outer::Int, n::Int, K:
           unsafe_store!(dst, unsafe_load(pb, q * n + j + 1), q + 1)
         end
       end
+    end
+  end
+  nothing
+end
+
+# DCT-IV and DST-IV of one even line on several threads, as a complex DFT of half the length. With
+# z_m = (x_2m + i x_{n-1-2m}) e^{-iπm/n} and Z = DFT_{n/2}(z), the outputs are y_2k = 2 Re w_k and
+# y_{n-1-2k} = -2 Im w_k, w_k = Z_k e^{-iπ(4k+1)/(4n)} (FFTW's REDFT11 scaling). DST-IV is the DCT-IV of the
+# reversed input times (-1)^k. Checked against FFTW: relerr 2e-16 for n = 8…64.
+struct HalfIV{T,F}
+  n::Int
+  dst::Bool
+  z::Vector{Complex{T}}         # pre-twiddled input, length n ÷ 2
+  zt::Vector{Complex{T}}        # its DFT
+  pre::Vector{Complex{T}}       # e^{-iπm/n}
+  post::Vector{Complex{T}}      # 2 e^{-iπ(4k+1)/(4n)}
+  cplan::F
+end
+
+function half_iv(::Type{T}, n::Int, dst::Bool, z::Vector{Complex{T}}, nt::Int) where {T}
+  M = n ÷ 2
+  pre = Complex{T}[Complex{T}(cis(-π * m / n)) for m in 0:M-1]
+  post = Complex{T}[2 * Complex{T}(cis(-π * (4k + 1) / (4n))) for k in 0:M-1]
+  cplan = FFTLPlan{T}((M,), (1,), -1; threads = nt)
+  HalfIV{T,typeof(cplan)}(n, dst, z, zeros(Complex{T}, M), pre, post, cplan)
+end
+
+half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfIV{T}, nt::Int) where {T} = half_iv!(py, px, H, nt)
+
+function half_iv!(py::Ptr{T}, px::Ptr{T}, H::HalfIV{T}, nt::Int) where {T}
+  n = H.n; M = n ÷ 2; dst = H.dst
+  z = H.z; zt = H.zt; pre = H.pre; post = H.post
+  GC.@preserve H px py begin
+    each_line(M, 1, nt) do c, m
+      @inbounds begin
+        ir = dst ? n - 1 - 2m : 2m
+        ii = dst ? 2m : n - 1 - 2m
+        z[m+1] = Complex{T}(unsafe_load(px, ir + 1), unsafe_load(px, ii + 1)) * pre[m+1]
+      end
+    end
+    mul!(zt, H.cplan, z)
+    each_line(M, 1, nt) do c, k
+      @inbounds begin
+        w = zt[k+1] * post[k+1]
+        # output 2k (even) and n-1-2k (odd): the DST-IV sign (-1)^k is (+1) and (-1) there
+        unsafe_store!(py, real(w), 2k + 1)
+        unsafe_store!(py, dst ? imag(w) : -imag(w), n - 2k)
+      end
+    end
+  end
+  nothing
+end
+
+# All kinds of one odd line on several threads: a complex DFT of length 2n (n for the DHT) of the
+# zero-padded input, with a phase before (pre) and after (post) the transform. Every formula was
+# checked against FFTW for n = 3 … 1001 (relerr 4e-16). DST-III and DST-IV are the DCT of the
+# reversed input times (-1)^k.
+const ODD_KINDS = Dict(REDFT10 => :dct2, RODFT10 => :dst2, REDFT11 => :dct4, RODFT11 => :dst4,
+                       REDFT01 => :dct3, RODFT01 => :dst3, DHT => :dht)
+
+struct HalfOdd{T,F}
+  n::Int
+  L::Int
+  kind::Symbol
+  oidx::Int                    # output index offset of the DFT (1 for the DST-II)
+  rev::Bool                    # DST-III, DST-IV: reversed input
+  alt::Bool                    # DST-III, DST-IV: output signs (-1)^k
+  pre::Vector{Complex{T}}      # per input sample, length n
+  post::Vector{Complex{T}}     # per output sample, length n
+  w::Vector{Complex{T}}        # zero-padded input, length L
+  out::Vector{Complex{T}}      # its DFT
+  cplan::F
+end
+
+function half_odd(::Type{T}, n::Int, kind::Symbol, nt::Int) where {T}
+  L = kind == :dht ? n : 2n
+  σ = (kind == :dct3 || kind == :dst3) ? 1 : -1
+  pre = Vector{Complex{T}}(undef, n)
+  post = Vector{Complex{T}}(undef, n)
+  for j in 0:n-1
+    pre[j+1] = kind in (:dct4, :dst4) ? Complex{T}(cis(-π * j / (2n))) :
+               kind in (:dct3, :dst3) ? (j == 0 ? one(Complex{T}) : 2 * Complex{T}(cis(π * j / (2n)))) : one(Complex{T})
+    post[j+1] = kind == :dct2 ? Complex{T}(cis(-π * j / (2n))) :
+                kind == :dst2 ? Complex{T}(cis(-π * (j + 1) / (2n))) :
+                kind in (:dct4, :dst4) ? Complex{T}(cis(-π * (2j + 1) / (4n))) : one(Complex{T})
+  end
+  cplan = FFTLPlan{T}((L,), (1,), σ; threads = nt)
+  HalfOdd{T,typeof(cplan)}(n, L, kind, kind == :dst2 ? 1 : 0, kind in (:dst3, :dst4), kind in (:dst3, :dst4),
+                           pre, post, zeros(Complex{T}, L), zeros(Complex{T}, L), cplan)
+end
+
+half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfOdd{T}, nt::Int) where {T} = half_odd!(py, px, H, nt)
+
+function half_odd!(py::Ptr{T}, px::Ptr{T}, H::HalfOdd{T}, nt::Int) where {T}
+  n = H.n; L = H.L; kind = H.kind; w = H.w; out = H.out; pre = H.pre; post = H.post
+  GC.@preserve H px py begin
+    each_line(L, 1, nt) do c, j
+      @inbounds begin
+        if j < n
+          src = H.rev ? n - 1 - j : j
+          w[j+1] = unsafe_load(px, src + 1) * pre[j+1]
+        else
+          w[j+1] = zero(Complex{T})
+        end
+      end
+    end
+    mul!(out, H.cplan, w)
+    each_line(n, 1, nt) do c, k
+      @inbounds begin
+        v = post[k+1] * out[k + H.oidx + 1]
+        y = kind == :dst2 ? -2 * imag(v) : kind == :dht ? real(v) - imag(v) :
+            kind in (:dct3, :dst3) ? real(v) : 2 * real(v)
+        H.alt && isodd(k) && (y = -y)
+        unsafe_store!(py, y, k + 1)
+      end
+    end
+  end
+  nothing
+end
+
+# DCT-III and DST-III of one even line on several threads, from two half-length complex DFTs:
+# E_p = Re DFT(x_2q e^{-iπq/n})_p and O_p = Re(e^{-2πip/n} DFT(x_2q+1 e^{-iπ(2q+1)/(2n)})_p) give
+# y_2p = 2(E_p + O_p) - x_0 and y_{n-1-2p} = 2(E_p - O_p) - x_0. DST-III is the DCT-III of the reversed
+# input times (-1)^k. Checked against FFTW: relerr 3e-16 for n = 8…64.
+struct HalfIII{T,F}
+  n::Int
+  dst::Bool
+  a::Vector{Complex{T}}          # pre-twiddled even samples, then their DFT
+  b::Vector{Complex{T}}          # pre-twiddled odd samples, then their DFT
+  pre_a::Vector{Complex{T}}      # e^{-iπq/n}
+  pre_b::Vector{Complex{T}}      # e^{-iπ(2q+1)/(2n)}
+  post::Vector{Complex{T}}       # e^{-2πip/n}
+  x0::Base.RefValue{T}           # the first input value (after reversal), kept for the output pass
+  cplan::F
+end
+
+function half_iii(::Type{T}, n::Int, dst::Bool, nt::Int) where {T}
+  M = n ÷ 2
+  pre_a = Complex{T}[Complex{T}(cis(-π * q / n)) for q in 0:M-1]
+  pre_b = Complex{T}[Complex{T}(cis(-π * (2q + 1) / (2n))) for q in 0:M-1]
+  post = Complex{T}[Complex{T}(cis(-2π * p / n)) for p in 0:M-1]
+  cplan = FFTLPlan{T}((M,), (1,), -1; threads = nt)
+  HalfIII{T,typeof(cplan)}(n, dst, zeros(Complex{T}, M), zeros(Complex{T}, M), pre_a, pre_b, post,
+                            Ref(zero(T)), cplan)
+end
+
+half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfIII{T}, nt::Int) where {T} = half_iii!(py, px, H, nt)
+
+function half_iii!(py::Ptr{T}, px::Ptr{T}, H::HalfIII{T}, nt::Int) where {T}
+  n = H.n; M = n ÷ 2; dst = H.dst
+  a = H.a; b = H.b; pa = H.pre_a; pb = H.pre_b; post = H.post
+  GC.@preserve H px py begin
+    # input index of the (possibly reversed) sample j
+    rd(j) = dst ? n - 1 - j : j
+    each_line(M, 1, nt) do c, q
+      @inbounds begin
+        a[q+1] = unsafe_load(px, rd(2q) + 1) * pa[q+1]
+        b[q+1] = unsafe_load(px, rd(2q + 1) + 1) * pb[q+1]
+      end
+    end
+    H.x0[] = unsafe_load(px, rd(0) + 1)
+    mul!(a, H.cplan, a)
+    mul!(b, H.cplan, b)
+    x0 = H.x0[]
+    each_line(M, 1, nt) do c, p
+      @inbounds begin
+        E = real(a[p+1])
+        O = real(post[p+1] * b[p+1])
+        unsafe_store!(py, 2 * (E + O) - x0, 2p + 1)
+        v = 2 * (E - O) - x0
+        unsafe_store!(py, dst ? -v : v, n - 2p)     # output index n-1-2p is odd for even n
+      end
+    end
+  end
+  nothing
+end
+
+# DCT-I and DST-I of one line on several threads: the real even (DCT-I, length 2(n-1)) or odd (DST-I,
+# length 2(n+1)) extension of the input, transformed by one complex DFT of that length. The real or the
+# negated imaginary part of the DFT is the result. Checked against FFTW for n = 16 … 300000.
+struct HalfI{T,F}
+  n::Int
+  dst::Bool
+  w::Vector{Complex{T}}          # the extended input, length m
+  out::Vector{Complex{T}}        # its DFT
+  cplan::F
+end
+
+function half_i(::Type{T}, n::Int, dst::Bool, nt::Int) where {T}
+  m = 2 * (dst ? n + 1 : n - 1)
+  cplan = FFTLPlan{T}((m,), (1,), -1; threads = nt)
+  HalfI{T,typeof(cplan)}(n, dst, zeros(Complex{T}, m), zeros(Complex{T}, m), cplan)
+end
+
+half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfI{T}, nt::Int) where {T} = half_i!(py, px, H, nt)
+
+function half_i!(py::Ptr{T}, px::Ptr{T}, H::HalfI{T}, nt::Int) where {T}
+  n = H.n; m = length(H.w); dst = H.dst; w = H.w
+  GC.@preserve H px py begin
+    if dst
+      # odd extension about 0 and n+1: w_j = x_{j-1} for 1 ≤ j ≤ n, w_{m-j} = -w_j, zeros at 0 and n+1
+      each_line(m, 1, nt) do c, j
+        @inbounds begin
+          if j == 0 || j == n + 1
+            w[j+1] = 0
+          elseif j <= n
+            w[j+1] = unsafe_load(px, j) + 0im
+          elseif j < m
+            w[j+1] = -(unsafe_load(px, m - j - 1 + 1) + 0im)
+          end
+        end
+      end
+    else
+      # even extension about 0 and n-1: w_j = x_j for j ≤ n-1, w_{m-j} = w_j
+      each_line(m, 1, nt) do c, j
+        @inbounds begin
+          src = j < n ? j : m - j
+          w[j+1] = unsafe_load(px, src + 1) + 0im
+        end
+      end
+    end
+    mul!(H.out, H.cplan, w)
+    out = H.out
+    each_line(n, 1, nt) do c, k
+      @inbounds unsafe_store!(py, dst ? -imag(out[k+2]) : real(out[k+1]), k + 1)
     end
   end
   nothing

@@ -137,9 +137,10 @@ end
 
 # One long even line on several threads: the complex DFT of length n/2 by the four-step
 # algorithm, the pairs in chunks on the tasks.
-function r2c_line_fourstep!(py::Ptr{Complex{T}}, px::Ptr{T}, F::FourStep{T}, K::RealLine{T}, nt::Int) where {T}
+function r2c_line_fourstep!(py::Ptr{Complex{T}}, px::Ptr{T}, F::Kernel{T}, K::RealLine{T}, nt::Int, b1::Ptr{T}, b2::Ptr{T}) where {T}
+  iseven(K.n) || return r2c_line_odd_threads!(py, px, F, K, nt, b1, b2)
   M = K.n ÷ 2
-  run_fourstep!(Ptr{T}(py), px, F, nt)
+  run_half!(Ptr{T}(py), px, F, nt)
   r2c_ends!(py, M)
   np = M ÷ 2; nc = min(np, BLOCKS_PER_THREAD * nt)
   parallel_items(nc, nt) do c, g
@@ -149,7 +150,8 @@ function r2c_line_fourstep!(py::Ptr{Complex{T}}, px::Ptr{T}, F::FourStep{T}, K::
   nothing
 end
 
-function c2r_line_fourstep!(py::Ptr{T}, px::Ptr{Complex{T}}, cb1::Ptr{Complex{T}}, F::FourStep{T}, K::RealLine{T}, nt::Int) where {T}
+function c2r_line_fourstep!(py::Ptr{T}, px::Ptr{Complex{T}}, cb1::Ptr{Complex{T}}, F::Kernel{T}, K::RealLine{T}, nt::Int, b2::Ptr{T}) where {T}
+  iseven(K.n) || return c2r_line_odd_threads!(py, px, cb1, F, K, nt, b2)
   M = K.n ÷ 2
   c2r_ends!(cb1, px, M)
   np = M ÷ 2; nc = min(np, BLOCKS_PER_THREAD * nt)
@@ -157,12 +159,17 @@ function c2r_line_fourstep!(py::Ptr{T}, px::Ptr{Complex{T}}, cb1::Ptr{Complex{T}
     local r = chunk_range(g + 1, nc, np)
     isempty(r) || c2r_pairs!(cb1, px, K, M, first(r) + 1, last(r) + 1)
   end
-  run_fourstep!(py, Ptr{T}(cb1), F, nt)
+  run_half!(py, Ptr{T}(cb1), F, nt)
   nothing
 end
 
-# the four-step plan of a single long line, or nothing (also for the run-time plans)
+# The threaded kernel of the half-length DFT of a single long line, or nothing (also for the run-time plans)
 line_fourstep(p) = nothing
+
+# Half-length DFT of one line on several threads, by the kernel type.
+run_half!(py::Ptr{T}, px::Ptr{T}, K::FourStep{T}, nt::Int) where {T} = run_fourstep!(py, px, K, nt)
+run_half!(py::Ptr{T}, px::Ptr{T}, K::CompositeMT{T}, nt::Int) where {T} = run_composite_mt!(py, px, K, nt)
+run_half!(py::Ptr{T}, px::Ptr{T}, K::BluesteinMT{T}, nt::Int) where {T} = run_bluestein_mt!(py, px, K, nt)
 
 # Lines along dimension d of an array of size `sz` (real side), as (lane stride S, line offsets
 # in elements of the real side and of the complex side).
@@ -186,6 +193,7 @@ mutable struct RFFTLPlan{T<:FFTLFloat,N,K,C,D,F} <: AbstractFFTs.Plan{T}
   sz::NTuple{N,Int}
   region::NTuple{D,Int}
   line::K
+  lines::Vector{K}                  # one line kernel per task (copies of `line` if it has buffers of its own)
   four::F                           # one long even line on several threads: four-step, or nothing
   cplan::C                          # complex passes on the half spectrum, or nothing
   S::Int
@@ -196,8 +204,8 @@ mutable struct RFFTLPlan{T<:FFTLFloat,N,K,C,D,F} <: AbstractFFTs.Plan{T}
   nthreads::Int
   bufs::Vector{Vector{Complex{T}}}  # three per thread, plus line buffers for strided lines
   pinv::AbstractFFTs.Plan
-  RFFTLPlan{T,N,K,C,D,F}(sz, region, line, four, cplan, S, offs_r, offs_c, nt, bufs) where {T,N,K,C,D,F} =
-    new{T,N,K,C,D,F}(sz, region, line, four, cplan, S, offs_r, offs_c, similar(offs_r), similar(offs_c), nt, bufs)
+  RFFTLPlan{T,N,K,C,D,F}(sz, region, line, lines, four, cplan, S, offs_r, offs_c, nt, bufs) where {T,N,K,C,D,F} =
+    new{T,N,K,C,D,F}(sz, region, line, lines, four, cplan, S, offs_r, offs_c, similar(offs_r), similar(offs_c), nt, bufs)
 end
 
 """
@@ -211,6 +219,7 @@ mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C,D,F} <: AbstractFFTs.Plan{Complex{T
   d::Int
   region::NTuple{D,Int}
   line::K
+  lines::Vector{K}                  # one line kernel per task, as in RFFTLPlan
   four::F
   cplan::C
   S::Int
@@ -222,17 +231,63 @@ mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C,D,F} <: AbstractFFTs.Plan{Complex{T
   bufs::Vector{Vector{Complex{T}}}
   copy::Array{Complex{T},N}        # the input, transformed along the complex dimensions
   pinv::AbstractFFTs.Plan
-  BRFFTLPlan{T,N,K,C,D,F}(sz, d, region, line, four, cplan, S, offs_r, offs_c, nt, bufs, copy) where {T,N,K,C,D,F} =
-    new{T,N,K,C,D,F}(sz, d, region, line, four, cplan, S, offs_r, offs_c, similar(offs_r), similar(offs_c), nt, bufs, copy)
+  BRFFTLPlan{T,N,K,C,D,F}(sz, d, region, line, lines, four, cplan, S, offs_r, offs_c, nt, bufs, copy) where {T,N,K,C,D,F} =
+    new{T,N,K,C,D,F}(sz, d, region, line, lines, four, cplan, S, offs_r, offs_c, similar(offs_r), similar(offs_c), nt, bufs, copy)
 end
 
 sortregion(region, N) = Tuple(normregion(region, N))
 
-# One real line of length n on several tasks: four-step for the half-length DFT. The extra
-# parallel pass for the pairs pays off from 256 KB per line on (M1, 8 threads: Float64 32768 and
-# Float32 65536 are 0.6-0.9 of one task, Float64 16384 and Float32 16384-32768 up to 3x slower).
-use_real_fourstep(::Type{T}, n, nt) where {T} =
-  iseven(n) && n * sizeof(T) >= TUNING[].real_fourstep_bytes && use_fourstep(n ÷ 2, nt)
+# One real line of length n on several tasks: the half-length DFT on several threads (four-step for
+# a smooth half length, composite or Bluestein for the others). The extra parallel pass for the
+# pairs needs about 256 KB per line for smooth lengths and 128 KB for non-smooth ones (M1, 8 threads,
+# gain of the threaded over the serial line: Float32 smooth 0.7 at 128 KB, 1.5 at 256 KB; non-smooth
+# 1.05 at 120-130 KB, 1.8 at 147 KB; Float64 non-smooth 1.5 at 240 KB).
+use_real_threads(::Type{T}, n, nt) where {T} =
+  (use_fourstep(inner_length(n), nt) && n * sizeof(T) >= TUNING[].real_fourstep_bytes) ||
+  ((use_composite_mt(T, inner_length(n), nt) || use_bluestein_mt(inner_length(n), nt)) &&
+   n * sizeof(T) >= TUNING[].real_bluestein_bytes)
+
+# Odd n: the full-length DFT on several threads, in the line's buffers. Forward: the real line is
+# the real part of a complex line; backward: the half spectrum is completed by conjugate symmetry.
+function r2c_line_odd_threads!(py::Ptr{Complex{T}}, px::Ptr{T}, F::Kernel{T}, K::RealLine{T}, nt::Int, b1::Ptr{T}, b2::Ptr{T}) where {T}
+  n = K.n
+  cb1 = Ptr{Complex{T}}(b1)
+  for j in 1:n
+    unsafe_store!(cb1, Complex(unsafe_load(px, j), zero(T)), j)
+  end
+  run_half!(b2, b1, F, nt)
+  unsafe_copyto!(py, Ptr{Complex{T}}(b2), nhalf(n))
+  nothing
+end
+
+function c2r_line_odd_threads!(py::Ptr{T}, px::Ptr{Complex{T}}, cb1::Ptr{Complex{T}}, F::Kernel{T}, K::RealLine{T}, nt::Int, b2::Ptr{T}) where {T}
+  n = K.n
+  h = nhalf(n)
+  for k in 1:h
+    unsafe_store!(cb1, unsafe_load(px, k), k)
+  end
+  unsafe_store!(cb1, Complex(real(unsafe_load(px, 1)), zero(T)), 1)
+  for k in 1:n-h
+    unsafe_store!(cb1, conj(unsafe_load(px, k + 1)), n - k + 1)
+  end
+  run_half!(Ptr{T}(b2), Ptr{T}(cb1), F, nt)
+  cb2 = Ptr{Complex{T}}(b2)
+  for j in 1:n
+    unsafe_store!(py, real(unsafe_load(cb2, j)), j)
+  end
+  nothing
+end
+
+# Length of the DFT that a line kernel runs: n ÷ 2 for even n (pairs of reals), n for odd n.
+inner_length(n) = iseven(n) ? n ÷ 2 : n
+
+# The threaded kernel of the DFT of length h (σ = -1 forward, +1 backward), or nothing.
+function half_threads(::Type{T}, h, σ, nt) where {T}
+  use_fourstep(h, nt) && return FourStep{T}(h, σ, nt)
+  use_composite_mt(T, h, nt) && return CompositeMT{T}(h, σ, nt)
+  use_bluestein_mt(h, nt) && return BluesteinMT{T}(h, σ, nt)
+  nothing
+end
 
 function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
   reg = sortregion(region, N)
@@ -245,8 +300,9 @@ function RFFTLPlan{T}(sz::NTuple{N,Int}, region; threads::Integer = Threads.nthr
   S, offs_r, offs_c = line_layout(sz, d1)
   nt = max(1, Int(threads))
   bufs = thread_buffers(T, n, 5nt)
-  four = length(offs_r) == 1 && use_real_fourstep(T, n, nt) ? FourStep{T}(n ÷ 2, -1, nt) : nothing
-  RFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg),typeof(four)}(sz, reg, line, four, cplan, S, offs_r, offs_c, nt, bufs)
+  four = length(offs_r) == 1 && use_real_threads(T, n, nt) ? half_threads(T, inner_length(n), -1, nt) : nothing
+  lines = task_reallines(line, n, -1, nt)
+  RFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg),typeof(four)}(sz, reg, line, lines, four, cplan, S, offs_r, offs_c, nt, bufs)
 end
 
 function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Threads.nthreads()) where {T<:FFTLFloat,N}
@@ -261,8 +317,9 @@ function BRFFTLPlan{T}(sz::NTuple{N,Int}, d::Int, region; threads::Integer = Thr
   S, offs_r, offs_c = line_layout(rsz, d1)
   nt = max(1, Int(threads))
   bufs = thread_buffers(T, d, 5nt)
-  four = length(offs_r) == 1 && use_real_fourstep(T, d, nt) ? FourStep{T}(d ÷ 2, 1, nt) : nothing
-  BRFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg),typeof(four)}(sz, d, reg, line, four, cplan, S, offs_r, offs_c, nt, bufs,
+  four = length(offs_r) == 1 && use_real_threads(T, d, nt) ? half_threads(T, inner_length(d), 1, nt) : nothing
+  lines = task_reallines(line, d, 1, nt)
+  BRFFTLPlan{T,N,typeof(line),typeof(cplan),length(reg),typeof(four)}(sz, d, reg, line, lines, four, cplan, S, offs_r, offs_c, nt, bufs,
                                               Array{Complex{T},N}(undef, sz))
 end
 
@@ -290,6 +347,14 @@ end
 own_buffers(k) = k isa Union{Bluestein,Composite}
 own_buffers(K::RealLine) = K.inner isa Union{Bluestein,Composite}
 line_tasks(K, nt) = own_buffers(K) ? 1 : nt
+
+# One line kernel per task. A kernel with buffers of its own (Bluestein, composite) cannot run on two
+# tasks at once, so each task gets a copy; the other kernels are shared.
+# The copies have the kernel type of the line (C = RChain for the run-time plans).
+task_reallines(line::RealLine{T}, n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C} =
+  own_buffers(line) && nt > 1 ? [line; [RealLine{T}(n, σ, C) for _ in 2:nt]] : [line]
+rline_tasks(L, nt) = length(L) > 1 ? length(L) : line_tasks(L[1], nt)
+rline_task(L, c) = L[length(L) > 1 ? c : 1]
 
 # Runs f(c, i) for the lines i = 0…nlines-1 on the plan's tasks.
 function each_line(f::F, nlines, n, nt) where {F}
@@ -343,26 +408,33 @@ function r2c_contiguous!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T}
   b = p.bufs
   if length(p.offs_r) == 1
     F = line_fourstep(p)
-    F === nothing || return r2c_line_fourstep!(py, px, F, p.line, p.nthreads)
+    F === nothing || return r2c_line_fourstep!(py, px, F, p.line, p.nthreads, cptr(b[1]), cptr(b[2]))
     return r2c_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
   end
-  each_line(length(p.offs_r), p.line.n, line_tasks(p.line, p.nthreads)) do c, i
+  each_line(length(p.offs_r), p.line.n, rline_tasks(p.lines, p.nthreads)) do c, i
     local b = p.bufs
     r2c_line!(py + p.offs_c[i+1] * sizeof(Complex{T}), px + p.offs_r[i+1] * sizeof(T),
-              cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
+              cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), rline_task(p.lines, c))
   end
 end
 
+# one kernel for all tasks
+# a tuple, not a vector: no allocation per call
+r2c_lines!(py, px, offs_y, offs_x, Sy, Sx, line::RealLine, bufs, nt::Int) =
+  r2c_lines!(py, px, offs_y, offs_x, Sy, Sx, (line,), bufs, nt)
+c2r_lines!(py, px, offs_y, offs_x, Sy, Sx, line::RealLine, bufs, nt::Int) =
+  c2r_lines!(py, px, offs_y, offs_x, Sy, Sx, (line,), bufs, nt)
+
 # strided line: gather into a contiguous buffer, transform, scatter
 function r2c_lines!(py::Ptr{Complex{T}}, px::Ptr{T}, offs_y::Vector{Int}, offs_x::Vector{Int}, Sy::Int, Sx::Int,
-                    line::L, bufs::Vector{Vector{Complex{T}}}, nt::Int) where {T,L<:RealLine{T}}
-  n = line.n; h = nhalf(n)
-  each_line(length(offs_x), n, line_tasks(line, nt)) do c, i
+                    lines::Union{Tuple,Vector}, bufs::Vector{Vector{Complex{T}}}, nt::Int) where {T}
+  n = lines[1].n; h = nhalf(n)
+  each_line(length(offs_x), n, rline_tasks(lines, nt)) do c, i
     local lr = Ptr{T}(cptr(bufs[5c-1])); local lc = Ptr{Complex{T}}(cptr(bufs[5c]))
     for j in 0:n-1
       unsafe_store!(lr, unsafe_load(px, offs_x[i+1] + Sx * j + 1), j + 1)
     end
-    r2c_line!(lc, lr, cptr(bufs[5c-4]), cptr(bufs[5c-3]), cptr(bufs[5c-2]), line)
+    r2c_line!(lc, lr, cptr(bufs[5c-4]), cptr(bufs[5c-3]), cptr(bufs[5c-2]), rline_task(lines, c))
     for k in 0:h-1
       unsafe_store!(py, unsafe_load(lc, k + 1), offs_y[i+1] + Sy * k + 1)
     end
@@ -426,25 +498,25 @@ function c2r_contiguous!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T}
   b = p.bufs
   if length(p.offs_r) == 1
     F = line_fourstep(p)
-    F === nothing || return c2r_line_fourstep!(py, px, Ptr{Complex{T}}(cptr(b[1])), F, p.line, p.nthreads)
+    F === nothing || return c2r_line_fourstep!(py, px, Ptr{Complex{T}}(cptr(b[1])), F, p.line, p.nthreads, cptr(b[2]))
     return c2r_line!(py, px, cptr(b[1]), cptr(b[2]), cptr(b[3]), p.line)
   end
-  each_line(length(p.offs_r), p.line.n, line_tasks(p.line, p.nthreads)) do c, i
+  each_line(length(p.offs_r), p.line.n, rline_tasks(p.lines, p.nthreads)) do c, i
     local b = p.bufs
     c2r_line!(py + p.offs_r[i+1] * sizeof(T), px + p.offs_c[i+1] * sizeof(Complex{T}),
-              cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), p.line)
+              cptr(b[5c-4]), cptr(b[5c-3]), cptr(b[5c-2]), rline_task(p.lines, c))
   end
 end
 
 function c2r_lines!(py::Ptr{T}, px::Ptr{Complex{T}}, offs_y::Vector{Int}, offs_x::Vector{Int}, Sy::Int, Sx::Int,
-                    line::L, bufs::Vector{Vector{Complex{T}}}, nt::Int) where {T,L<:RealLine{T}}
-  n = line.n; h = nhalf(n)
-  each_line(length(offs_x), n, line_tasks(line, nt)) do c, i
+                    lines::Union{Tuple,Vector}, bufs::Vector{Vector{Complex{T}}}, nt::Int) where {T}
+  n = lines[1].n; h = nhalf(n)
+  each_line(length(offs_x), n, rline_tasks(lines, nt)) do c, i
     local lr = Ptr{T}(cptr(bufs[5c-1])); local lc = Ptr{Complex{T}}(cptr(bufs[5c]))
     for k in 0:h-1
       unsafe_store!(lc, unsafe_load(px, offs_x[i+1] + Sx * k + 1), k + 1)
     end
-    c2r_line!(lr, lc, cptr(bufs[5c-4]), cptr(bufs[5c-3]), cptr(bufs[5c-2]), line)
+    c2r_line!(lr, lc, cptr(bufs[5c-4]), cptr(bufs[5c-3]), cptr(bufs[5c-2]), rline_task(lines, c))
     for j in 0:n-1
       unsafe_store!(py, unsafe_load(lr, j + 1), offs_y[i+1] + Sy * j + 1)
     end
@@ -454,9 +526,9 @@ end
 
 # the strided batches of RFFTLPlan and RRFFTPlan: input and output with the same stride S
 r2c_strided!(py::Ptr{Complex{T}}, px::Ptr{T}, p) where {T} =
-  r2c_lines!(py, px, p.offs_c, p.offs_r, p.S, p.S, p.line, p.bufs, p.nthreads)
+  r2c_lines!(py, px, p.offs_c, p.offs_r, p.S, p.S, p.lines, p.bufs, p.nthreads)
 c2r_strided!(py::Ptr{T}, px::Ptr{Complex{T}}, p) where {T} =
-  c2r_lines!(py, px, p.offs_r, p.offs_c, p.S, p.S, p.line, p.bufs, p.nthreads)
+  c2r_lines!(py, px, p.offs_r, p.offs_c, p.S, p.S, p.lines, p.bufs, p.nthreads)
 
 Base.:*(p::RFFTLPlan{T,N}, x::StridedArray{T,N}) where {T,N} =
   mul!(Array{Complex{T},N}(undef, AbstractFFTs.output_size(p)), p, x)

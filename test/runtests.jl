@@ -774,7 +774,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "run-time real plans, $T" for T in pick((Float64, Float32), (Float64,))
-    for (sz, reg, nt) in [((16,), [1], 1), ((101,), [1], 1), ((12, 10), [1, 2], 3), ((12, 10), [2], 1), ((9, 8, 7), [1, 3], 3)]
+    for (sz, reg, nt) in [((16,), [1], 1), ((101,), [1], 1), ((12, 10), [1, 2], 3), ((12, 10), [2], 1), ((9, 8, 7), [1, 3], 3),
+                          ((101,), [1], 4), ((7, 101), [1, 2], 4)]   # non-smooth lines on several tasks
       x = randn(T, sz)
       p = FFTL.RRFFTPlan{T}(collect(sz), reg, -1; threads = nt)
       ref = FFTL.plan_rfft(x, Tuple(reg)) * x
@@ -843,6 +844,15 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       x = randn(T, n)
       p = FFTL.plan_rfft(x; threads = 3)
       @test p.four !== nothing
+      X = p * x
+      @test relerr(X, FFTL.plan_rfft(x; threads = 1) * x) < 10tol(T)
+      @test relerr(FFTL.plan_brfft(X, n; threads = 3) * X, n .* x) < 10tol(T)
+    end
+    # non-smooth lengths, even and odd: the half-length (even) or the full-length (odd) DFT on threads
+    for (T, n) in ((Float64, 37888), (Float64, 92935), (Float64, 2 * 1009 * 37), (Float32, 33490), (Float32, 92935), (Float32, 100003))
+      x = randn(T, n)
+      p = FFTL.plan_rfft(x; threads = 3)
+      @test p.four isa Union{FFTL.CompositeMT,FFTL.BluesteinMT}
       X = p * x
       @test relerr(X, FFTL.plan_rfft(x; threads = 1) * x) < 10tol(T)
       @test relerr(FFTL.plan_brfft(X, n; threads = 3) * X, n .* x) < 10tol(T)
