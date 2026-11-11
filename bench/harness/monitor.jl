@@ -75,25 +75,32 @@ function job_command(p, tier, nt, out)
   end
 end
 
+# Waits until the machine is quiet enough for a job: load below max_load and, for GPU profiles on a
+# host, GPU utilisation below gpu_max_util. Shows the job as waiting and checks again every 30 s.
+# --force skips the checks.
+function wait_for_quiet(j, p, host, force)
+  force && return
+  while true
+    l = load1(host)
+    busy = l > p["max_load"] ? "load $(round(l; digits = 2)) above max_load $(p["max_load"])" : nothing
+    if busy === nothing && haskey(p, "gpu_max_util") && host !== nothing
+      u = gpu_util(host)
+      u > p["gpu_max_util"] && (busy = "GPU $(u) % busy, above gpu_max_util $(p["gpu_max_util"])")
+    end
+    busy === nothing && return
+    j.state = :waiting; j.msg = busy
+    sleep(30)
+  end
+end
+
 # Runs the jobs of one machine one after another.
 function run_machine(jobs, p, tier, force)
   host = get(p, "host", nothing)
   for j in jobs
-    j.started = time()
-    j.state = :running
     try
-      l = load1(host)
-      if l > p["max_load"] && !force
-        j.state = :failed; j.msg = "load $(round(l; digits = 2)) above max_load $(p["max_load"]); --force"
-        continue
-      end
-      if haskey(p, "gpu_max_util") && host !== nothing && !force
-        u = gpu_util(host)
-        if u > p["gpu_max_util"]
-          j.state = :failed; j.msg = "GPU busy: $(u) % utilisation above gpu_max_util $(p["gpu_max_util"]); --force"
-          continue
-        end
-      end
+      wait_for_quiet(j, p, host, force)
+      j.started = time()
+      j.state = :running
       out = joinpath(j.outdir, "t$(j.nt).csv")
       mkpath(j.outdir)
       cmd = job_command(p, tier, j.nt, out)
@@ -136,7 +143,7 @@ end
 function line(j)
   name = rpad("$(j.machine) t$(j.nt)", 16)
   if j.state == :waiting
-    return "$name  waiting"
+    return "$name  waiting: $(j.msg)"
   elseif j.state == :failed
     return "$name  FAILED: $(j.msg)"
   end
