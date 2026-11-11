@@ -4,7 +4,7 @@
 id = "m1gpu"
 label = "Apple M1 Max"
 device = "metal"                  # gpu.jl: Metal.jl, Float32 only
-project = "."                     # bench/ is the environment (Metal, KernelAbstractions, FFTL dev'd)
+project = "envs/metal"              # Metal, KernelAbstractions, FFTL dev'd
 threads = [0]                     # no CPU threads; the monitor starts Julia with one thread
 max_load = 8.0
 libs = ["fftl", "mpsgraph", "vkfft"]

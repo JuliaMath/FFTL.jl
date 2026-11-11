@@ -105,8 +105,9 @@ A profile with `device = "metal"` or `"cuda"` runs the catalog on the GPU, with 
 back-to-back transforms, per transform; separate-process libraries report their own times. Not
 included: vkfft_batch. DHT is not run on the GPU.
 
-GPU profiles need the packages of the device (Metal.jl or CUDA.jl) in their environment; the
-public `bench/Project.toml` does not list them.
+GPU profiles use their own environment, `bench/envs/metal` for Metal (Metal.jl, KernelAbstractions,
+FFTL dev'd from the checkout). The CPU environment `bench/Project.toml` does not list them. Instantiate
+it once with `julia --project=envs/metal -e 'using Pkg; Pkg.instantiate()'`.
 
 ## Raw format
 
