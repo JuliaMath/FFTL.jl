@@ -14,6 +14,7 @@ Size thresholds of FFTL (see `TUNING`):
 - `factor_twiddles`: bytes above which the four-step uses factor twiddle tables
 - `bluestein_mt_min`: length from which Bluestein's algorithm runs on several threads
 - `real_fourstep_bytes`: bytes of a real line from which it runs as a four-step on several threads
+- `real_bluestein_bytes`: bytes of a real line from which a non-smooth one runs on several threads
 - `plane_budget`: complex values of a plane (dimensions 1 and 2) that may be fused
 """
 struct Tuning
@@ -23,10 +24,11 @@ struct Tuning
   factor_twiddles::Int
   bluestein_mt_min::Int
   real_fourstep_bytes::Int
+  real_bluestein_bytes::Int
   plane_budget::Int
 end
 
-const DEFAULT_TUNING = Tuning(1 << 15, 1 << 16, 1 << 13, 1 << 23, 1 << 14, 1 << 18, 1 << 17)
+const DEFAULT_TUNING = Tuning(1 << 15, 1 << 16, 1 << 13, 1 << 23, 1 << 14, 1 << 18, 1 << 17, 1 << 17)
 
 # Read at plan construction, except thread_min_work, block_budget and plane_budget, which a pass
 # reads when it starts. Assigning `FFTL.TUNING[] = …` changes the settings for plans made afterwards
