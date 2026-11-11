@@ -1,0 +1,9 @@
+# Tier "smoke": a sanity check of the pipeline, a few minutes per thread count.
+# Not for published numbers.
+
+name = "smoke"
+stride = 15          # every 15th catalog case (cases 1, 16, 31, ...)
+rounds = 1           # one round: no statistics, only a check that the pipeline runs
+budget = 0.05        # seconds of timing per library and round
+aa = false           # no A/A pair
+kinds = ["c2c", "r2c", "c2r", "r2r_REDFT10", "r2r_REDFT00", "r2r_REDFT01", "r2r_REDFT11", "r2r_RODFT10", "r2r_DHT"]

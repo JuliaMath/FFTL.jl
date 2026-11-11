@@ -1,0 +1,9 @@
+# Tier "campaign": the measurement campaign. Seven rounds, long budget, A/A pair.
+# Only on quiet machines, one thread count at a time.
+
+name = "campaign"
+stride = 1
+rounds = 7
+budget = 0.2
+aa = true
+kinds = ["c2c", "r2c", "c2r", "r2r_REDFT10", "r2r_REDFT00", "r2r_REDFT01", "r2r_REDFT11", "r2r_RODFT10", "r2r_DHT"]
