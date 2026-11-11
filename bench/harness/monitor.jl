@@ -48,7 +48,8 @@ function load1(host)
   m === nothing ? NaN : parse(Float64, replace(m.captures[1], "," => "."))
 end
 
-pin_of(p, nt) = Sys.islinux() ? get(get(p, "pin", Dict()), string(nt), nothing) : nothing
+# Remote profiles are pinned on their Linux host whatever the local OS is.
+pin_of(p, nt) = (haskey(p, "host") || Sys.islinux()) ? get(get(p, "pin", Dict()), string(nt), nothing) : nothing
 
 # Highest utilisation (%) of the GPUs of a remote host.
 gpu_util(host) = maximum(parse.(Float64, split(readchomp(`ssh -x $host nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits`), "\n")))
@@ -63,12 +64,12 @@ function job_command(p, tier, nt, out)
               isabspath(p["project"]) ? p["project"] : normpath(joinpath(BENCH, p["project"]))
     measure = joinpath(HERE, "measure.jl")
     cmd = `$julia --startup-file=no --project=$project -t $(max(nt, 1)) $measure $tier $(p["id"]) $nt $out`
-    pin === nothing ? cmd : `taskset -c $pin $cmd`
+    pin === nothing ? cmd : addenv(`taskset -c $pin $cmd`, "HARNESS_PIN" => pin)
   else
     root = p["remote_root"]
     remote_out = "$root/harness/out/$(p["id"])/$tier/$(basename(dirname(out)))/t$nt.csv"
     body = "mkdir -p $(dirname(remote_out)) && cd $root/harness && " *
-           (pin === nothing ? "" : "taskset -c $pin ") *
+           (pin === nothing ? "" : "HARNESS_PIN=$pin taskset -c $pin ") *
            "$(p["julia"]) --startup-file=no --project=$(p["project"]) -t $(max(nt, 1)) measure.jl $tier $(p["id"]) $nt $remote_out"
     `ssh -x $host $body`
   end
