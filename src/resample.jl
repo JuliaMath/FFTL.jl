@@ -12,7 +12,7 @@ struct Resample{T,F,WS} <: Kernel{T}
   corr::Vector{T}                 # 1/Φ̂(j'/m) for input j (j' = j, or j - n for the upper half)
   ws::WS                          # interpolation weights (RTable or RPoly)
   fwd::F                          # length m, sign σ
-  buf::Vector{Complex{T}}
+  buf::Vector{Complex{T}}         # the grid between two margins (resample_grid)
   work1::Vector{Complex{T}}
   work2::Vector{Complex{T}}
 end
@@ -42,11 +42,31 @@ resample_width(::Type{T}) where {T} = 4 * cld(ceil(Int, log(1 / resample_tol(T))
 # parity on Tiger Lake: F64 near 1 MiB, F32 (8 taps, less Horner work per byte saved) near 4 MiB.
 resample_table_bytes(::Type{T}) where {T} = sizeof(T) >= 8 ? 1 << 20 : 1 << 22
 
+# Margin on each side of a grid, in complex values. After the transform the margins hold copies of
+# the other end of the grid (wrap_grid!), so the window of every output, w values from an index in
+# -w/2+1 … m-w/2, is one contiguous load. Only w/2 values per side are used; the margin is a whole
+# page so that the grid keeps the page offset of the two work buffers. With a 128-byte margin the
+# prime length 100003 took 1.03–1.05 of the time without margins, with a page 0.98 (Float64, EPYC
+# 9354, one thread).
+resample_pad(::Type{T}) where {T} = 4096 ÷ sizeof(Complex{T})
+resample_grid(::Type{T}, m::Int) where {T} = Vector{Complex{T}}(undef, m + 2 * resample_pad(T))
+grid_ptr(buf::Vector{Complex{T}}) where {T} = cptr(buf) + resample_pad(T) * sizeof(Complex{T})
+
+# Fill the margins of a transformed grid of length m ≥ w/2.
+@inline function wrap_grid!(buf::Vector{Complex{T}}, m::Int) where {T}
+  H = resample_pad(T); h = resample_width(T) ÷ 2
+  @inbounds for t in 1:h
+    buf[H-h+t] = buf[H+m-h+t]
+    buf[H+m+t] = buf[H+t]
+  end
+  nothing
+end
+
 # C: TypedKernels, or RChain for run-time plans (their grid transforms are chains)
 function Resample{T}(n::Int, σ::Int, ::Type{C} = TypedKernels) where {T,C}
   m, _, corr, ws = resample_parts(T, n)
   fwd = resample_transform(T, m, σ, C)
-  Resample{T,typeof(fwd),typeof(ws)}(n, corr, ws, fwd, Vector{Complex{T}}(undef, m),
+  Resample{T,typeof(fwd),typeof(ws)}(n, corr, ws, fwd, resample_grid(T, m),
                                      Vector{Complex{T}}(undef, m), Vector{Complex{T}}(undef, m))
 end
 
@@ -208,7 +228,7 @@ function resample_fit(::Type{T}, β, w::Int, P::Int, d::Int) where {T}
   C, err
 end
 
-# Grid start (0-based, unwrapped) and weights of output k. The table needs no state; the
+# Grid start (0-based, not reduced mod m) and weights of output k. The table needs no state; the
 # polynomials step st = (q, r), k·m = q·n + r, by (mq, mr) = divrem(m, n) per output, from output k.
 rstart(::RTable, k, m, n) = nothing
 rstart(::RPoly, k, m, n) = divrem(k * m, n)
@@ -218,13 +238,6 @@ rstart(::RPoly, k, m, n) = divrem(k * m, n)
   c = r >= n
   (q + mq + c, r - ifelse(c, n, 0))
 end
-# all U windows from output k inside the grid (for the polynomials a bound on the last start: each
-# output advances q by at most mq + 1)
-@inline rblock_ok(ws::RTable, k, st, U, w, m, mq) =
-  @inbounds ws.l0[k+1] >= 0 && ws.l0[k+U] + w <= m
-@inline rblock_ok(::RPoly, k, (q, r), U, w, m, mq) =
-  q - w ÷ 2 + 1 >= 0 && q + (U - 1) * (mq + 1) + w ÷ 2 + 1 <= m
-
 @inline rweights(ws::RTable{T}, k, st, n, ::Val{w}) where {T,w} =
   @inbounds (Int(ws.l0[k+1]), vload(Vec{2w,T}, pointer(ws.wt) + k * 2w * sizeof(T)))
 @inline function rweights(ws::RPoly{T}, k, (q, r), n, ::Val{w}) where {T,w}
@@ -244,19 +257,20 @@ end
 # px + i + Sx·j, py + i + Sy·j. Uses the kernel's own buffers (one thread at a time).
 function run_lanes!(py::Ptr{T}, px::Ptr{T}, ::Ptr{T}, ::Ptr{T}, P::Resample{T}, Sx::Int, Sy::Int,
                     B::Int) where {T}
-  n = P.n; buf = P.buf; m = length(buf); hp = cld(n, 2); corr = P.corr
+  n = P.n; buf = P.buf; H = resample_pad(T); m = length(buf) - 2H; hp = cld(n, 2); corr = P.corr
   cx = Ptr{Complex{T}}(px); cy = Ptr{Complex{T}}(py)
   GC.@preserve P begin
-    pb = cptr(buf)
+    pb = grid_ptr(buf)
     for i in 1:B
       @inbounds for j in 1:hp
-        buf[j] = unsafe_load(cx, i + Sx * (j - 1)) * corr[j]
+        buf[H+j] = unsafe_load(cx, i + Sx * (j - 1)) * corr[j]
       end
       @inbounds for j in hp+1:n
-        buf[m-n+j] = unsafe_load(cx, i + Sx * (j - 1)) * corr[j]
+        buf[H+m-n+j] = unsafe_load(cx, i + Sx * (j - 1)) * corr[j]
       end
-      fill!(view(buf, hp+1:m-n+hp), zero(Complex{T}))
+      fill!(view(buf, H+hp+1:H+m-n+hp), zero(Complex{T}))
       run!(pb, pb, cptr(P.work1), cptr(P.work2), P.fwd, 1)
+      wrap_grid!(buf, m)
       resample_interp!(cy, i, Sy, pb, P.ws, n, m, Val(resample_width(T)), 0, n)
     end
   end
@@ -291,22 +305,23 @@ end
 # twiddles w_n^(j2·k1), folded into the deconvolution; output element k2 at y + i + Sy·(k1 + s·k2).
 function twiddled_leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, rs::Resample{T}, n::Int, s::Int,
                             B::Int, i::Int, k1::Int, Sy::Int) where {T}
-  q = rs.n; buf = rs.buf; M = length(buf); hp = cld(q, 2); corr = rs.corr
+  q = rs.n; buf = rs.buf; H = resample_pad(T); M = length(buf) - 2H; hp = cld(q, 2); corr = rs.corr
   cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
   GC.@preserve rs tw begin
-    pb = cptr(buf)
+    pb = grid_ptr(buf)
     zb = i + B * q * k1 + 1
     e = 0                           # (j2·k1) mod n
     @inbounds for j in 1:hp
-      buf[j] = unsafe_load(cz, zb + B * (j - 1)) * tw[e+1] * corr[j]
+      buf[H+j] = unsafe_load(cz, zb + B * (j - 1)) * tw[e+1] * corr[j]
       e += k1; e >= n && (e -= n)
     end
     @inbounds for j in hp+1:q
-      buf[M-q+j] = unsafe_load(cz, zb + B * (j - 1)) * tw[e+1] * corr[j]
+      buf[H+M-q+j] = unsafe_load(cz, zb + B * (j - 1)) * tw[e+1] * corr[j]
       e += k1; e >= n && (e -= n)
     end
-    fill!(view(buf, hp+1:M-q+hp), zero(Complex{T}))
+    fill!(view(buf, H+hp+1:H+M-q+hp), zero(Complex{T}))
     run!(pb, pb, cptr(rs.work1), cptr(rs.work2), rs.fwd, 1)
+    wrap_grid!(buf, M)
     resample_interp!(cy, i + Sy * k1 + 1, Sy * s, pb, rs.ws, q, M, Val(resample_width(T)), 0, q)
   end
   nothing
@@ -325,7 +340,7 @@ leftover_item!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::RsBatch{T}, n:
 
 # Grid length of the leftover kernel of a composite kernel.
 grid_size(R::RsBatch) = R.m
-grid_size(R::Resample) = length(R.buf)
+grid_size(R::Resample{T}) where {T} = length(R.buf) - 2 * resample_pad(T)
 
 # Tree reduction of U vectors of U complex values, each vector one output's partial sums, into one
 # vector of the U outputs: per level, pairs of vectors halve their segments (FFTJ's interleaved
@@ -361,10 +376,11 @@ function tree_reduce_units(vecs, U)
   stmts, res
 end
 
-# Output k = Σ_t weight_t · grid[(l + t) mod m]. Blocks of U = V/2 outputs (V lanes in the widest
-# vector) whose windows lie inside the grid: per output one load of the w interleaved grid values,
-# folded with the weights into V lanes by FMAs, then one tree reduction for the block and one
-# store. Other outputs one at a time. Outputs k0 … k1-1 (a range of them per task on threads).
+# Output k = Σ_t weight_t · grid[(l + t) mod m], read as grid[l + t] from a grid with filled margins
+# (pb points at grid value 0, see wrap_grid!). Blocks of U = V/2 outputs (V lanes in the widest
+# vector): per output one load of the w interleaved grid values, folded with the weights into V lanes
+# by FMAs, then one tree reduction for the block and one store. The outputs left over at the end one
+# at a time. Outputs k0 … k1-1 (a range of them per task on threads).
 @generated function resample_interp!(cy::Ptr{Complex{T}}, i::Int, Sy::Int, pb::Ptr{T}, ws::WS, n::Int,
                                      m::Int, ::Val{w}, k0::Int, k1::Int) where {T,WS,w}
   V = 2 * ncomplex(first(vec_ladder(T)))
@@ -391,7 +407,7 @@ end
     st = rstart(ws, k0, m, n)
     k = k0
     GC.@preserve ws @inbounds while k < k1
-      if $blocked && k + $U <= k1 && rblock_ok(ws, k, st, $U, $w, m, mq)
+      if $blocked && k + $U <= k1
         $(blk...)
         $(stmts...)
         if Sy == 1
@@ -406,18 +422,8 @@ end
         continue
       end
       l, wv = rweights(ws, k, st, n, Val($w))
-      if l >= 0 && l + $w <= m
-        p = vload(Vec{$(2w),T}, pb + l * $(2sizeof(T))) * wv
-        acc = Complex{T}(sum(shufflevector(p, Val($(Tuple(0:2:2w-1))))), sum(shufflevector(p, Val($(Tuple(1:2:2w-1))))))
-      else                          # window wraps around the grid ends
-        acc = zero(Complex{T})
-        for t in 0:$(w - 1)
-          g = l + t                 # l > -w and l + t < m + w: one correction, no division
-          g += ifelse(g < 0, m, 0)
-          g -= ifelse(g >= m, m, 0)
-          acc += wv[2t+1] * unsafe_load(Ptr{Complex{T}}(pb), g + 1)
-        end
-      end
+      p = vload(Vec{$(2w),T}, pb + l * $(2sizeof(T))) * wv
+      acc = Complex{T}(sum(shufflevector(p, Val($(Tuple(0:2:2w-1))))), sum(shufflevector(p, Val($(Tuple(1:2:2w-1))))))
       unsafe_store!(cy, acc, i + Sy * k)
       st = radvance(ws, st, mq, mr, n)
       k += 1

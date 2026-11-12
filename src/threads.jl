@@ -298,7 +298,7 @@ struct ResampleMT{T,F,WS} <: Kernel{T}
   corr::Vector{T}
   ws::WS
   fwd::F
-  buf::Vector{Complex{T}}         # the grid, length m
+  buf::Vector{Complex{T}}         # the grid between two margins (resample_grid)
 end
 
 function ResampleMT{T}(n::Int, σ::Int, nt::Int) where {T}
@@ -308,24 +308,26 @@ function ResampleMT{T}(n::Int, σ::Int, nt::Int) where {T}
   end
   _, _, corr, ws = resample_parts(T, n, m)
   fwd = FourStep{T}(m, σ, nt)
-  ResampleMT{T,typeof(fwd),typeof(ws)}(n, corr, ws, fwd, Vector{Complex{T}}(undef, m))
+  ResampleMT{T,typeof(fwd),typeof(ws)}(n, corr, ws, fwd, resample_grid(T, m))
 end
 
 function run_resample_mt!(py::Ptr{T}, px::Ptr{T}, P::ResampleMT{T}, nt::Int) where {T}
-  n = P.n; m = length(P.buf); hp = cld(n, 2)
+  n = P.n; m = length(P.buf) - 2 * resample_pad(T); hp = cld(n, 2)
   GC.@preserve P begin
     cx = Ptr{Complex{T}}(px); cy = Ptr{Complex{T}}(py)
-    pb = Ptr{Complex{T}}(cptr(P.buf)); pc = pointer(P.corr)
+    pg = grid_ptr(P.buf)
+    pb = Ptr{Complex{T}}(pg); pc = pointer(P.corr)
     chunked(m, nt) do j
       jj = j < hp ? j : j - (m - n)  # input index of grid point j (or a padding zero)
       v = j < hp || jj >= hp ? unsafe_load(cx, jj + 1) * unsafe_load(pc, jj + 1) : zero(Complex{T})
       unsafe_store!(pb, v, j + 1)
     end
-    run_fourstep!(cptr(P.buf), cptr(P.buf), P.fwd, nt)
+    run_fourstep!(pg, pg, P.fwd, nt)
+    wrap_grid!(P.buf, m)
     nch = min(BLOCKS_PER_THREAD * nt, cld(n, 1 << 12))
     parallel_items(nch, nt) do _, it
       r = chunk_range(it + 1, nch, n)
-      isempty(r) || resample_interp!(cy, 1, 1, cptr(P.buf), P.ws, n, m, Val(resample_width(T)), first(r), last(r) + 1)
+      isempty(r) || resample_interp!(cy, 1, 1, pg, P.ws, n, m, Val(resample_width(T)), first(r), last(r) + 1)
     end
   end
   nothing

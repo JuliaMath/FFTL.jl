@@ -78,12 +78,23 @@ s = 32 (`Float64`, q = 37, 1009, 10007, EPYC 9354, one thread; `Float32` 2.1–7
 0.87–0.96). The switch is on the lane count and not on the number of threads, which keeps serial and
 threaded plans bitwise equal.
 
+The grid of a single resampled transform has a margin on each side that holds copies of the other end
+(2026-11-12), so every output is interpolated from one contiguous load. Without it the outputs whose
+window wraps around the grid ends (7 per `Float64` transform, 3 per `Float32`) took a scalar loop at
+about ten times the cost of the others: 250 of 559 ns at n = 37 and 290 of 1104 ns at n = 101. With the
+margin, time over the time without it: n = 37: 0.55, 101: 0.75, 127: 0.79, 1009: 0.96, 100003: 0.98,
+101³: 0.78; against `main`: 0.81, 0.81, 0.77, 0.64, 0.80, 0.83, and 0.85 for 101³ on 8 threads (1.17
+before). `Float64`, EPYC 9354, minima of interleaved runs, the same code against itself within 6 %.
+The margin is a whole page: a margin of 128 bytes moves the grid off the page offset of the work
+buffers, and the prime length 100003 then took 1.03–1.05 of the time without margins.
+
 **Replaced.** Bluestein's algorithm on the leftover and `BluesteinMT` for a whole line on threads
 (2026-11-07). Generic number types and the GPU passes keep Bluestein's algorithm.
 
 **Not done / not checked.** Rader's algorithm (5 of the 45 sweep lengths qualify). Both thresholds were
 measured on Zen 2 only, and the 4 MiB rule is checked on 12 lengths that also took part in its
-derivation. The 32-lane rule was measured on one AVX-512 machine only, not on AVX2 or aarch64.
+derivation. The 32-lane rule was measured on one AVX-512 machine only, not on AVX2 or aarch64, and the grid
+margin on x86 only (512-bit and 256-bit vectors), not on aarch64.
 
 ## One chain form: the radix sequence is data
 
