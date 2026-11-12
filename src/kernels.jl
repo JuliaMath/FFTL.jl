@@ -18,19 +18,22 @@ stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, ::Val{R}, ::Val{σ}, 
 function stage_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
   stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, px + (q + s * (p + $(j - 1) * m)) * $B)) for j in 1:R]
-  twl = [:($(Symbol("w", k)) = cbroadcast($VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
-  stores = Any[:(vstore($(X[1]), py + o * $B))]
+  loads = [:($(a[j]) = vload($VT, $(stream_addr(:xb, :xr, j - 1)))) for j in 1:R]
+  twl = [:($(Symbol("w", k)) = pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T))) for k in 1:R-1]
+  stores = Any[:(vstore($(X[1]), yb0))]
   for k in 1:R-1
-    push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (o + $k * s) * $B)))
+    push!(stores, :(vstore(ccmul_at($(X[k+1]), $(Symbol("w", k))), $(stream_addr(:yb, :yr, k)))))
   end
   quote
+    $(stream_strides(:xr, R, :(s * m * $B))...)
+    $(stream_strides(:yr, R, :(s * $B))...)
     for p in plo:phi-1
       $(twl...)
       for q in 0:$C:s-1
+        $(stream_bases(:xb, :xr, R, :(px + (q + s * p) * $B))...)
         $(loads...)
         $(stmts...)
-        o = q + s * $R * p
+        $(stream_bases(:yb, :yr, R, :(py + (q + s * $R * p) * $B))...)
         $(stores...)
       end
     end
@@ -60,22 +63,51 @@ end
 
 # Stage over a q range: the kernel behind the split of a single line, whose q extent is known
 # at generation time so the vectorised range and the scalar tail are emitted directly.
+# base + i·2^e as one scaled-index address computation (a GEP over an element of 2^e bytes), so
+# that the scaling stays in the addressing mode instead of becoming a value of its own.
+for (e, ty) in enumerate(("i8", "i16", "i32", "i64"))
+  ir = "define ptr @entry(ptr %0, i64 %1) #0 {\ntop:\n  %p = getelementptr $ty, ptr %0, i64 %1\n  ret ptr %p\n}\nattributes #0 = { alwaysinline }"
+  @eval @inline scaled_ptr(b::Ptr{T}, i::Int, ::Val{$(e - 1)}) where {T} = Base.llvmcall(($ir, "entry"), Ptr{T}, Tuple{Ptr{T},Int}, b, i)
+end
+
+# The pointer p, opaque to the loop optimisations: an induction pointer passed through here is
+# not rewritten into one pointer per stream.
+@inline opaque_ptr(p::Ptr{T}) where {T} = Base.llvmcall(
+  ("declare ptr @llvm.launder.invariant.group.p0(ptr)\ndefine ptr @entry(ptr %0) #0 {\ntop:\n  %p = call ptr @llvm.launder.invariant.group.p0(ptr %0)\n  ret ptr %p\n}\nattributes #0 = { alwaysinline }", "entry"),
+  Ptr{T}, Tuple{Ptr{T}}, p)
+
+# Address of stream j (zero-based) of streams r bytes apart: base + odd·r·2^e with odd in
+# (1, 3, 5, 7) and one base per 8 streams, so that a few registers reach every stream.
+function stream_addr(base, r, j)
+  b = Symbol(base, j ÷ 8); k = j % 8
+  k == 0 && return b
+  e = trailing_zeros(k)
+  :(scaled_ptr($b, $(Symbol(r, k >> e)), Val($e)))
+end
+stream_bases(base, r, R, first) =
+  [i == 0 ? :($(Symbol(base, 0)) = opaque_ptr($first)) : :($(Symbol(base, i)) = scaled_ptr($(Symbol(base, i - 1)), $(Symbol(r, 1)), Val(3))) for i in 0:(R-1)÷8]
+stream_strides(r, R, unit) =
+  vcat(:($(Symbol(r, 1)) = $unit), [:($(Symbol(r, o)) = $o * $(Symbol(r, 1))) for o in (3, 5, 7) if o < R])
+
 function stage_range_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
   stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, px + (q + s * (p + $(j - 1) * m)) * $B)) for j in 1:R]
-  twl = [:($(Symbol("w", k)) = cbroadcast($VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
-  stores = Any[:(vstore($(X[1]), py + o * $B))]
+  loads = [:($(a[j]) = vload($VT, $(stream_addr(:xb, :xr, j - 1)))) for j in 1:R]
+  twl = [:($(Symbol("w", k)) = pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T))) for k in 1:R-1]
+  stores = Any[:(vstore($(X[1]), yb0))]
   for k in 1:R-1
-    push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (o + $k * s) * $B)))
+    push!(stores, :(vstore(ccmul_at($(X[k+1]), $(Symbol("w", k))), $(stream_addr(:yb, :yr, k)))))
   end
   quote
+    $(stream_strides(:xr, R, :(s * m * $B))...)
+    $(stream_strides(:yr, R, :(s * $B))...)
     for p in plo:phi-1
       $(twl...)
       for q in qlo:$C:qhi-1
+        $(stream_bases(:xb, :xr, R, :(px + (q + s * p) * $B))...)
         $(loads...)
         $(stmts...)
-        o = q + s * $R * p
+        $(stream_bases(:yb, :yr, R, :(py + (q + s * $R * p) * $B))...)
         $(stores...)
       end
     end
@@ -95,12 +127,15 @@ stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) whe
 function stage_last_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
   stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, px + (q + s * $(j - 1)) * $B)) for j in 1:R]
-  stores = [:(vstore($(X[k+1]), py + (q + $k * s) * $B)) for k in 0:R-1]
+  loads = [:($(a[j]) = vload($VT, $(stream_addr(:xb, :r, j - 1)))) for j in 1:R]
+  stores = [:(vstore($(X[k+1]), $(stream_addr(:yb, :r, k)))) for k in 0:R-1]
   quote
+    $(stream_strides(:r, R, :(s * $B))...)
     for q in qlo:$C:qhi-1
+      $(stream_bases(:xb, :r, R, :(px + q * $B))...)
       $(loads...)
       $(stmts...)
+      $(stream_bases(:yb, :r, R, :(py + q * $B))...)
       $(stores...)
     end
     nothing

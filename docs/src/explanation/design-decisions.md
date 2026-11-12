@@ -125,6 +125,33 @@ stream offsets) needs one kernel per length, which only the compiled `Chain` can
 `Chain` against the same kernels with run-time m and s, lengths 16–16384, both element types: ratios
 0.90–1.04 without a trend, inside the spread of the measurement. Not verified on other machines.
 
+## Stage kernels keep twiddles in memory and address streams from few registers
+
+**Decision (2026-11-12).** The stages vectorised over q (`stage!`, `stage_range!`, `stage_last!`) are
+written so that the inner loop needs few registers besides the data:
+
+- The twiddle multiply reads re(w) and im(w) from the table as scalar broadcasts,
+  a·w = (a·re(w)) ∓ (swap(a)·im(w)) with the sign alternating over the lanes (`ccmul_at`). On x86 both
+  become memory operands of the multiply and the fused multiply. Every complex multiply outside the
+  FCMA path has this form (`ccmul_parts`), so all kernels round alike and threaded and single-threaded
+  transforms stay bit-identical.
+- The R input and R output streams are addressed as base + odd·stride·2^e with odd in (1, 3, 5, 7) and
+  one base per 8 streams (`stream_addr`). The base pointer of the loop passes through
+  `llvm.launder.invariant.group` and the scaling is a typed GEP: without both, LLVM's loop strength
+  reduction rewrites the addresses into one hoisted pointer per stream.
+
+**Why.** A radix-16 stage has 15 twiddles, 16 input and 16 output streams. With the twiddles (and their
+swapped copies) in registers and one pointer per stream, the inner loop reloaded vectors and pointers
+from the stack. Instructions per butterfly in the inner loop, AMD EPYC 9354 (AVX-512), `Float64`
+(`Float32` within 3), before → after: radix 16 middle stage 284 → 198, last stage 182 → 151; radix 8
+middle stage 100 → 79, last stage 71 → 58.
+
+Time: the twiddle multiply alone (in an earlier form written with the x86 `vfmaddsub` intrinsics), one
+line, `plan_fft`, medians of 8 interleaved rounds, time after over time before: `Float32` 512–16384:
+0.88–0.93 (8192: 0.94 on the minima), `Float64` 1024, 4096, 8192, 16384: 0.94–0.96, lengths of 32768
+and above 0.98–1.01; the same code against itself differs by 1–5 % for most lengths. The time of both
+changes together is not verified, and neither change is verified on aarch64.
+
 ## Codelets of the radices 17–31 are compiled on first use
 
 **Decision (2026-11-10).** The codelets of the radices 17, 19, 23, 29 and 31 are not part of the package
