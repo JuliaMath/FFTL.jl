@@ -60,26 +60,30 @@ showed 100 `Float32` and 64 `Float64` lengths slower than 1.5×, the worst at 3.
 
 **Decision (2026-11-07).** For n = s·q, with q the part made of primes above `MAX_RADIX_PRIME` (73, at the
 time of the decision 31): one Cooley–Tukey step, a chain of length s, twiddles, and s resampled
-transforms of length q in one batched pass (`Composite`). A leftover q stays one resampled transform
-while its grid is at most 4 MiB; above that, q is split into its prime powers, recursively. Grids of
-8 MiB and more are transformed by a serial four-step algorithm on x86 (1.3× from 2²⁰ on, Zen 2) but
-not on aarch64, where the chain is faster up to 2²² (M1 Max). With threads, `CompositeMT` is used when
-s is at least the number of threads and is bitwise equal to the serial kernel; otherwise the whole
-length is one `ResampleMT`.
+transforms of length q (`Composite`): one batched pass from 32 lanes on, lane by lane below
+(2026-11-12). A leftover q stays one resampled transform while its grid is at most 4 MiB; above that,
+q is split into its prime powers, recursively. Grids of 8 MiB and more are transformed by a serial
+four-step algorithm on x86 (1.3× from 2²⁰ on, Zen 2) but not on aarch64, where the chain is faster up
+to 2²² (M1 Max). With threads, `CompositeMT` is used when s is at least the number of threads and is
+bitwise equal to the serial kernel; otherwise the whole length is one `ResampleMT`.
 
 **Why.** The grids of length about 2q stay in cache. On 45 non-smooth lengths (Zen 2) FFTL moved from
 ×0.64 to ×1.04 of the fastest other library with one thread, and from ×0.77 to ×1.16 with 16 threads
 (measured with Bluestein's algorithm on the leftover). Resampling needs one transform of a length of
 at least 2q where Bluestein's algorithm needs two: it took 0.51–0.82 of Bluestein's time for primes
 from 1009 to 100003 (Tiger Lake, one thread), at an error of 2–5·10⁻¹⁵ in `Float64` (Bluestein about
-5·10⁻¹⁶).
+5·10⁻¹⁶). The batched pass vectorises across the lanes and loses with few of them: against the lanes one
+by one it took 1.7–3.8 times as long at s = 2, 1.1–1.6 at s = 7, 0.73–1.04 at s = 16 and 0.56–1.04 at
+s = 32 (`Float64`, q = 37, 1009, 10007, EPYC 9354, one thread; `Float32` 2.1–7.3, 1.6–2.9, 0.84–1.31,
+0.87–0.96). The switch is on the lane count and not on the number of threads, which keeps serial and
+threaded plans bitwise equal.
 
 **Replaced.** Bluestein's algorithm on the leftover and `BluesteinMT` for a whole line on threads
 (2026-11-07). Generic number types and the GPU passes keep Bluestein's algorithm.
 
 **Not done / not checked.** Rader's algorithm (5 of the 45 sweep lengths qualify). Both thresholds were
 measured on Zen 2 only, and the 4 MiB rule is checked on 12 lengths that also took part in its
-derivation.
+derivation. The 32-lane rule was measured on one AVX-512 machine only, not on AVX2 or aarch64.
 
 ## One chain form: the radix sequence is data
 

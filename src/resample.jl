@@ -266,6 +266,67 @@ end
 run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Resample{T}, S::Int) where {T} =
   run_lanes!(py, px, pw1, pw2, P, S, S, S)
 
+# Fewest lanes s of a composite kernel that take the batched pass (RsBatch); below it every lane is
+# one resampled transform (Resample) at the full vector width. The choice depends on the length only,
+# so serial and threaded plans take the same path. EPYC 9354 (AVX-512), one thread, batched / lane by
+# lane for q = 37, 1009, 10007: s = 2: 1.7–3.8 (F64), 2.1–7.3 (F32); s = 7: 1.1–1.6, 1.6–2.9;
+# s = 16: 0.73–1.04, 0.84–1.31; s = 32: 0.56–1.04, 0.87–0.96; s = 128: 0.50–0.97, 0.66–1.13. Lane
+# counts that are not a multiple of the vector's complex count lose most (their remainder runs narrow).
+const RS_BATCH_LANES = 32
+
+# The length-q DFTs of the s lanes of a composite kernel: batched, or lane by lane for few lanes.
+# C: TypedKernels, or RChain for the run-time plans (a lane's grid transform is then a chain).
+leftover_kernel(::Type{T}, q::Int, σ::Int, s::Int, ::Type{C} = TypedKernels) where {T,C} =
+  s >= RS_BATCH_LANES ? RsBatch{T}(q, σ, s) : Resample{T}(q, σ, C)
+
+# Lane by lane (the batched pass, RsBatch, has its own method below).
+function leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, rs::Resample{T}, n::Int, s::Int, B::Int, Sy::Int) where {T}
+  for i in 0:B-1, k1 in 0:s-1
+    twiddled_leftover!(py, pz, tw, rs, n, s, B, i, k1, Sy)
+  end
+  nothing
+end
+
+# The length-q DFT on lane (i, k1) of the chain output z (element j2 at i + B·(j2 + q·k1)), after the
+# twiddles w_n^(j2·k1), folded into the deconvolution; output element k2 at y + i + Sy·(k1 + s·k2).
+function twiddled_leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, rs::Resample{T}, n::Int, s::Int,
+                            B::Int, i::Int, k1::Int, Sy::Int) where {T}
+  q = rs.n; buf = rs.buf; M = length(buf); hp = cld(q, 2); corr = rs.corr
+  cz = Ptr{Complex{T}}(pz); cy = Ptr{Complex{T}}(py)
+  GC.@preserve rs tw begin
+    pb = cptr(buf)
+    zb = i + B * q * k1 + 1
+    e = 0                           # (j2·k1) mod n
+    @inbounds for j in 1:hp
+      buf[j] = unsafe_load(cz, zb + B * (j - 1)) * tw[e+1] * corr[j]
+      e += k1; e >= n && (e -= n)
+    end
+    @inbounds for j in hp+1:q
+      buf[M-q+j] = unsafe_load(cz, zb + B * (j - 1)) * tw[e+1] * corr[j]
+      e += k1; e >= n && (e -= n)
+    end
+    fill!(view(buf, hp+1:M-q+hp), zero(Complex{T}))
+    run!(pb, pb, cptr(rs.work1), cptr(rs.work2), rs.fwd, 1)
+    resample_interp!(cy, i + Sy * k1 + 1, Sy * s, pb, rs.ws, q, M, Val(resample_width(T)), 0, q)
+  end
+  nothing
+end
+
+# Items of the leftover pass of a threaded composite kernel (n = s·q, one slab lane) for ntasks tasks,
+# and item b on the task's kernel: lanes one by one, or chunks of the batched pass (one per task where
+# the lanes allow, multiples of the vector's complex count, see rs_chunk!).
+leftover_chunk(R::Resample, s::Int, ntasks::Int) = 1
+leftover_chunk(R::RsBatch{T}, s::Int, ntasks::Int) where {T} =
+  (CU = ncomplex(first(vec_ladder(T))); min(R.C, CU * cld(cld(s, ntasks), CU)))
+leftover_item!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::Resample{T}, n::Int, s::Int, Cm::Int, b::Int) where {T} =
+  twiddled_leftover!(py, pz, tw, R, n, s, 1, 0, b, 1)
+leftover_item!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::RsBatch{T}, n::Int, s::Int, Cm::Int, b::Int) where {T} =
+  rs_chunk!(py, pz, tw, R, n, s, 1, 1, 0, b * Cm, min(Cm, s - b * Cm))
+
+# Grid length of the leftover kernel of a composite kernel.
+grid_size(R::RsBatch) = R.m
+grid_size(R::Resample) = length(R.buf)
+
 # Tree reduction of U vectors of U complex values, each vector one output's partial sums, into one
 # vector of the U outputs: per level, pairs of vectors halve their segments (FFTJ's interleaved
 # reduction with complex values as units). Returns the statements and the result in output order.

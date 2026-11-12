@@ -344,7 +344,7 @@ struct CompositeMT{T,C,B} <: Kernel{T}
   s::Int
   q::Int
   chains::Vector{C}                 # first stage, one per task
-  rss::Vector{B}                    # batched resampling (RsBatch), one per task
+  rss::Vector{B}                    # leftover kernel (RsBatch, or Resample for few lanes), one per task
   tw::Vector{Complex{T}}            # w_n^m, m = 0…n-1
   z::Vector{Complex{T}}             # output of the first stage
   tbuf::Vector{Vector{Complex{T}}}  # two per task, one lane block of the first stage each
@@ -354,8 +354,8 @@ function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
   s, q = composite_split(T, n)
   c1 = first_kernel(T, s, σ, q, 1)
   chains = [c1; [c1 isa RChain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
-  r1 = RsBatch{T}(q, σ, s)
-  rss = [r1; [RsBatch{T}(q, σ, s) for _ in 2:nt]]
+  r1 = leftover_kernel(T, q, σ, s)
+  rss = [r1; [leftover_kernel(T, q, σ, s) for _ in 2:nt]]
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
   CompositeMT{T,typeof(c1),typeof(r1)}(n, s, q, chains, rss, tw, Vector{Complex{T}}(undef, n),
                                         thread_buffers(T, composite_block(q, s) * s, 2nt))
@@ -376,9 +376,7 @@ function run_composite_mt!(py::Ptr{T}, px::Ptr{T}, P::CompositeMT{T}, nt::Int) w
   Bb = composite_block(q, s)
   nb = cld(q, Bb)
   ntasks = min(nt, length(P.rss))
-  # lane chunks of the second phase: one per task where the lanes allow, multiples of CU (rs_chunk!)
-  CU = ncomplex(first(vec_ladder(T)))
-  Cm = min(P.rss[1].C, CU * cld(cld(s, ntasks), CU))
+  Cm = leftover_chunk(P.rss[1], s, ntasks)
   GC.@preserve P begin
     pz = cptr(P.z)
     parallel_phases(ntasks,
@@ -386,7 +384,7 @@ function run_composite_mt!(py::Ptr{T}, px::Ptr{T}, P::CompositeMT{T}, nt::Int) w
         local a = b * Bb
         run_lanes!(pz + a * CT, px + a * CT, cptr(P.tbuf[2c-1]), cptr(P.tbuf[2c]), P.chains[c], q, q, min(Bb, q - a))
       end,
-      cld(s, Cm), (c, b) -> rs_chunk!(py, pz, P.tw, P.rss[c], n, s, 1, 1, 0, b * Cm, min(Cm, s - b * Cm)))
+      cld(s, Cm), (c, b) -> leftover_item!(py, pz, P.tw, P.rss[c], n, s, Cm, b))
   end
   nothing
 end

@@ -97,10 +97,20 @@ X_{k_1 + s k_2} = \sum_{j_2=0}^{q-1} e^{\sigma 2\pi i\, j_2 k_2/q}\;
    deconvolution of the next step,
 3. ``s`` resampled transforms of length ``q`` (the outer sum), each written with stride ``s``.
 
-The ``s`` transforms of the last step run as one batched pass (as in FFTJ): the grid holds rows
-of lanes, lane fastest, so the transform of length ``m`` is one chain over the lanes and every
-output row is ``w`` multiply-adds of whole grid rows. Lanes go in chunks whose grid stays in
-cache. A grid of length about ``2q`` fits in cache where one of length ``2n`` often does not.
+From 32 lanes on, the ``s`` transforms of the last step run as one batched pass (as in FFTJ):
+the grid holds rows of lanes, lane fastest, so the transform of length ``m`` is one chain over
+the lanes and every output row is ``w`` multiply-adds of whole grid rows. Lanes go in chunks
+whose grid stays in cache. A grid of length about ``2q`` fits in cache where one of length
+``2n`` often does not.
+
+With fewer than 32 lanes each lane is one resampled transform of its own, vectorised along the
+line. A batched pass vectorises across the lanes, so few lanes, or a lane count that is not a
+multiple of the vector width, leave most of the vector unused: on an EPYC 9354 (AVX-512, one
+thread, ``q`` = 37, 1009, 10007) the batched pass took 1.7–3.8 times as long as the lanes one by
+one at ``s = 2`` in `Float64` (2.1–7.3 in `Float32`), 1.1–1.6 (1.6–2.9) at ``s = 7``, 0.73–1.04
+(0.84–1.31) at ``s = 16`` and 0.56–1.04 (0.87–0.96) at ``s = 32`` (`RS_BATCH_LANES` in
+`src/resample.jl`). The rule depends on the length only, not on the number of threads, so a
+threaded plan computes the same values as a serial one.
 
 When ``q`` itself is large it is split again: ``q`` becomes the full power of its largest prime,
 and the first step of length ``s = n/q`` is again a split transform (or a resampled transform

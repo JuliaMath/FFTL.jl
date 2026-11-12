@@ -7,7 +7,9 @@
 # algorithm (RChain kernels). A library can therefore hold plans of any size in one container and
 # compile them ahead of time (juliac --trim).
 const RComposite{T} = Union{Composite{T,RChain{T},RsBatch{T,RChain{T},RTable{T}}},
-                            Composite{T,RChain{T},RsBatch{T,RChain{T},RPoly{T}}}}
+                            Composite{T,RChain{T},RsBatch{T,RChain{T},RPoly{T}}},
+                            Composite{T,RChain{T},Resample{T,RChain{T},RTable{T}}},
+                            Composite{T,RChain{T},Resample{T,RChain{T},RPoly{T}}}}
 const RPassKern{T} = Union{RChain{T},RResample{T},RComposite{T},RFourStep{T}}
 
 function runtime_kernel(::Type{T}, n::Int, σ::Int, S::Int) where {T}
@@ -15,7 +17,7 @@ function runtime_kernel(::Type{T}, n::Int, σ::Int, S::Int) where {T}
   s, q = composite_split(T, n)
   s == 1 && return Resample{T}(n, σ, RChain)
   chain = RChain{T}(s, σ, radices(s, S * q; esize = sizeof(Complex{T})))
-  rs = RsBatch{T}(q, σ, s)
+  rs = leftover_kernel(T, q, σ, s, RChain)
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
   Composite{T,typeof(chain),typeof(rs)}(n, s, q, chain, rs, tw, Vector{Complex{T}}(undef, S * n))
 end

@@ -249,14 +249,14 @@ struct Composite{T,C,B} <: Kernel{T}
   s::Int
   q::Int
   chain::C                        # length s, applied to the q lanes of every slab
-  rs::B                           # length q over the lanes (RsBatch), with its own buffers
+  rs::B                           # length q over the lanes (RsBatch, or Resample for few lanes), with its own buffers
   tw::Vector{Complex{T}}          # w_n^m, m = 0…n-1
   z::Vector{Complex{T}}           # output of the first stage, S·n values
 end
 
 function Composite{T}(n::Int, s::Int, q::Int, σ::Int, S::Int) where {T}
   chain = first_kernel(T, s, σ, S * q, S)
-  rs = RsBatch{T}(q, σ, s)
+  rs = leftover_kernel(T, q, σ, s)
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
   Composite{T,typeof(chain),typeof(rs)}(n, s, q, chain, rs, tw, Vector{Complex{T}}(undef, S * n))
 end
