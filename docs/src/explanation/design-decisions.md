@@ -97,60 +97,31 @@ specialisation, 130 MB of the 146 MB image. See [Package size and load time](@re
 
 ## The first stage of a single line runs at full vector width
 
-**Decision (2026-11-12).** The first stage of a single line (stride 1, power-of-two radix, not the last
-stage) runs `stage_small!` where the widest vector holds more complex values than the grouped first
-stage handles (C = 8, `Float32` on AVX-512): it is vectorised over the butterflies p, so every input is
-one contiguous load, the twiddles come from the grouped first-stage table, and the R outputs are
-interleaved in registers into contiguous stores. The generator checks the permutation of the
-interleave. Both chain forms use it; the kernels (radices 2, 4, 8, 16 × sign, widest vector only) are
-part of the fixed set of plain methods.
+**Decision (2026-11-12).** Where the widest vector holds 8 complex values (`Float32` on AVX-512), the
+first stage of a single line runs `stage_small!`: vectorised over the butterflies, with the outputs
+interleaved in registers into contiguous stores. It exists for the power-of-two radices and belongs to
+the fixed set of plain methods.
 
-**Why.** That stage ran the grouped first stage on 4 complex values. `Float64` has no such stage on
-AVX-512. Intel Core i7-1185G7, one line, `Float32`, `RChain`, radix sequences of 16s and 8s, µs without
-→ with:
-128: 0.093 → 0.069, 256: 0.176 → 0.131, 1024: 0.81 → 0.61, 2048: 1.60 → 1.35, 4096: 3.75 → 3.29,
-8192: 7.85 → 6.69, 16384: 18.0 → 15.4 (the same code against itself differs by up to 3 %).
+**Why.** The grouped first stage handles at most 4 complex values per vector. Intel Core i7-1185G7,
+one line, `Float32`, lengths 128–16384 with radices of 16s and 8s: 12–26 % faster (the same code
+against itself differs by up to 3 %).
 
-**Not done.** The same scheme for later stages with a stride s = 2 or 4 below C (vectorised over
-q + s·p). It needs a per-lane twiddle table for every such stage, one kernel per stride and a stride
-switch in the `RChain` dispatch. Only `Float32` lengths whose radices start with 4, 4 have such a stage
-(s = 4; 625 lengths up to 70000, 65536 the only power of two), none with s = 2. AMD EPYC 9354, one line,
-`Float32`, `RChain`, time without the s = 4 stage over time with it, medians of 10 interleaved rounds:
-192: 1.08, 320: 1.06, 768: 1.03, 960: 1.03, 3072: 0.96, 4800: 0.99, 20480: 0.97; 65536: 0.96 and
-262144: 0.97 from 5 rounds. The same code against itself differs by 5–20 % between rounds on that
-machine, so only the 6–8 % at 192 and 320 (the same in a second series) stands out.
-
-**Not done.** Passing m and s to the stage kernels as constants of a single line (immediates for the
-stream offsets) needs one kernel per length, which only the compiled `Chain` can have. Measured in
-`Chain` against the same kernels with run-time m and s, lengths 16–16384, both element types: ratios
-0.90–1.04 without a trend, inside the spread of the measurement. Not verified on other machines.
+**Not done.** The same for later stages with a stride of 2 or 4. It needs a per-lane twiddle table and
+one kernel per stride, and only `Float32` lengths whose radices start with 4, 4 have such a stage. On an
+AMD EPYC 9354 it gained 6–8 % at 192 and 320 and nothing measurable at other lengths.
 
 ## Stage kernels keep twiddles in memory and address streams from few registers
 
-**Decision (2026-11-12).** The stages vectorised over q (`stage!`, `stage_range!`, `stage_last!`) are
-written so that the inner loop needs few registers besides the data:
+**Decision (2026-11-12).** In the stages vectorised over q, the twiddle multiply reads re(w) and im(w)
+from the table (`ccmul_at`; memory operands on x86), and the R input and R output streams are addressed
+as base + odd·stride·2^e from one base per 8 streams (`stream_addr`). The base pointer is hidden from
+LLVM's loop optimiser (`opaque_ptr`), which otherwise goes back to one pointer per stream.
 
-- The twiddle multiply reads re(w) and im(w) from the table as scalar broadcasts,
-  a·w = (a·re(w)) ∓ (swap(a)·im(w)) with the sign alternating over the lanes (`ccmul_at`). On x86 both
-  become memory operands of the multiply and the fused multiply. Every complex multiply outside the
-  FCMA path has this form (`ccmul_parts`), so all kernels round alike and threaded and single-threaded
-  transforms stay bit-identical.
-- The R input and R output streams are addressed as base + odd·stride·2^e with odd in (1, 3, 5, 7) and
-  one base per 8 streams (`stream_addr`). The base pointer of the loop passes through
-  `llvm.launder.invariant.group` and the scaling is a typed GEP: without both, LLVM's loop strength
-  reduction rewrites the addresses into one hoisted pointer per stream.
-
-**Why.** A radix-16 stage has 15 twiddles, 16 input and 16 output streams. With the twiddles (and their
-swapped copies) in registers and one pointer per stream, the inner loop reloaded vectors and pointers
-from the stack. Instructions per butterfly in the inner loop, AMD EPYC 9354 (AVX-512), `Float64`
-(`Float32` within 3), before → after: radix 16 middle stage 284 → 198, last stage 182 → 151; radix 8
-middle stage 100 → 79, last stage 71 → 58.
-
-Time: the twiddle multiply alone (in an earlier form written with the x86 `vfmaddsub` intrinsics), one
-line, `plan_fft`, medians of 8 interleaved rounds, time after over time before: `Float32` 512–16384:
-0.88–0.93 (8192: 0.94 on the minima), `Float64` 1024, 4096, 8192, 16384: 0.94–0.96, lengths of 32768
-and above 0.98–1.01; the same code against itself differs by 1–5 % for most lengths. The time of both
-changes together is not verified, and neither change is verified on aarch64.
+**Why.** A radix-16 stage has 15 twiddles and 32 streams, more than fit in registers, so its inner loop
+reloaded vectors and pointers from the stack. AMD EPYC 9354 (AVX-512), instructions per butterfly:
+radix 16 middle stage 284 → 198, radix 8 100 → 79. One line, `plan_fft`, medians of 8 interleaved
+rounds: lengths 512–16384 take 0.79–0.94 (`Float32`) and 0.82–0.92 (`Float64`) of the time, lengths
+from 32768 on are unchanged (the same code against itself differs by 1–5 %). Not verified on aarch64.
 
 ## Codelets of the radices 17–31 are compiled on first use
 
