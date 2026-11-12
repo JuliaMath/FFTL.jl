@@ -222,39 +222,36 @@ function ilv_net!(ex, ys, labs, S, C)
   vcat(o1, o2), vcat(l1, l2)
 end
 
-# Outputs X_k (lanes p·s + q) in the order of y: vector t, lane l holds position tC + l.
-function chunk_interleave!(ex, ys, s, C)
+# Outputs X_k (lane p) in the order of y: vector t, lane l holds position tC + l = Rp + k.
+function chunk_interleave!(ex, ys, C)
   R = length(ys)
-  out, labs = ilv_net!(ex, ys, [[(k, l) for l in 0:C-1] for k in 0:R-1], s, C)
+  out, labs = ilv_net!(ex, ys, [[(k, l) for l in 0:C-1] for k in 0:R-1], 1, C)
   for t in 0:R-1, l in 0:C-1
-    pos = t * C + l
-    labs[t+1][l+1] == ((pos % (s * R)) ÷ s, (pos ÷ (s * R)) * s + pos % s) ||
-      error("chunk interleave of $R vectors at stride $s, $C complex values is wrong")
+    labs[t+1][l+1] == ((t * C + l) % R, (t * C + l) ÷ R) ||
+      error("interleave of $R vectors of $C complex values is wrong")
   end
   out
 end
 
-# Stage of a single line with stride s < C (C complex values per vector, s | C, R a power of
-# two): vectorised over f = q + s·p, so each input is one contiguous load and the R outputs are
-# interleaved in registers into contiguous stores. Twiddles per lane: w^(kp) at (k-1)ms + f,
-# p = f ÷ s (the grouped first-stage table for s = 1). ms = m·s must be a multiple of C; s is a
-# constant because the interleave depends on it.
-function stage_small_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, s::Int) where {T,VT}
+# First stage of a single line (s = 1) at any vector width, for R a power of two and m a
+# multiple of C: butterflies p, …, p+C-1 share a register (twiddles in the grouped first-stage
+# table) and the R outputs are interleaved in registers into contiguous stores.
+function stage_small_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
   stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, px + (f + $(j - 1) * ms) * $B)) for j in 1:R]
+  loads = [:($(a[j]) = vload($VT, px + (p + $(j - 1) * m) * $B)) for j in 1:R]
   outs = Any[X[1]]
   twm = Any[]
   for k in 1:R-1
     b = Symbol("b", k)
-    push!(twm, :($b = ccmul($(X[k+1]), vload($VT, pt + (f + $(k - 1) * ms) * $B))))
+    push!(twm, :($b = ccmul($(X[k+1]), vload($VT, pt + (p + $(k - 1) * m) * $B))))
     push!(outs, b)
   end
   shuf = Any[]
-  ys = chunk_interleave!(shuf, outs, s, C)
-  stores = [:(vstore($(ys[t+1]), py + ($R * f + $(t * C)) * $B)) for t in 0:R-1]
+  ys = chunk_interleave!(shuf, outs, C)
+  stores = [:(vstore($(ys[t+1]), py + ($R * p + $(t * C)) * $B)) for t in 0:R-1]
   quote
-    for f in 0:$C:ms-1
+    for p in 0:$C:m-1
       $(loads...)
       $(stmts...)
       $(twm...)
@@ -265,9 +262,9 @@ function stage_small_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, s::Int) where 
   end
 end
 
-@generated function stage_small!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, ms::Int, ::Val{R}, ::Val{σ},
-                                 ::Type{VT}, ::Val{s}) where {T,R,σ,VT,s}
-  stage_small_body(T, R, σ, VT, s)
+@generated function stage_small!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, ::Val{R}, ::Val{σ},
+                                 ::Type{VT}) where {T,R,σ,VT}
+  stage_small_body(T, R, σ, VT)
 end
 
 # Scalar tail of the grouped first stage: one complex value per vector, the twiddle table in
