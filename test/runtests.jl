@@ -753,6 +753,25 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "small-stride stages, $T" for T in (Float64, Float32)
+    # stage_small!: every power-of-two radix as the first stage, in both chain forms, against
+    # the direct DFT
+    p(a) = Ptr{T}(pointer(a))
+    C = FFTL.ladder_ncomplex(T)[1]
+    for r in (2, 4, 8, 16), σ in (-1, 1)
+      rs = [r, 2C]
+      n = prod(rs)
+      c = FFTL.build_chain(T, n, σ, rs); rc = FFTL.RChain{T}(n, σ, rs)
+      @test (rc.single[1].op == FFTL.OP_SMALL) == (C > 4)
+      x = randn(Complex{T}, n); w1 = similar(x); w2 = similar(x); y1 = similar(x); y2 = similar(x)
+      GC.@preserve x y1 y2 w1 w2 begin
+        FFTL.run!(p(y1), p(x), p(w1), p(w2), c, 1); FFTL.run_single!(p(y2), p(x), p(w1), p(w2), rc)
+      end
+      @test y1 == y2
+      @test relerr(y2, dft(ComplexF64.(x), σ)) < tol(T)
+    end
+  end
+
   # run-time plans (RChain kernels): same results as the reference, four-step and plane fusion
   @testset "RPlan, $T" for T in pick((Float64, Float32), (Float64,))
     for (sz, reg, nt) in pick([((1000,), [1], 1), ((2 * 3^11,), [1], 3), ((1009,), [1], 1), ((64, 48), [1, 2], 1),

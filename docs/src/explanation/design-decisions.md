@@ -35,6 +35,12 @@ and the large losses of an estimate-only planner are cache effects the algorithm
 A per-machine calibration or an optional measuring mode can follow if the rule leaves too much on the
 table.
 
+One such cache effect is part of the rule: single lines on AVX-512 take radix 16 only while the 16
+streams of a stage are less than an L1 set stride (4 KB) apart, that is up to 4096 for `Float32` and
+2048 for `Float64`. Beyond that the streams share one cache set and radix 8 wins. AMD EPYC 9354, one
+line, all buffers at fixed page offsets, time of the radix-16 sequence over the radix-8 sequence:
+`Float32` 4096: 0.88, 8192: 1.06, 16384: 1.06; `Float64` 4096: 1.33, 8192: 1.03, 16384: 1.11.
+
 ## Rules for lengths are derived on some lengths and checked on others
 
 **Decision (2026-11-04).** The radix choice and the Bluestein length are rules on the prime
@@ -94,6 +100,34 @@ bodies the `@generated` methods build. The `@generated` methods remain as the fa
 
 **Why.** A package image keeps the complete optimised IR of every precompiled `@generated`
 specialisation, 130 MB of the 146 MB image. See [Package size and load time](@ref "Package size and load time").
+
+## The first stage of a single line runs at full vector width
+
+**Decision (2026-11-12).** Where the widest vector holds 8 complex values (`Float32` on AVX-512), the
+first stage of a single line runs `stage_small!`: vectorised over the butterflies, with the outputs
+interleaved in registers into contiguous stores. It exists for the power-of-two radices and belongs to
+the fixed set of plain methods.
+
+**Why.** The grouped first stage handles at most 4 complex values per vector. Intel Core i7-1185G7,
+one line, `Float32`, lengths 128–16384 with radices of 16s and 8s: 12–26 % faster (the same code
+against itself differs by up to 3 %).
+
+**Not done.** The same for later stages with a stride of 2 or 4. It needs a per-lane twiddle table and
+one kernel per stride, and only `Float32` lengths whose radices start with 4, 4 have such a stage. On an
+AMD EPYC 9354 it gained 6–8 % at 192 and 320 and nothing measurable at other lengths.
+
+## Stage kernels keep twiddles in memory and address streams from few registers
+
+**Decision (2026-11-12).** In the stages vectorised over q, the twiddle multiply reads re(w) and im(w)
+from the table (`ccmul_at`; memory operands on x86), and the R input and R output streams are addressed
+as base + odd·stride·2^e from one base per 8 streams (`stream_addr`). The base pointer is hidden from
+LLVM's loop optimiser (`opaque_ptr`), which otherwise goes back to one pointer per stream.
+
+**Why.** A radix-16 stage has 15 twiddles and 32 streams, more than fit in registers, so its inner loop
+reloaded vectors and pointers from the stack. AMD EPYC 9354 (AVX-512), instructions per butterfly:
+radix 16 middle stage 284 → 198, radix 8 100 → 79. One line, `plan_fft`, medians of 8 interleaved
+rounds: lengths 512–16384 take 0.79–0.94 (`Float32`) and 0.82–0.92 (`Float64`) of the time, lengths
+from 32768 on are unchanged (the same code against itself differs by 1–5 %). Not verified on aarch64.
 
 ## Codelets of the radices 17–31 are compiled on first use
 

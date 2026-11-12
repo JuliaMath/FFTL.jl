@@ -40,6 +40,15 @@ for T in (Float32, Float64), (name, head, vts) in KERNEL_HEADS
   end
 end
 
+# stage_small!: the widest vector type, power-of-two radices.
+for T in (Float32, Float64), σ in (-1, 1), R in RADICES
+  VT = first(vec_ladder(T))
+  (ispow2(R) && !(R in LAZY_RADICES)) || continue
+  h = :(stage_small!(py::Ptr{$T}, px::Ptr{$T}, pt::Ptr{$T}, m::Int, ::Val{$R}, ::Val{$σ}, ::Type{$VT}))
+  b = kernel_subst(stage_small_body(T, R, σ, VT), Dict{Symbol,Any}(:T => T, :VT => VT))
+  @eval $(Expr(:function, h, b))
+end
+
 # The compiled chains of the small lengths (rchain.jl) run through `run!`/`run_lanes!` methods of
 # plain definition for the same reason; any other chain type uses the generic methods.
 for T in (Float32, Float64), (n, σ) in SMALL_ENTRIES

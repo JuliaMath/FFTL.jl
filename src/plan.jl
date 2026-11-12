@@ -80,6 +80,12 @@ function build_chain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where 
   Chain{T,Tuple(rs),σ,length(rs)}(n, Tuple(tw), tw1)
 end
 
+# The first of several stages of a single line runs stage_small! (the widest vector, C complex
+# values, outputs interleaved in registers) where the grouped first stage (vector index group
+# of the complex counts ncs, 0 for none) would be narrower.
+small_first(ncs, group::Int, r::Int, n::Int) =
+  r < n && ispow2(r) && (n ÷ r) % ncs[1] == 0 && ncs[1] > (group == 0 ? 1 : ncs[group])
+
 # Stage twiddles and first-stage table of a radix sequence, shared by Chain and RChain.
 chain_tables(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T} =
   cached(() -> build_tables(T, n, σ, rs), CacheKey(:tables, T, n, σ, collect(Int, rs)))::Tuple{Vector{Vector{Complex{T}}},Vector{Complex{T}}}
@@ -220,7 +226,10 @@ function chain_body(T, Rs, σ, src, dsts, base, single)
     # for batched lines (their stride is a multiple of the vector type), runtime for odd batch
     # sizes
     rem = single ? sst % ncomplex(V) : (base > 1 ? 0 : nothing)
-    if i == K
+    if single && i == 1 && small_first(map(ncomplex, ladder), something(group, 0), r, n)
+      push!(body, :(stage_small!($dst, $src, cptr(P.tw1), $(n ÷ r), Val($r), Val($σ), $(ladder[1]))),
+            :(L = L ÷ $r), :(s *= $r))
+    elseif i == K
       push!(body, last_call(dst, src, r, σ, V, single_vec(T), rem))
     elseif single && i == 1 && group !== nothing && ncomplex(V) == 1
       # the first stage of a single line: vectorised over the butterflies (scalar remainder

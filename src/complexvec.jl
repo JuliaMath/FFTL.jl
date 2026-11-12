@@ -98,6 +98,7 @@ if HAS_FCMA
       @inline fcmla90(c::Vec{$N,$T}, a::Vec{$N,$T}, b::Vec{$N,$T}) =
         Vec(ccall($("llvm.aarch64.neon.vcmla.rot90." * suf), llvmcall, $VT, ($VT, $VT, $VT), c.data, a.data, b.data))
       @inline ccmul(a::Vec{$N,$T}, w::Vec{$N,$T}) = fcmla90(fcmla0(zero(Vec{$N,$T}), a, w), a, w)
+      @inline ccmul_at(a::Vec{$N,$T}, p::Ptr{$T}) = ccmul(a, cbroadcast(Vec{$N,$T}, p))
     end
   end
 else
@@ -129,11 +130,17 @@ else
       end
     end
   end
-  # a·w = (a.re·w.re - a.im·w.im, a.re·w.im + a.im·w.re)
-  @inline function ccmul(a::Vec{N,T}, w::Vec{N,T}) where {N,T}
-    t = dup_im(a) * swap_reim(w)
-    blend_reim(muladd(dup_re(a), w, -t), muladd(dup_re(a), w, t))
+  # a·w = (a.re·w.re - a.im·w.im, a.im·w.re + a.re·w.im) from re(w) and im(w), each repeated over
+  # the two lanes of its complex value
+  @inline function ccmul_parts(a::Vec{N,T}, wre::Vec{N,T}, wim::Vec{N,T}) where {N,T}
+    t = swap_reim(a) * wim
+    blend_reim(muladd(a, wre, -t), muladd(a, wre, t))
   end
+  @inline ccmul(a::Vec{N,T}, w::Vec{N,T}) where {N,T} = ccmul_parts(a, dup_re(w), dup_im(w))
+  # a·w for the complex value w at p, repeated over all complex lanes: re(w) and im(w) are scalar
+  # broadcasts, which x86 folds into the multiplies as memory operands
+  @inline ccmul_at(a::Vec{N,T}, p::Ptr{T}) where {N,T} =
+    ccmul_parts(a, Vec{N,T}(unsafe_load(p)), Vec{N,T}(unsafe_load(p, 2)))
 end
 
 # (re, im) repeated over all complex lanes of the register

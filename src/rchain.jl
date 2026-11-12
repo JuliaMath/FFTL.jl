@@ -60,6 +60,7 @@ for T in (Float32, Float64)
     (:cstage_last!,  (:py, :px, :s),                          (r, σ, V) -> :(stage_last!(py, px, s, Val($r), Val($σ), $V))),
     (:cstage_last_range!, (:py, :px, :s, :qlo, :qhi),         (r, σ, V) -> :(stage_last!(py, px, s, qlo, qhi, Val($r), Val($σ), $V))),
     (:cstage_group!, (:py, :px, :pt, :m),                     (r, σ, V) -> :(stage_first_group!(py, px, pt, m, Val($r), Val($σ), $V))),
+    (:cstage_small!, (:py, :px, :pt, :m),                     (r, σ, V) -> :(stage_small!(py, px, pt, m, Val($r), Val($σ), $V))),
     (:cstage_lanes!, (:py, :px, :pt, :m, :s0, :sx, :sy, :B),  (r, σ, V) -> :(stage_lanes!(py, px, pt, m, s0, sx, sy, B, Val($r), Val($σ), $V))),
     (:cstage_last_lanes!, (:py, :px, :s0, :sx, :sy, :B),      (r, σ, V) -> :(stage_last_lanes!(py, px, s0, sx, sy, B, Val($r), Val($σ), $V))))
   for (name, args, call) in kinds
@@ -70,6 +71,8 @@ for T in (Float32, Float64)
       # never selects another vector type for it, and code compiled ahead of time must not
       # contain the call (its generator would fail)
       name === :cstage_group! && !(ncomplex(V) in (2, 4)) && continue
+      # stage_small! exists for the widest vector type and power-of-two radices
+      name === :cstage_small! && !(vi == 1 && ispow2(r)) && continue
       r in LAZY_RADICES && continue
       c = ((si - 1) * NL + vi - 1) * NR + ri
       push!(cases, :(c == $c && return $(call(r, σ, V))))
@@ -115,6 +118,7 @@ const OP_MID_TAIL = 2     # q in vectors up to s - rem, the scalar remainder aft
 const OP_LAST = 3
 const OP_LAST_TAIL = 4
 const OP_GROUP = 5        # first stage vectorised over the butterflies p
+const OP_SMALL = 6        # first stage over the butterflies p on the widest vector (stage_small!)
 
 struct StageCall
   op::Int
@@ -154,7 +158,7 @@ end
 # The stage calls of a single line, with the rules of `chain_body` for S = 1: stage i takes the
 # widest vector type whose complex count fits its stride s = R_1⋯R_(i-1), the remainder
 # s mod C runs one complex value at a time; the first stage is grouped over the butterflies
-# when its stride is 1.
+# when its stride is 1, with stage_small! where that is wider.
 function single_schedule(::Type{T}, n::Int, σ::Int, rs::Vector{Int}) where {T}
   ncs = ladder_ncomplex(T)
   nv = length(ncs)
@@ -177,7 +181,9 @@ function single_schedule(::Type{T}, n::Int, σ::Int, rs::Vector{Int}) where {T}
     rem = s % ncs[vi]
     c = codelet_index(T, σ, vi, r); c1 = codelet_index(T, σ, nv, r)
     m = L ÷ r
-    if i == K
+    if i == 1 && small_first(ncs, group, r, n)
+      push!(calls, StageCall(OP_SMALL, codelet_index(T, σ, 1, r), c1, m, s, 0))
+    elseif i == K
       push!(calls, StageCall(rem == 0 ? OP_LAST : OP_LAST_TAIL, c, c1, m, s, rem))
     elseif i == 1 && group != 0 && ncs[vi] == 1
       push!(calls, StageCall(OP_GROUP, codelet_index(T, σ, group, r), c1, m, s, 0))
@@ -276,6 +282,8 @@ function run_single!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain
         cstage!(dst, src, cptr(P.tw[i]), st.m, st.s, st.c)
       elseif op == OP_GROUP
         cstage_group!(dst, src, cptr(P.tw1), st.m, st.c)
+      elseif op == OP_SMALL
+        cstage_small!(dst, src, cptr(P.tw1), st.m, st.c)
       elseif op == OP_LAST
         cstage_last!(dst, src, st.s, st.c)
       elseif op == OP_MID_TAIL
