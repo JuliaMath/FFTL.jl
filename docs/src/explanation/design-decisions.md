@@ -35,6 +35,12 @@ and the large losses of an estimate-only planner are cache effects the algorithm
 A per-machine calibration or an optional measuring mode can follow if the rule leaves too much on the
 table.
 
+One such cache effect is part of the rule: single lines on AVX-512 take radix 16 only while the 16
+streams of a stage are less than an L1 set stride (4 KB) apart, that is up to 4096 for `Float32` and
+2048 for `Float64`. Beyond that the streams share one cache set and radix 8 wins. AMD EPYC 9354, one
+line, all buffers at fixed page offsets, time of the radix-16 sequence over the radix-8 sequence:
+`Float32` 4096: 0.88, 8192: 1.06, 16384: 1.06; `Float64` 4096: 1.33, 8192: 1.03, 16384: 1.11.
+
 ## Rules for lengths are derived on some lengths and checked on others
 
 **Decision (2026-11-04).** The radix choice and the Bluestein length are rules on the prime

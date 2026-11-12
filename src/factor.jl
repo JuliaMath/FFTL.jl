@@ -7,9 +7,10 @@
 #   up to 4096 on the M1; on Tiger Lake (AVX-512) 7–30 % from 4096 on (S = 1) and up to 45 % in
 #   batches, within noise below; on Zen 3 (AVX2, 16
 #   registers) it is 3–25 % slower from 256 on.
-#   Single lines on AVX-512 take radix 16 as often as possible and 8s for the rest (Tiger Lake,
-#   128–16384: Float64 2–15 % faster, Float32 between 6 % slower and 8 % faster). Not measured
-#   on NEON.
+#   Single lines on AVX-512 take radix 16 as often as possible and 8s for the rest while the 16
+#   streams of a stage are less than an L1 set stride apart (Float32 up to 4096, Float64 up to
+#   2048); beyond that they share one cache set and the 8s win (Zen 4: 3–33 % at 4096–16384).
+#   Not measured on NEON.
 #   Otherwise radix 4 throughout, one 8 (or 2) for an odd exponent; radix 16 and above lose
 #   (register spills, cache-set conflicts at large strides).
 # - aarch64: a factor 3 is merged with a 4 into 12, else with a 2 into 6; a factor 5 with a spare
@@ -62,7 +63,7 @@ Radix sequence for a chain of length `n` applied to `S` interleaved sequences of
 `esize` bytes.
 """
 function radices(n::Int, S::Int = 1; esize::Int = 16)
-  r = heuristic_radices(n, S)
+  r = heuristic_radices(n, S, esize)
   S > LARGE_STRIDE && set_conflict(r, n, S, esize) || return r
   alt = packed_radices(n)
   set_conflict(alt, n, S, esize) ? r : alt
@@ -97,7 +98,7 @@ function packed_radices(n::Int)
   [reverse!(sort!(filter(ispow2, bins))); reverse!(sort!(filter(!ispow2, bins)))]
 end
 
-function heuristic_radices(n::Int, S::Int)
+function heuristic_radices(n::Int, S::Int, esize::Int = 16)
   n == 1 && return Int[]
   merge = merge_composite(S)
   f, rest = factorize(n)
@@ -108,7 +109,7 @@ function heuristic_radices(n::Int, S::Int)
   end
   if RADIX8_POW2 && ispow2(n) && 64 < n <= 16384 && S <= LARGE_STRIDE
     k = trailing_zeros(n)
-    if HAS_AVX512 && S == 1
+    if HAS_AVX512 && S == 1 && (n ÷ 16) * esize < 1 << L1_SET_LOG2
       # as many 16s as possible, the rest in 8s: 4t ≤ k, t ≡ k (mod 3)
       t = k % 3 + 3 * ((k ÷ 4 - k % 3) ÷ 3)
       return vcat(fill(16, t), fill(8, (k - 4t) ÷ 3))
