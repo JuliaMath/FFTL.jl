@@ -360,8 +360,8 @@ function composite_split(::Type{T}, n::Int) where {T}
   _, r = factorize(n)
   r == 1 && return (n, 1)
   bluestein_length(T, 2r - 1) * sizeof(Complex{T}) <= COMPOSITE_SPLIT_BYTES && return (n ÷ r, r)
-  p = r; d = 37
-  while d * d <= r                  # largest prime factor of r (all its factors are ≥ 37)
+  p = r; d = MAX_RADIX_PRIME + 2
+  while d * d <= r                  # largest prime factor of r (all its factors are above MAX_RADIX_PRIME)
     while r % d == 0
       p = d; r ÷= d
     end

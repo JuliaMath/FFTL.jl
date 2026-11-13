@@ -10,7 +10,7 @@
 The radices `radices` produces for any length and stride (checked by the tests); `RChain` has a
 codelet for each of them.
 """
-const RADICES = (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 23, 29, 31)
+const RADICES = (2:16..., filter(>(16), RADIX_PRIMES)...)
 
 # complex values per vector for each entry of vec_ladder(T), widest first, as constants (a map
 # over the tuple of types is not folded by the compiler and would make the schedule dynamic)
@@ -34,76 +34,60 @@ end
   ((σ == 1 ? 1 : 0) * length(ladder_ncomplex(T)) + vi - 1) * length(RADICES) + ri
 end
 
-# Radices whose codelets are compiled on first use, not with the package: they are 54 % of the
-# statements of the stage kernels and rarely needed. The preference `lazy_radices` is a list of
-# radices from RADICES; an empty list compiles every codelet with the package, which a trimmed build
-# needs because juliac compiles nothing at run time.
-using Preferences: @load_preference
-const LAZY_RADICES = Tuple(Int.(@load_preference("lazy_radices", [17, 19, 23, 29, 31])))
-all(in(RADICES), LAZY_RADICES) || error("LAZY_RADICES must be radices from RADICES")
-
 # Codelet dispatch: one function per kind of stage call, a switch over the codelet index,
-# generated for both element types so that every call has constant type arguments. Codelets of
-# LAZY_RADICES are not in the switch; `<kind>_lazy` takes their index and calls the stage kernel
-# through a callable that is created and compiled at the first call.
+# generated for both element types so that every call has constant type arguments.
 for T in (Float32, Float64)
   ladder = vec_ladder(T)
-  LTYPES = Tuple(ladder)
   NR = length(RADICES); NL = length(ladder)
+  # name, arguments, the kernel and its call, and the call of prime_stage! for a looped radix
+  # (which takes its table `tab`; the full-width first stage has none)
+  null = :(Ptr{$T}(C_NULL))
   kinds = (
-    (:cstage!,       (:py, :px, :pt, :m, :s),                 (r, σ, V) -> :(stage!(py, px, pt, m, s, Val($r), Val($σ), $V))),
-    (:cstage_range!, (:py, :px, :pt, :m, :s, :qlo, :qhi),     (r, σ, V) -> :(stage_range!(py, px, pt, m, s, qlo, qhi, 0, m, Val($r), Val($σ), $V))),
-    (:cstage_last!,  (:py, :px, :s),                          (r, σ, V) -> :(stage_last!(py, px, s, Val($r), Val($σ), $V))),
-    (:cstage_last_range!, (:py, :px, :s, :qlo, :qhi),         (r, σ, V) -> :(stage_last!(py, px, s, qlo, qhi, Val($r), Val($σ), $V))),
-    (:cstage_group!, (:py, :px, :pt, :m),                     (r, σ, V) -> :(stage_first_group!(py, px, pt, m, Val($r), Val($σ), $V))),
-    (:cstage_small!, (:py, :px, :pt, :m),                     (r, σ, V) -> :(stage_small!(py, px, pt, m, Val($r), Val($σ), $V))),
-    (:cstage_lanes!, (:py, :px, :pt, :m, :s0, :sx, :sy, :B),  (r, σ, V) -> :(stage_lanes!(py, px, pt, m, s0, sx, sy, B, Val($r), Val($σ), $V))),
-    (:cstage_last_lanes!, (:py, :px, :s0, :sx, :sy, :B),      (r, σ, V) -> :(stage_last_lanes!(py, px, s0, sx, sy, B, Val($r), Val($σ), $V))))
-  for (name, args, call) in kinds
+    (:cstage!, (:py, :px, :pt, :m, :s), :stage!,
+     (r, σ, V) -> :(stage!(py, px, pt, m, s, 0, m, Val($r), Val($σ), $V)),
+     (r, V) -> :(prime_stage!(py, px, pt, tab, $r, m, 1, s, s, 0, s, $V))),
+    (:cstage_range!, (:py, :px, :pt, :m, :s, :qlo, :qhi), :stage_range!,
+     (r, σ, V) -> :(stage_range!(py, px, pt, m, s, qlo, qhi, 0, m, Val($r), Val($σ), $V)),
+     (r, V) -> :(prime_stage!(py, px, pt, tab, $r, m, 1, s, s, qlo, qhi, $V))),
+    (:cstage_last!, (:py, :px, :s), :stage_last!,
+     (r, σ, V) -> :(stage_last!(py, px, s, 0, s, Val($r), Val($σ), $V)),
+     (r, V) -> :(prime_stage!(py, px, $null, tab, $r, 1, 1, s, s, 0, s, $V))),
+    (:cstage_last_range!, (:py, :px, :s, :qlo, :qhi), :stage_last!,
+     (r, σ, V) -> :(stage_last!(py, px, s, qlo, qhi, Val($r), Val($σ), $V)),
+     (r, V) -> :(prime_stage!(py, px, $null, tab, $r, 1, 1, s, s, qlo, qhi, $V))),
+    (:cstage_group!, (:py, :px, :pt, :m), :stage_first_group_range!,
+     (r, σ, V) -> :(stage_first_group!(py, px, pt, m, Val($r), Val($σ), $V)),
+     (r, V) -> :(prime_group!(py, px, pt, tab, $r, m, $V))),
+    (:cstage_small!, (:py, :px, :pt, :m), :stage_small!,
+     (r, σ, V) -> :(stage_small!(py, px, pt, m, Val($r), Val($σ), $V)), nothing),
+    (:cstage_lanes!, (:py, :px, :pt, :m, :s0, :sx, :sy, :B), :stage_lanes!,
+     (r, σ, V) -> :(stage_lanes!(py, px, pt, m, s0, sx, sy, B, 0, m, Val($r), Val($σ), $V)),
+     (r, V) -> :(prime_stage!(py, px, pt, tab, $r, m, s0, sx, sy, 0, B, $V))),
+    (:cstage_last_lanes!, (:py, :px, :s0, :sx, :sy, :B), :stage_last_lanes!,
+     (r, σ, V) -> :(stage_last_lanes!(py, px, s0, sx, sy, B, 0, s0, Val($r), Val($σ), $V)),
+     (r, V) -> :(prime_stage!(py, px, $null, tab, $r, 1, s0, sx, sy, 0, B, $V))))
+  for (name, args, kernel, call, prime) in kinds
     typed = [a in (:py, :px, :pt) ? :($a::Ptr{$T}) : :($a::Int) for a in args]
-    cases = Any[]
+    cases = Any[]; pcases = Any[]
     for (si, σ) in enumerate((-1, 1)), (vi, V) in enumerate(ladder), (ri, r) in enumerate(RADICES)
-      # the grouped first stage exists for 2 or 4 complex values per vector only; the schedule
-      # never selects another vector type for it, and code compiled ahead of time must not
-      # contain the call (its generator would fail)
-      name === :cstage_group! && !(ncomplex(V) in (2, 4)) && continue
-      # stage_small! exists for the widest vector type and power-of-two radices
-      name === :cstage_small! && !(vi == 1 && ispow2(r)) && continue
-      r in LAZY_RADICES && continue
       c = ((si - 1) * NL + vi - 1) * NR + ri
-      push!(cases, :(c == $c && return $(call(r, σ, V))))
+      if looped(r)
+        prime === nothing || (kernel === :stage_first_group_range! && ncomplex(V) > 4) ||
+          push!(pcases, :(c == $c && return $(prime(r, V))))
+      elseif kernel_exists(kernel, ladder, vi, r)
+        push!(cases, :(c == $c && return $(call(r, σ, V))))
+      end
     end
-    # Without lazy radices there is no run-time call at all (the trimmed library needs none).
-    fallback = isempty(LAZY_RADICES) ? :(throw(ArgumentError("no codelet for this index"))) :
-      :(return $(Symbol(name, :_lazy))($(args...), c))
-    @eval function $name($(typed...), c::Int)
+    # The looped radices are behind a call of their own: their kernel takes more arguments than
+    # the registers hold, and a switch that contains such calls pays for them in every case.
+    looped_name = Symbol(name, :_looped)
+    @eval @noinline function $looped_name($(typed...), tab::Ptr{$T}, c::Int)
+      $(pcases...)
+      throw(ArgumentError("no codelet for this index"))
+    end
+    @eval function $name($(typed...), tab::Ptr{$T}, c::Int)
       $(cases...)
-      $fallback
-    end
-    isempty(LAZY_RADICES) && continue
-    # One callable singleton per (radix, sign, vector type): the first call of a codelet creates it
-    # and compiles its kernel, later calls find it in a table by index. A call through the table
-    # is a dynamic call of a single method, much cheaper than the dispatch of the stage kernel
-    # on run-time `Val`s.
-    callable = Symbol(name, :_, T, :_codelet)
-    table = Symbol(name, :_, T, :_codelets)
-    @eval struct $callable{R,σ,VT} end
-    @eval function (::$callable{R,σ,VT})($(typed...)) where {R,σ,VT}
-      return $(call(:R, :σ, :VT))
-    end
-    @eval const $table = Any[nothing for _ in 1:2 * $NL * $NR]
-    # Index c = ((si - 1) * NL + vi - 1) * NR + ri, with ri = 1 … NR into RADICES.
-    @eval @noinline function $(Symbol(name, :_, T, :_make))(c::Int)
-      ri = (c - 1) % $NR + 1
-      rest = (c - 1) ÷ $NR
-      vi = rest % $NL + 1
-      si = rest ÷ $NL + 1
-      return $callable{RADICES[ri], si == 2 ? 1 : -1, $LTYPES[vi]}()
-    end
-    @eval @noinline function $(Symbol(name, :_lazy))($(typed...), c::Int)
-      f = $table[c]
-      f === nothing && (f = $table[c] = $(Symbol(name, :_, T, :_make))(c))
-      return f($(args...))
+      return $looped_name($(args...), tab, c)
     end
   end
 end
@@ -117,14 +101,16 @@ const OP_GROUP = 5        # first stage vectorised over the butterflies p
 const OP_SMALL = 6        # first stage over the butterflies p on the widest vector (stage_small!)
 
 struct StageCall{T}
-  op::Int
+  op::Int                 # the kind of call (OP_…) + 8 · the scalar remainder s mod C of the stride
   c::Int                  # codelet of the vectorised part
   c1::Int                 # codelet of the scalar remainder (one complex value per vector)
   m::Int
   s::Int
-  rem::Int
   pt::Ptr{T}              # twiddle table of the stage (C_NULL for a last stage), see link_calls!
+  tab::Ptr{T}             # table of a looped radix (primestage.jl), else C_NULL
 end
+stage_kind(st::StageCall) = st.op & 7
+stage_rem(st::StageCall) = st.op >> 3
 
 # One stage of a batch of lines or of a lane block: the vector type is chosen per call from the
 # stride, so the record holds the codelet index of the widest vector type (the index of vector
@@ -132,6 +118,7 @@ end
 struct BatchStage{T}
   c::Int
   pt::Ptr{T}              # C_NULL for the last stage
+  tab::Ptr{T}             # table of a looped radix, else C_NULL
 end
 
 """
@@ -158,8 +145,8 @@ function build_rchain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where
   all(in(RADICES), rs) || throw(ArgumentError("radix without a codelet in RADICES"))
   tw, tw1 = chain_tables(T, n, σ, rs)
   calls = single_schedule(T, n, σ, collect(Int, rs))
-  batch = [BatchStage{T}(codelet_index(T, σ, 1, r), Ptr{T}(C_NULL)) for r in rs]
-  P = RChain{T}(n, σ, collect(Int, rs), tw, tw1, calls, batch, length(calls) == 1 ? calls[1].c : 0, UInt(0))
+  batch = [BatchStage{T}(codelet_index(T, σ, 1, r), Ptr{T}(C_NULL), Ptr{T}(C_NULL)) for r in rs]
+  P = RChain{T}(n, σ, collect(Int, rs), tw, tw1, calls, batch, length(calls) == 1 && !looped(rs[1]) ? calls[1].c : 0, UInt(0))
   link_calls!(P)
   P
 end
@@ -173,16 +160,18 @@ end
 @inline linked(P::RChain) = P.linked == UInt(pointer_from_objref(P))
 
 @noinline function link_calls!(P::RChain{T}) where {T}
+  tab(i) = looped(P.rs[i]) ? pointer(prime_table(T, P.rs[i], P.σ)) : Ptr{T}(C_NULL)
   calls = P.single
   for i in eachindex(calls)
     st = calls[i]
-    pt = st.op == OP_GROUP || st.op == OP_SMALL ? cptr(P.tw1) :
-         st.op == OP_MID || st.op == OP_MID_TAIL ? cptr(P.tw[i]) : Ptr{T}(C_NULL)
-    calls[i] = StageCall{T}(st.op, st.c, st.c1, st.m, st.s, st.rem, pt)
+    op = stage_kind(st)
+    pt = op == OP_GROUP || op == OP_SMALL ? cptr(P.tw1) :
+         op == OP_MID || op == OP_MID_TAIL ? cptr(P.tw[i]) : Ptr{T}(C_NULL)
+    calls[i] = StageCall{T}(st.op, st.c, st.c1, st.m, st.s, pt, tab(i))
   end
   batch = P.batch
-  for i in 1:length(batch)-1
-    batch[i] = BatchStage{T}(batch[i].c, cptr(P.tw[i]))
+  for i in eachindex(batch)
+    batch[i] = BatchStage{T}(batch[i].c, i < length(batch) ? cptr(P.tw[i]) : Ptr{T}(C_NULL), tab(i))
   end
   P.linked = UInt(pointer_from_objref(P))
   nothing
@@ -215,13 +204,13 @@ function single_schedule(::Type{T}, n::Int, σ::Int, rs::Vector{Int}) where {T}
     c = codelet_index(T, σ, vi, r); c1 = codelet_index(T, σ, nv, r)
     m = L ÷ r
     if i == 1 && small_first(ncs, group, r, n)
-      push!(calls, StageCall{T}(OP_SMALL, codelet_index(T, σ, 1, r), c1, m, s, 0, Ptr{T}(C_NULL)))
+      push!(calls, StageCall{T}(OP_SMALL, codelet_index(T, σ, 1, r), c1, m, s, Ptr{T}(C_NULL), Ptr{T}(C_NULL)))
     elseif i == K
-      push!(calls, StageCall{T}(rem == 0 ? OP_LAST : OP_LAST_TAIL, c, c1, m, s, rem, Ptr{T}(C_NULL)))
+      push!(calls, StageCall{T}((rem == 0 ? OP_LAST : OP_LAST_TAIL) + 8rem, c, c1, m, s, Ptr{T}(C_NULL), Ptr{T}(C_NULL)))
     elseif i == 1 && group != 0 && ncs[vi] == 1
-      push!(calls, StageCall{T}(OP_GROUP, codelet_index(T, σ, group, r), c1, m, s, 0, Ptr{T}(C_NULL)))
+      push!(calls, StageCall{T}(OP_GROUP, codelet_index(T, σ, group, r), c1, m, s, Ptr{T}(C_NULL), Ptr{T}(C_NULL)))
     else
-      push!(calls, StageCall{T}(rem == 0 ? OP_MID : OP_MID_TAIL, c, c1, m, s, rem, Ptr{T}(C_NULL)))
+      push!(calls, StageCall{T}((rem == 0 ? OP_MID : OP_MID_TAIL) + 8rem, c, c1, m, s, Ptr{T}(C_NULL), Ptr{T}(C_NULL)))
     end
     L = m; s *= r
   end
@@ -280,19 +269,19 @@ end
     if i == K
       r = L
       if rem == 0
-        cstage_last!(dst, src, s, c)
+        cstage_last!(dst, src, s, st.tab, c)
       else
-        cstage_last_range!(dst, src, s, 0, s - rem, c)
-        cstage_last_range!(dst, src, s, s - rem, s, st.c + (nv - 1) * NR)
+        cstage_last_range!(dst, src, s, 0, s - rem, st.tab, c)
+        cstage_last_range!(dst, src, s, s - rem, s, st.tab, st.c + (nv - 1) * NR)
       end
     else
       r = RADICES[(st.c - 1) % NR + 1]
       m = L ÷ r
       if rem == 0
-        cstage!(dst, src, st.pt, m, s, c)
+        cstage!(dst, src, st.pt, m, s, st.tab, c)
       else
-        cstage_range!(dst, src, st.pt, m, s, 0, s - rem, c)
-        cstage_range!(dst, src, st.pt, m, s, s - rem, s, st.c + (nv - 1) * NR)
+        cstage_range!(dst, src, st.pt, m, s, 0, s - rem, st.tab, c)
+        cstage_range!(dst, src, st.pt, m, s, s - rem, s, st.tab, st.c + (nv - 1) * NR)
       end
       L = m; s *= r
     end
@@ -306,7 +295,7 @@ end
 @inline function run_single!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}) where {T}
   c = P.one
   if c != 0
-    cstage_last!(py, px, 1, c)
+    cstage_last!(py, px, 1, Ptr{T}(C_NULL), c)
     return nothing
   end
   run_calls!(py, px, pw1, pw2, P)
@@ -322,21 +311,21 @@ end
   for i in 1:K
     st = unsafe_load(pc, i)
     dst = stage_dst(py, px, pw1, pw2, i, K, inplace)
-    op = st.op
+    op = stage_kind(st); rem = stage_rem(st)
     if op == OP_LAST
-      @inline cstage_last!(dst, src, st.s, st.c)
+      @inline cstage_last!(dst, src, st.s, st.tab, st.c)
     elseif op == OP_MID
-      @inline cstage!(dst, src, st.pt, st.m, st.s, st.c)
+      @inline cstage!(dst, src, st.pt, st.m, st.s, st.tab, st.c)
     elseif op == OP_SMALL
-      @inline cstage_small!(dst, src, st.pt, st.m, st.c)
+      @inline cstage_small!(dst, src, st.pt, st.m, st.tab, st.c)
     elseif op == OP_GROUP
-      @inline cstage_group!(dst, src, st.pt, st.m, st.c)
+      @inline cstage_group!(dst, src, st.pt, st.m, st.tab, st.c)
     elseif op == OP_MID_TAIL
-      @inline cstage_range!(dst, src, st.pt, st.m, st.s, 0, st.s - st.rem, st.c)
-      @inline cstage_range!(dst, src, st.pt, st.m, st.s, st.s - st.rem, st.s, st.c1)
+      @inline cstage_range!(dst, src, st.pt, st.m, st.s, 0, st.s - rem, st.tab, st.c)
+      @inline cstage_range!(dst, src, st.pt, st.m, st.s, st.s - rem, st.s, st.tab, st.c1)
     else
-      @inline cstage_last_range!(dst, src, st.s, 0, st.s - st.rem, st.c)
-      @inline cstage_last_range!(dst, src, st.s, st.s - st.rem, st.s, st.c1)
+      @inline cstage_last_range!(dst, src, st.s, 0, st.s - rem, st.tab, st.c)
+      @inline cstage_last_range!(dst, src, st.s, st.s - rem, st.s, st.tab, st.c1)
     end
     src = dst
   end
@@ -394,7 +383,8 @@ function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{
   NR = length(RADICES)
   off = (vi - 1) * NR
   if K == 1    # one stage loads all inputs of a butterfly before it stores: py may equal px
-    cstage_last_lanes!(py, px, 1, Sx, Sy, B, unsafe_load(pb).c + off)
+    st = unsafe_load(pb)
+    cstage_last_lanes!(py, px, 1, Sx, Sy, B, st.tab, st.c + off)
     return nothing
   end
   L = P.n; s0 = 1; src = px; srcS = Sx
@@ -402,12 +392,12 @@ function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{
     st = unsafe_load(pb, i)
     c = st.c + off
     if i == K
-      cstage_last_lanes!(py, src, s0, srcS, Sy, B, c)
+      cstage_last_lanes!(py, src, s0, srcS, Sy, B, st.tab, c)
     else
       dst = isodd(i) ? pw1 : pw2
       r = @inbounds RADICES[(st.c - 1) % NR + 1]
       m = L ÷ r
-      cstage_lanes!(dst, src, st.pt, m, s0, srcS, B, B, c)
+      cstage_lanes!(dst, src, st.pt, m, s0, srcS, B, B, st.tab, c)
       L = m; s0 *= r
       src = dst; srcS = B
     end
@@ -421,7 +411,7 @@ function run_rows!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T
   c = P.one
   if c != 0
     for j in 0:count-1
-      @inline cstage_last!(py + j * bytes, px + j * bytes, 1, c)
+      @inline cstage_last!(py + j * bytes, px + j * bytes, 1, Ptr{T}(C_NULL), c)
     end
   else
     run_calls_rows!(py, px, pw1, pw2, P, count, bytes)

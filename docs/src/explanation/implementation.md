@@ -68,6 +68,11 @@ is a few nanoseconds of arithmetic, so the loop is written to cost little next t
 - The switch over the codelet index is inlined into the loop: a stage is one jump and one call.
 - The rows of a plane run inside one call of the loop function.
 
+A stage of a prime radix from 17 on calls one kernel for all such radices (`prime_stage!` in
+`src/primestage.jl`), with the radix and its table as arguments; it is compiled once per vector type.
+Its calls sit behind a function of their own, outside the switch, because they take more arguments
+than fit in registers and would cost every case of the switch a larger stack frame.
+
 The addresses in the stage records are valid for the chain object they were taken for. A chain
 remembers its own address at that moment; a copy of a plan, or a plan stored in a package image and
 loaded into another process, is at another address and links its records again before it uses them.
@@ -76,7 +81,7 @@ loaded into another process, is at another address and links its records again b
 at build time and compiles nothing at run time; the fixed codelet set is all a chain of any length needs. The
 [libfftl how-to](@ref "C library (libfftl)") describes what the library is built from, and
 [Design decisions](@ref "Design decisions") gives the measurements behind the single chain form. The stage kernels of
-the fixed codelet set are plain methods, not `@generated` ones, to keep the package image small; see
+the fixed codelet set are plain methods defined with `@eval`, not `@generated` ones, to keep the package image small; see
 [Package size and load time](@ref "Package size and load time").
 
 ## Lengths and the factorisation rule

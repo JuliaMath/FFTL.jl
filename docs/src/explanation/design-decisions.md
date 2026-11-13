@@ -58,7 +58,8 @@ showed 100 `Float32` and 64 `Float64` lengths slower than 1.5×, the worst at 3.
 
 ## Lengths with large prime factors: split off the smooth part, Bluestein on the rest
 
-**Decision (2026-11-07).** For n = s·q, with q the part made of primes above 31: one Cooley–Tukey
+**Decision (2026-11-07).** For n = s·q, with q the part made of primes above `MAX_RADIX_PRIME` (73, at the
+time of the decision 31): one Cooley–Tukey
 step, a chain of length s, twiddles, and s Bluestein transforms of length q (`Composite`). A leftover q
 stays one Bluestein while its convolution is at most 4 MiB; above that, q is split into its prime
 powers, recursively. Bluestein convolutions of 8 MiB and more run as a serial four-step algorithm on
@@ -115,8 +116,11 @@ for the rest), and before that the idea of removing `Chain` without changing the
 
 ## Kernels of a fixed set are plain methods, not `@generated`
 
-**Decision (2026-11-10).** The stage kernels of the codelet set that `RChain` dispatches to are plain
-methods defined in `src/kernel_methods.jl` from the bodies the `@generated` methods build. The `@generated` methods remain as the fallback.
+**Decision (2026-11-10, fallback removed 2026-11-13).** The stage kernels of the codelet set that `RChain`
+dispatches to are plain methods, defined with `@eval` in `src/kernel_methods.jl` from the functions that
+build their bodies. One table (`STAGE_KERNELS` in `src/kernels.jl`) lists the kernels and their arguments;
+the methods and the dispatch switches of `RChain` are made from it. There are no `@generated` stage
+kernels: every combination the chain can select has a plain method, so a fallback would never run.
 
 **Why.** A package image keeps the complete optimised IR of every precompiled `@generated`
 specialisation, 130 MB of the 146 MB image. See [Package size and load time](@ref "Package size and load time").
@@ -149,16 +153,64 @@ radix 16 middle stage 284 → 198, radix 8 100 → 79. One line, `plan_fft`, med
 rounds: lengths 512–16384 take 0.79–0.94 (`Float32`) and 0.82–0.92 (`Float64`) of the time, lengths
 from 32768 on are unchanged (the same code against itself differs by 1–5 %). Not verified on aarch64.
 
-## Codelets of the radices 17–31 are compiled on first use
+## The prime radices from 17 to 73 share one looped kernel
 
-**Decision (2026-11-10).** The codelets of the radices 17, 19, 23, 29 and 31 are not part of the package
-image. The first call compiles them (70–100 ms); later calls go through a table of callable objects at a
-cost of about 0.02 µs per transform.
+**Decision (2026-11-13).** A stage of a prime radix from 17 on runs `prime_stage!` (`src/primestage.jl`):
+one kernel for all such radices, with the radix and a table of cosines and sines as arguments, compiled
+once per vector type. It uses the symmetric form of the odd-prime codelet as loops and computes up to
+eight output pairs (four with 16 vector registers) in one pass over the inputs. It covers the stage
+kinds that the codelets have separate kernels for: stages vectorised over the lanes, the last stage,
+lane blocks, and the grouped first stage. `MAX_RADIX_PRIME` is 73. The radices up to 16 keep their
+straight-line codelets. The KernelAbstractions kernels and the generic number types keep their limit
+of 31.
 
-**Why.** These radices were 54 % of the statements of the stage kernels and are rarely needed. The image
-shrinks from 50 MB to 32 MB. Making 11 and 13 lazy as well would save 4 MB more; it was not done, because
-lengths with those factors are common. The list is the preference `lazy_radices`; the trimmed C library
-sets it to empty, because `juliac` compiles nothing at run time.
+**Why.** A straight-line codelet of a prime r has about r²/2 statements with as many different
+constants, which do not fit in registers (525 statements for 31), and every radix needed 82 kernel
+methods on AVX-512 (kind × sign × vector type). The codelets of 17–31 were therefore compiled at first
+use and not with the package (decision of 2026-11-10, replaced by this one). With the loop, a prime
+costs a table.
+
+Measurements: AMD EPYC 9354 (AVX-512), one thread, `plan_fft` and `mul!`, rounds in alternating
+processes, median time over the median time of the previous code.
+
+- Lengths and shapes with a factor 17–31 against the codelets (40 cases, 4 rounds): geometric mean
+  0.82, 36 cases below 0.95, one above 1.05 (`Float64` 100 × 31, 1.06: a single stage in place, which
+  copies the inputs of a butterfly first). 17 and 31 alone: 0.63–0.84; 1088 = 17·64: 0.96 and 0.89;
+  837 = 27·31 and 841 = 29²: 0.72–0.82; 62 × 62: 0.70–0.74.
+- Long lengths (36 cases, 3 rounds; 31·2⁶ to 17·2²⁰, and a factor 17–31 times a prime above 1000):
+  geometric mean 0.94, one case above 1.05 (`Float64` 19·2¹⁷, 1.08). 31·2⁶ to 31·2¹⁴: 0.74–0.91;
+  17·2²⁰: 0.99 and 1.01.
+- The primes 37–73 against Bluestein's algorithm, which they used before (100 cases, 2 rounds; p, 8p,
+  64p, 1024p, 16384p): geometric mean 0.29. The prime alone: 0.43–0.79 (`Float64`) and 0.48–0.90
+  (`Float32`); as a factor of a longer length: 0.13–0.53.
+- 92 general cases without such factors (the set of the decision above, 4 rounds): geometric mean 1.00
+  without the two cases with a dimension of 37 (0.10 and 0.16), 3 cases above 1.05 (`Float64` lines of
+  32, 48 and 60: 1.07–1.15). In 6 rounds on 20 short lines alone these three were at 1.04, 0.83 and
+  1.05 and the geometric mean 1.00; the stage kernels of these lengths compile to the same machine code
+  as before.
+- Accuracy against a 200-bit reference, `Float64`, 841, 6256 and 6859: 1.4–1.8 ε, with the codelets
+  3.5–4.6 ε (the table is built from angles reduced to one turn).
+
+What made the loop as fast as the unrolled sums: several rows per pass, so that the inputs are loaded
+once for all of them and the multiply-add chains of the rows run side by side; no buffer for the sums
+and differences of the inputs (storing whole registers was the slowest part: 1.3–1.4× per butterfly
+with the buffer); the pass over a block of rows out of line and the outputs of a block written by
+recursion over the tuples of accumulators (a loop with an index into them, or a closure over them, put
+the accumulators on the stack: up to 1.4× for a whole transform).
+
+**The limit.** With the limit at 127 for the measurement, a prime from 79 on is still 1.3–4× faster than
+Bluestein's algorithm as a factor of a longer length, but the line of that prime alone is slower from
+79 on for `Float32` (1.05, 1.5 at 127) and from 97 on for `Float64` (1.01, 1.15 at 127). 73 is the
+largest prime for which every measured case is faster.
+
+**Not done.** The loop for 11 and 13: with one kernel per radix (an earlier form of the loop) it was at
+0.98 of the codelets for `Float64` and 1.05–1.06 for `Float32`, and 1.08–1.10 for 7; not measured with
+the single kernel. A larger limit for lengths that are not a prime alone. aarch64 is not verified.
+
+**Costs.** The kernel and its tables are in the package image, which the lazy codelets were not: the
+image file is 66 MB instead of 59 MB on this machine (68.5 MB before the decision on the chain form).
+The C library contains every kernel in either case and shrinks: `libfftl.so` (x86-64-v3, `--trim=safe`)
+is 26.8 MB instead of 49.5 MB, its code 8.8 MB instead of 18.6 MB.
 
 ## Run-time pass plans for trimmed programs
 

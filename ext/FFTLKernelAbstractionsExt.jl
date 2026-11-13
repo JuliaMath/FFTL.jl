@@ -148,14 +148,18 @@ const PKERNELS_LOCK = ReentrantLock()
 lradix(n) = n >= 512 ? 8 : 16
 const TWLEV = 3             # number of factor tables of W_N^t
 
+# Largest prime factor with a codelet in a kernel; lengths with larger ones use Bluestein's
+# algorithm.
+const KA_MAX_PRIME = 31
+
 # Radices of a chain of length n: the power-of-two part as radix-R codelets and one remainder
-# (first), then the odd part: pairs of 3 as 9, other primes (≤ FFTL.MAX_RADIX_PRIME) alone.
+# (first), then the odd part: pairs of 3 as 9, other primes (≤ KA_MAX_PRIME) alone.
 function local_radices(n, R = lradix(n))
   r = Int[]; m = n >> trailing_zeros(n); p2 = n ÷ m
   while p2 >= R; push!(r, R); p2 ÷= R; end
   p2 > 1 && push!(r, p2)
-  f, rest = FFTL.factorize(m)
-  @assert rest == 1 "prime factor > $(FFTL.MAX_RADIX_PRIME)"
+  f, rest = FFTL.factorize(m, KA_MAX_PRIME)
+  @assert rest == 1 "prime factor > $(KA_MAX_PRIME)"
   e3 = get(f, 3, 0)
   append!(r, fill(9, e3 ÷ 2)); isodd(e3) && push!(r, 3)
   for p in sort!(collect(keys(f))); p == 3 || append!(r, fill(p, f[p])); end
@@ -770,7 +774,7 @@ passes_G(N, rs, lim = LIM0) = (s = 1; [(G = pass_G(R, s, N ÷ (R * s), 1, 1, 64,
 
 # N as few pass lengths ≤ cap as first-fit decreasing packing of the prime factors finds
 function pack_passes(N, cap)
-  f, rest = FFTL.factorize(N); @assert rest == 1
+  f, rest = FFTL.factorize(N, KA_MAX_PRIME); @assert rest == 1
   bins = Int[]
   for p in sort!(reduce(vcat, [fill(p, k) for (p, k) in f]; init = Int[]); rev = true)
     i = findfirst(b -> b * p <= cap, bins)
@@ -782,7 +786,7 @@ end
 # N as a product of P pass lengths ≤ cap: prime factors, largest first, each to the pass with
 # the smallest product (more passes if a length exceeds cap)
 function balance_passes(N, P, cap = NMAX)
-  f, rest = FFTL.factorize(N); @assert rest == 1
+  f, rest = FFTL.factorize(N, KA_MAX_PRIME); @assert rest == 1
   ps = sort!(reduce(vcat, [fill(p, k) for (p, k) in f]; init = Int[]); rev = true)
   while true
     bins = ones(Int, P)
@@ -792,7 +796,7 @@ function balance_passes(N, P, cap = NMAX)
   end
 end
 
-# Bluestein along a dimension of length N (prime factor > FFTL.MAX_RADIX_PRIME):
+# Bluestein along a dimension of length N (prime factor > KA_MAX_PRIME):
 # X_k = c_k Σ_j (x_j c_j) conj(c_{k-j}), c_j = exp(σ iπ j²/N), as a cyclic convolution of length
 # M ≥ 2N - 1. Forward passes of length M read x times c (load hook, zero padding), the first
 # backward pass reads times b̂ = FFT_M(conj(c) wrapped) / M, the last one writes the first N
@@ -858,7 +862,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   scr_next(src) = src === :c ? :d : :c
   for (i, d) in enumerate(region)
     N = dims[d]; E = prod(dims[1:d-1]; init = 1); B = prod(dims[d+1:end]; init = 1)
-    blue = FFTL.factorize(N)[2] > 1
+    blue = FFTL.factorize(N, KA_MAX_PRIME)[2] > 1
     M, cin, bhat = blue ? bluestein_tables(backend, T, N, σ) : (N, dummy, dummy)
     rs = radices === nothing ? dim_passes(M, E, E * M * B * sizeof(Complex{T}); padded = pad > 0, first = i == 1, last = i == length(region), prof, gmax = gmax, lim = lim) : radices[i]
     @assert prod(rs) == M

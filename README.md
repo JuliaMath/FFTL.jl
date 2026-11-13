@@ -84,7 +84,7 @@ yd = FFTL.fft(MtlArray(randn(ComplexF32, 1024, 1024)))
 **Fourier and discrete cosine transforms written in Julia, with wide support for number types and CPU and GPU execution.**
 
 - Complex, real-input and all eleven real-to-real kinds of FFTW, along any subset of
-  dimensions, for any length (the part of a length made of prime factors above 31 through
+  dimensions, for any length (the part of a length made of prime factors above 73 through
   Bluestein's algorithm).
 - `Float32` and `Float64` on the fast path (SIMD codelets, threads). `BigFloat`, `Double64`,
   `Float128` and other floating-point types are transformed in their own precision by a generic
@@ -117,19 +117,20 @@ figures there are regenerated from the committed data on every documentation bui
 ## How it works
 
 - **Generated codelets.** A small symbolic generator writes straight-line code for DFTs of
-  size 2–31 (composite sizes split in registers, odd primes in the symmetric form). Codelets are
-  generated with `@generated` for the radix, element type and SIMD width actually used.
+  size 2–16 (composite sizes split in registers, odd primes in the symmetric form), one method
+  per radix, element type and SIMD width. The prime radices 17–73 share one kernel that loops
+  over a table of cosines and sines.
 - **Complex numbers in SIMD registers.** On aarch64 CPUs with the ARMv8.3 complex-number
   extension (all Apple silicon), additions with a factor ±i and complex multiplications use the
   `FCADD` and `FCMLA` instructions; elsewhere the same operations are built from shuffles.
 - **Stockham chains.** A transform is a sequence of radix stages (mostly 4 and 8) without bit
-  reversal. The sequence is part of the plan's type, so it compiles into one function. The radices
+  reversal. The sequence is data of the plan; nothing is compiled per length. The radices
   are chosen by a fixed rule found in offline searches over the decompositions of many lengths;
   there is no run-time measuring step.
 - **Multidimensional transforms** run the same chains along every dimension: a dimension with
   stride S is a chain started with stride S, the S neighbouring columns forming the vectorised
   index. No transposition.
-- **Lengths with prime factors above 31** split off their smooth part in one Cooley–Tukey step
+- **Lengths with prime factors above 73** split off their smooth part in one Cooley–Tukey step
   and use Bluestein's algorithm only for the rest.
 - **Threads** split each dimension over slices or blocks of columns; long 1D transforms use the
   four-step algorithm.
