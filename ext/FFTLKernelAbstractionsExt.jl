@@ -152,17 +152,41 @@ const TWLEV = 3             # number of factor tables of W_N^t
 # algorithm.
 const KA_MAX_PRIME = 31
 
-# Radices of a chain of length n: the power-of-two part as radix-R codelets and one remainder
-# (first), then the odd part: pairs of 3 as 9, other primes (≤ KA_MAX_PRIME) alone.
-function local_radices(n, R = lradix(n))
-  r = Int[]; m = n >> trailing_zeros(n); p2 = n ÷ m
-  while p2 >= R; push!(r, R); p2 ÷= R; end
-  p2 > 1 && push!(r, p2)
-  f, rest = FFTL.factorize(m, KA_MAX_PRIME)
+# Radices of a chain of length n. Powers of two: radix-R codelets and one remainder. Other
+# lengths: the fewest stages of radices ≤ 16 (a larger prime factor alone), of these the one
+# with the smallest largest radix, in decreasing order. Few, even stages need few rounds of
+# butterflies per thread (M1, fused one-pass kernels, µs for 1009² dimension 1 / 2: 1008 as
+# [12, 12, 7] 141/139, [16, 9, 7] 215/250, [8, 2, 9, 7] 249/310; 100 as [10, 10] 83/83,
+# [4, 5, 5] 99/73).
+local_radices(n) = ispow2(n) ? pow2_radices(n) : balanced_radices(n)
+
+function balanced_radices(n)
+  f, rest = FFTL.factorize(n, KA_MAX_PRIME)
   @assert rest == 1 "prime factor > $(KA_MAX_PRIME)"
-  e3 = get(f, 3, 0)
-  append!(r, fill(9, e3 ÷ 2)); isodd(e3) && push!(r, 3)
-  for p in sort!(collect(keys(f))); p == 3 || append!(r, fill(p, f[p])); end
+  cap = max(16, maximum(keys(f); init = 1))
+  best = Int[]
+  # non-increasing factorisations with factors ≤ lo
+  function walk(m, lo, acc)
+    if m == 1
+      better = isempty(best) || length(acc) < length(best) ||
+               (length(acc) == length(best) && maximum(acc) < maximum(best))
+      better && (best = copy(acc))
+      return
+    end
+    !isempty(best) && length(acc) + 1 > length(best) && return
+    for d in min(lo, m):-1:2
+      m % d == 0 || continue
+      push!(acc, d); walk(m ÷ d, d, acc); pop!(acc)
+    end
+  end
+  walk(n, cap, Int[])
+  best
+end
+
+function pow2_radices(n, R = lradix(n))
+  r = Int[]
+  while n >= R; push!(r, R); n ÷= R; end
+  n > 1 && push!(r, n)
   r
 end
 
@@ -206,9 +230,9 @@ local_twcount(n, rs) = sum((R - 1) * (L ÷ R) for (R, L) in zip(rs, accumulate(�
 #   needs G | E; with s > 1 the last pass takes G/2 columns at q and the same columns at s - q
 #   (q = 0 with s/2), which needs (G/2) | E.
 function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1, 0), pady = (1, 0), lim = LIM0, rhook = 0,
-                     pre = rhook > 0, post = rhook < 0, xreal = false, blue2 = false, ragged = false, raw = false)
+                     pre = rhook > 0, post = rhook < 0, xreal = false, blue2 = false, ragged = false, rader = false, raw = false)
   rhook = abs(rhook)
-  @lock PKERNELS_LOCK get!(PKERNELS, (R, G, σ, T, s, N, E, B, Nx, Ny, padx, pady, G * R > lim.nstat, rhook, pre, post, xreal, blue2, ragged, raw)) do
+  @lock PKERNELS_LOCK get!(PKERNELS, (R, G, σ, T, s, N, E, B, Nx, Ny, padx, pady, G * R > lim.nstat, rhook, pre, post, xreal, blue2, ragged, rader, raw)) do
     # padded layouts (n1, pad): logical index L at L + pad ⌊L / n1⌋
     PX = Int32.(padx); PY = Int32.(pady)
     rs = local_radices(R)
@@ -235,6 +259,14 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     @assert (Nx == 0 || s == 1) && (Ny == 0 || (m == 1 && (batchlanes || !transposed)))
     @assert !xreal || (Nx > 0 && padx == (1, 0))
     @assert !blue2 || (Nx > 0 && Ny > 0 && s == 1 && m == 1 && rhook == 0)
+    @assert !rader || (blue2 && ragged && Nx == Ny == N + 1 && !xreal && padx == pady == (1, 0))
+    # Rader (prime lines of length Nx = N + 1, see KAPlan): permutations from the cin table,
+    # line l = e + E o at rbase(l) = o E Nx + e
+    rpin(ii) = :(Base.unsafe_trunc(Int32, real(@inbounds cin[$ii + one(Int32)])))
+    rpout(k) = :(Base.unsafe_trunc(Int32, imag(@inbounds cin[$k + one(Int32)])))
+    rbase(l) = quote
+      rbl = $(lane(l)); rol = rbl ÷ $(Int32(E)); rol * $(Int32(E * Nx)) + rbl - rol * $(Int32(E))
+    end
     rpre = rhook > 0 && pre; rpost = rhook > 0 && post
     dct = rhook >= 2; dst = rhook in (3, 5, 7)
     dct1 = rhook == 8
@@ -405,6 +437,9 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     end : Ny == 0 ? quote
       $(twiddle ? twid(:($k * pss)) : nothing)
       $(ystore(:(ybase + $l + $(I(sp)) * $k)))
+    end : rader ? quote
+      rb = $(rbase(l))
+      @inbounds y[rb + $(I(E)) * $(rpout(k)) + one(Int32)] = v + x[rb + one(Int32)]
     end : ragged ? quote
       # line bl = e + E o: element k of line o
       bl = $(lane(l)); ol = bl ÷ $(I(E)); el = bl - ol * $(I(E))
@@ -450,6 +485,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
             $(rpre && ahook ? :($(lb(:(l + $(I(G)) * j))) = $(aload(:(xbase + idx)))) :
               rpre ? :($(lb(:(l + $(I(G)) * j))) = $(xload(:(b0 + l), :j))) :
               Nx == 0 ? :(@inbounds $(lb(:(l + $(I(G)) * j))) = x[padmap(xbase + idx, $(PX[1]), $(PX[2])) + one(Int32)]) :
+              rader ? :(@inbounds $(lb(:(l + $(I(G)) * j))) = x[$(rbase(:l)) + $(rpin(:j)) + one(Int32)]) :
               :(@inbounds $(lb(:(l + $(I(G)) * j))) = j < $(I(Nx)) ? ccmul($(bload(:($(lane(:l)) * $(I(xreal ? Nx + 1 : Nx))), I(1), :j)), cin[j + one(Int32)]) : zero(VT)))
           end
         end)
@@ -476,7 +512,16 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         push!(body, :(g = $gc), :($pc = g ÷ $(I(st))), :($qc = g - $pc * $(I(st))))
         for j in 1:r
           # first local stage: st = G, so local index q + G (p + j mm) is lane q, element p + j mm
-          src = bfirst ? :(ccmul($(lb(:($qc + $(I(st)) * ($pc + $(I((j - 1) * mm)))))), cout[$pc + $(I((j - 1) * mm + 1))])) :
+          src = bfirst && rader && j == 1 ? quote
+                  # X_0 = x_0 + A_0, from element 0 of the forward chain's result
+                  ra = $(lb(:($qc + $(I(st)) * $pc)))
+                  if $pc == zero(Int32)
+                    rb = $(rbase(qc))
+                    @inbounds y[rb + one(Int32)] = ra + x[rb + one(Int32)]
+                  end
+                  ccmul(ra, cout[$pc + one(Int32)])
+                end :
+                bfirst ? :(ccmul($(lb(:($qc + $(I(st)) * ($pc + $(I((j - 1) * mm)))))), cout[$pc + $(I((j - 1) * mm + 1))])) :
                 first && spre ? sload(qc, :($pc + $(I((j - 1) * mm)))) :
                 !fload ? lb(:($qc + $(I(st)) * ($pc + $(I((j - 1) * mm))))) :
                 rpre && ahook ? aload(:(xbase + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))))) :
@@ -492,6 +537,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
                   x[ol * $(I(E * N)) + el + $(I(E)) * ($pc + $(I((j - 1) * mm))) + one(Int32)]
                 end :
                 Nx == 0 ? :(x[padmap(xbase + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
+                rader ? :(x[$(rbase(qc)) + $(I(E)) * $(rpin(:($pc + $(I((j - 1) * mm))))) + one(Int32)]) :
                 ragged ? quote   # line bl = e + E o, element ii
                   bl = $(lane(qc)); ol = bl ÷ $(I(E)); el = bl - ol * $(I(E))
                   ii = $pc + $(I((j - 1) * mm))
@@ -601,7 +647,8 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
             k = idx % $(I(R)); l = idx ÷ $(I(R))
             v = @inbounds $(lb(:(l + $(I(G)) * k)))
             $(twiddle ? twid(:((b0 + l) * k)) : nothing)
-            $(Ny == 0 ? ystore(:(obase + $(I(R)) * (b0 + l) + k)) :
+            $(rader ? :(rb = $(rbase(:l)); @inbounds y[rb + $(rpout(:k)) + one(Int32)] = v + x[rb + one(Int32)]) :
+              Ny == 0 ? ystore(:(obase + $(I(R)) * (b0 + l) + k)) :
               :(if k < $(I(Ny)); @inbounds y[padmap($(lane(:l)) * $(I(Ny)) + k, $(PY[1]), $(PY[2])) + one(Int32)] = ccmul(v, $(blue2 ? :cin : :cout)[k + one(Int32)]); end))
           end
         end)
@@ -611,7 +658,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     ngroups = ragged ? cld(NL, G) : batchlanes ? B ÷ G : B * gpb
     name = Symbol(crossing ? "ka_passx_" : "ka_pass_", R, "_", join(rs, "x"), "_G", G, "_s", s, "_N", N, "_E", E, "_B", B, "_",
                   σ < 0 ? "f" : "b", "_", T, "_x", Nx, "_y", Ny, padx[2] > 0 ? "_px$(padx[1])x$(padx[2])" : "", pady[2] > 0 ? "_py$(pady[1])x$(pady[2])" : "",
-                  dyn ? "_dyn" : "", rhook == 0 ? "" : string("_h", rhook, rpre ? "p" : "", rpost ? "q" : ""), xreal ? "_xr" : "", blue2 ? "_b2" : "", ragged ? "_rg" : "")
+                  dyn ? "_dyn" : "", rhook == 0 ? "" : string("_h", rhook, rpre ? "p" : "", rpost ? "q" : ""), xreal ? "_xr" : "", blue2 ? "_b2" : "", ragged ? "_rg" : "", rader ? "_rd" : "")
     idxpre = quote
       ob = $(batchlanes || ragged ? :(zero(Int32)) : :(grp ÷ $(I(gpb))))
       b0 = (grp - ob * $(I(gpb))) * $(I(G))
@@ -828,6 +875,41 @@ end
 # 125³ G 5 → 16 0.88×, 243² G 9 → 16 1.12×, 99³, 105³, 135²×64 1.00–1.03×).
 ragged_G(R, E, B, gmax, lim) = max(1, min(lim.nstat ÷ R, gmax, 16, (lim.wmax * maximum(local_radices(R))) ÷ R, E * B))
 
+# Rader along a dimension of prime length p whose p - 1 is smooth and fits one pass: with a
+# generator g of the multiplicative group mod p, a_q = x_(g^q) and b_m = W^(g^-m) (W = e^(σ2πi/p)),
+#   X_(g^-k) = x_0 + (a ⊛ b)_k,  X_0 = x_0 + Σ_q a_q,
+# the cyclic convolution of length p - 1 by FFT, product with b̂ = FFT(b)/(p - 1), backward FFT,
+# all in one kernel as the fused Bluestein convolution (half the length of Bluestein's, no
+# padding). The permutations g^q and g^-q (mod p) are the real and imaginary parts of the cin
+# table (exact integers), b̂ is the cout table.
+# p - 1 with prime factors up to 13 only: a radix-23 stage makes the fused kernel slower than
+# Bluestein (139³ dimension 1, 138 = 2·3·23)
+const RADER_MAX_PRIME = 13
+
+function rader_ok(p, lim)
+  p > KA_MAX_PRIME && FFTL.factorize(p, KA_MAX_PRIME)[2] == p || return false
+  all(p % d != 0 for d in 2:isqrt(p)) || return false
+  FFTL.factorize(p - 1, RADER_MAX_PRIME)[2] == 1 && p - 1 <= lim.nstat
+end
+
+function primitive_root(p)
+  qs = [q for q in 2:p-1 if (p - 1) % q == 0 && all(q % r != 0 for r in 2:isqrt(q))]
+  for g in 2:p-1
+    all(powermod(g, (p - 1) ÷ q, p) != 1 for q in qs) && return g
+  end
+  error("no primitive root mod $p")
+end
+
+function rader_tables(backend, ::Type{T}, p, σ) where {T}
+  g = primitive_root(p); gi = powermod(g, p - 2, p); L = p - 1
+  pin = [powermod(g, q, p) for q in 0:L-1]; pout = [powermod(gi, k, p) for k in 0:L-1]
+  b = [cispi(2σ * pout[m+1] / p) for m in 0:L-1]
+  bhat = FFTL.plan_fft(b) * b ./ L
+  dcin = KA.allocate(backend, Complex{T}, L); copyto!(dcin, Complex{T}.(pin, pout))
+  dbh = KA.allocate(backend, Complex{T}, L); copyto!(dbh, Complex{T}.(bhat))
+  dcin, dbh
+end
+
 # Lines per workgroup of the fused Bluestein kernel with ragged lanes (any number of lines).
 # M1, 101³, M = 256, µs: dimension 2 G 4/8 148/142; dimension 1 G 1/2/4/8/16 179/124/128/165/222
 # (two launches with G = 1: 193), about 512 values per workgroup as for other contiguous passes.
@@ -909,6 +991,19 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   scr_next(src) = src === :c ? :d : :c
   for (i, d) in enumerate(region)
     N = dims[d]; E = prod(dims[1:d-1]; init = 1); B = prod(dims[d+1:end]; init = 1)
+    if radices === nothing && !xreal && rader_ok(N, lim)
+      # one kernel: X_0 and the cyclic convolution of length N - 1 (see rader_tables)
+      cin, bhat = rader_tables(backend, T, N, σ)
+      push!(rsall, [N - 1])
+      dst = arr_next(cur)
+      push!(specs, (R = N - 1, s = 1, m = 1, M = N - 1, E = E, B = B, σ = -1, Nx = N, Ny = N, blue2 = true,
+                    # no two-launch variant here: the contiguous G rule on every device; W ≤ 256
+                    # on Metal (1008 [8, 2, 9, 7] at G = 4 needs 448 threads, Metal allows 384)
+                    ragged = true, rader = true, G = something(blueG, blue_ragged_G(N - 1, E, B, hook_limits(lim, backend), :apple)),
+                    cin = cin, cout = bhat, src = cur, dst = dst))
+      cur = dst
+      continue
+    end
     blue = FFTL.factorize(N, KA_MAX_PRIME)[2] > 1
     M, cin, bhat = blue ? bluestein_tables(backend, T, N, σ) : (N, dummy, dummy)
     rs = radices === nothing ? dim_passes(M, E, E * M * B * sizeof(Complex{T}); padded = pad > 0, first = i == 1, last = i == length(region), prof, gmax = gmax, lim = lim) : radices[i]
@@ -1009,7 +1104,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
                                       padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]), lim = lim,
                                       rhook = get(sp, :rh, 0), pre = get(sp, :pre, get(sp, :rh, 0) == 1),
                                       post = get(sp, :post, get(sp, :rh, 0) == -1), xreal = get(sp, :xreal, false),
-                                      blue2 = get(sp, :blue2, false), ragged = get(sp, :ragged, false), raw)
+                                      blue2 = get(sp, :blue2, false), ragged = get(sp, :ragged, false), rader = get(sp, :rader, false), raw)
     t = pass_twiddles(T, sp.R, sp.σ, sp.M)
     tw = KA.allocate(backend, Complex{T}, length(t)); copyto!(tw, t)
     if raw || bytes > 0
