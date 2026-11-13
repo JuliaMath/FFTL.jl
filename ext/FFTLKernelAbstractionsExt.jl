@@ -217,10 +217,12 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     Lp = E * N ÷ R                       # lanes per batch item
     batchlanes = Lp == 1 && G > 1        # one-pass transforms with E = 1: lanes are batch items
     @assert R * m * s == N
-    @assert ragged ? blue2 : batchlanes ? B % G == 0 : (Lp % G == 0 && (sp > 1 || m % G == 0))
+    @assert ragged ? (s == 1 && m == 1 && E > 1 && rhook == 0 && padx == (1, 0) && pady == (1, 0)) :
+            batchlanes ? B % G == 0 : (Lp % G == 0 && (sp > 1 || m % G == 0))
     crossing = !ragged && sp > 1 && sp % G != 0   # lanes of a workgroup span several p: p, q per lane
-    # ragged (blue2 only): lanes are the E·B lines in memory order, cld(E B, G) workgroups; the
-    # lanes past the last line take the last line again and store the same values twice
+    # ragged (one pass along a strided dimension): lanes are the E·B lines in memory order,
+    # cld(E B, G) workgroups; the lanes past the last line take the last line again and store
+    # the same values twice
     NL = E * B
     lane(l) = ragged ? :(min(b0 + $l, $(Int32(NL - 1)))) : :(b0 + $l)
     Rmax = maximum(rs)
@@ -397,6 +399,9 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       bl = b0 + $l; pl = bl ÷ $(I(sp)); ql = bl - pl * $(I(sp))
       $(twiddle ? twid(:($k * pl * $(I(s)))) : nothing)
       $(ystore(:(obase + ql + $(I(sp)) * ($(I(R)) * pl + $k))))
+    end : Ny == 0 && ragged ? quote
+      bl = $(lane(l)); ol = bl ÷ $(I(E)); el = bl - ol * $(I(E))
+      @inbounds y[ol * $(I(E * N)) + el + $(I(E)) * $k + one(Int32)] = v
     end : Ny == 0 ? quote
       $(twiddle ? twid(:($k * pss)) : nothing)
       $(ystore(:(ybase + $l + $(I(sp)) * $k)))
@@ -404,7 +409,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
       # line bl = e + E o: element k of line o
       bl = $(lane(l)); ol = bl ÷ $(I(E)); el = bl - ol * $(I(E))
       if $k < $(I(Ny))
-        @inbounds y[ol * $(I(E * Ny)) + el + $(I(E)) * $k + one(Int32)] = ccmul(v, cin[$k + one(Int32)])
+        @inbounds y[ol * $(I(E * Ny)) + el + $(I(E)) * $k + one(Int32)] = ccmul(v, $(blue2 ? :cin : :cout)[$k + one(Int32)])
       end
     end : quote
       # m = 1: lane b0 + l = e + E q, element q + s k along the dimension
@@ -482,6 +487,10 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
                 rpre ? xload(:ob, :(b0 + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))))) :
                 ppost && s > 1 && E > 1 ? :(x[padmap(obase + $(rlaneE(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
                 ppost && s > 1 ? :(x[padmap(obase + $(rlane(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
+                Nx == 0 && ragged ? quote
+                  bl = $(lane(qc)); ol = bl ÷ $(I(E)); el = bl - ol * $(I(E))
+                  x[ol * $(I(E * N)) + el + $(I(E)) * ($pc + $(I((j - 1) * mm))) + one(Int32)]
+                end :
                 Nx == 0 ? :(x[padmap(xbase + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
                 ragged ? quote   # line bl = e + E o, element ii
                   bl = $(lane(qc)); ol = bl ÷ $(I(E)); el = bl - ol * $(I(E))
@@ -813,6 +822,12 @@ function balance_passes(N, P, cap = NMAX)
   end
 end
 
+# Lines per workgroup of a one-pass strided dimension with ragged lanes (as pass_G_cap without
+# the divisibility; 128 and 224 along E = 101 on the M1: G = 1 runs at a third of the bandwidth).
+# Only below G = 4: with a good divisor ragged lanes are mixed (whole transforms, interleaved:
+# 125³ G 5 → 16 0.88×, 243² G 9 → 16 1.12×, 99³, 105³, 135²×64 1.00–1.03×).
+ragged_G(R, E, B, gmax, lim) = max(1, min(lim.nstat ÷ R, gmax, 16, (lim.wmax * maximum(local_radices(R))) ÷ R, E * B))
+
 # Lines per workgroup of the fused Bluestein kernel with ragged lanes along a strided dimension
 # (any number of lines; 101³ dim 2 on the M1: G 1/2/4/8/16 663/423/357/335/413 µs). Along
 # dimension 1 the two launches with G = 1 stay faster (101³ 284 µs against 364 µs at G = 8).
@@ -823,10 +838,16 @@ blue_ragged_G(M, E, B, lim) = max(1, min(lim.nstat ÷ M, (lim.wmax * maximum(loc
 # M ≥ 2N - 1. Forward passes of length M read x times c (load hook, zero padding), the first
 # backward pass reads times b̂ = FFT_M(conj(c) wrapped) / M, the last one writes the first N
 # elements times c (store hook): 2P launches, scratch arrays of E·M·B elements.
-bluestein_length(n) = minimum(o << max(0, ceil(Int, log2(n / o))) for o in (1, 3, 5, 7, 9, 15))
+# On Apple GPUs a power of two whenever it fits one pass: the fused kernel runs its odd radix
+# stages slowly (M1, 101³ dim 2, µs: 256 [16, 16] 142, 224 [16, 2, 7] 335, 240 [16, 3, 5] 385,
+# 288 [16, 2, 9] 454, 320 [16, 4, 5] 434; c2c 101³ 1008 → 482).
+function bluestein_length(n, prof = :generic, lim = LIM0)
+  prof === :apple && nextpow(2, n) <= lim.nstat && return nextpow(2, n)
+  minimum(o << max(0, ceil(Int, log2(n / o))) for o in (1, 3, 5, 7, 9, 15))
+end
 
 function bluestein_tables(backend, T, N, σ)
-  M = bluestein_length(2N - 1)
+  M = bluestein_length(2N - 1, device_profile(backend), device_limits(backend, T))
   c = [Complex{T}(cispi(σ * mod(j * j, 2N) / N)) for j in 0:N-1]   # j² mod 2N keeps the argument small
   b = zeros(Complex{T}, M)
   b[1] = conj(c[1])
@@ -974,6 +995,12 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   steps = Any[]
   for (i, sp) in enumerate(specs)
     G = haskey(sp, :G) ? sp.G : pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, 4 <= get(sp, :rh, 0) <= 7 ? hook_limits(lim, backend) : lim)
+    # one pass along a strided dimension whose line count has no good divisor: ragged lanes
+    if !haskey(sp, :G) && sp.s == 1 && sp.m == 1 && sp.E > 1 && sp.Nx == 0 && sp.Ny == 0 && get(sp, :rh, 0) == 0 &&
+       !(i > 1 && padded[i-1]) && !padded[i] && G < 4 && ragged_G(sp.R, sp.E, sp.B, gmax, lim) > G
+      G = ragged_G(sp.R, sp.E, sp.B, gmax, lim)
+      sp = merge(sp, (ragged = true,))
+    end
     k, W, groups, bytes = pass_kernel(sp.R, G, sp.σ, T, sp.s, sp.M, sp.E, sp.B; Nx = sp.Nx, Ny = sp.Ny,
                                       padx = lay(i > 1 && padded[i-1]), pady = lay(padded[i]), lim = lim,
                                       rhook = get(sp, :rh, 0), pre = get(sp, :pre, get(sp, :rh, 0) == 1),
