@@ -1,5 +1,5 @@
 # Compiled-ahead methods of the stage kernels for the fixed codelet set (radix × sign × vector
-# type) that `RChain` dispatches to, and of the chains of the small lengths (rchain.jl). The
+# type) that `RChain` dispatches to. The
 # `@generated` kernels in kernels.jl define every other combination. A package image keeps the
 # complete optimised IR of each precompiled `@generated` specialization but none of a plain
 # method, so the fixed set is defined as plain methods with the same bodies. The codelets of
@@ -47,16 +47,4 @@ for T in (Float32, Float64), σ in (-1, 1), R in RADICES
   h = :(stage_small!(py::Ptr{$T}, px::Ptr{$T}, pt::Ptr{$T}, m::Int, ::Val{$R}, ::Val{$σ}, ::Type{$VT}))
   b = kernel_subst(stage_small_body(T, R, σ, VT), Dict{Symbol,Any}(:T => T, :VT => VT))
   @eval $(Expr(:function, h, b))
-end
-
-# The compiled chains of the small lengths (rchain.jl) run through `run!`/`run_lanes!` methods of
-# plain definition for the same reason; any other chain type uses the generic methods.
-for T in (Float32, Float64), (n, σ) in SMALL_ENTRIES
-  Rs = Tuple(radices(n, 1; esize = sizeof(Complex{T})))
-  C = Chain{T,Rs,σ,length(Rs)}
-  @eval $(Expr(:function, :(run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::$C, S::Int)),
-               run_body(T, Rs, σ, length(Rs))))
-  @eval $(Expr(:function, :(run_lanes!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::$C,
-                                       Sx::Int, Sy::Int, B::Int)),
-               run_lanes_body(T, Rs, σ, length(Rs))))
 end

@@ -344,7 +344,7 @@ end
 function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
   s, q = composite_split(T, n)
   c1 = first_kernel(T, s, σ, q, 1)
-  chains = [c1; [c1 isa AnyChain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
+  chains = [c1; [c1 isa RChain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
   b1 = Bluestein{T}(q, σ)
   blues = [b1; [Bluestein{T}(q, σ) for _ in 2:nt]]
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
@@ -487,7 +487,7 @@ end
 
 fuse_planes(n1, n2, outer, nt) = n1 * n2 <= TUNING[].plane_budget && (nt == 1 || outer >= nt)
 
-function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::Union{Chain{T},RChain{T}}, k2::Union{Chain{T},RChain{T}},
+function run_planes!(py::Ptr{T}, px::Ptr{T}, p, k1::RChain{T}, k2::RChain{T},
                      n1::Int, n2::Int, outer::Int) where {T}
   CT = 2 * sizeof(T)
   step = n1 * n2 * CT
@@ -534,7 +534,7 @@ end
 
 # Stockham chains: lane blocks when there are enough lanes, slices in groups when there are enough
 # slices, otherwise one slice after the other.
-function run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Union{Chain{T},RChain{T}}, S::Int, n::Int, outer::Int) where {T}
+function run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::RChain{T}, S::Int, n::Int, outer::Int) where {T}
   nt = p.nthreads
   step = 2 * S * n * sizeof(T)
   if use_lanes(S, n, outer, nt)

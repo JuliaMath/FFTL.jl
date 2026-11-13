@@ -72,7 +72,7 @@ end
 # Inner kernel of the line for run-time plans (C = RChain): one of these types
 const RInner{T} = Union{RealLine{T,RKern{T}},RChain{T},RBluestein{T}}
 
-function R2RLine{T}(kind::R2RKind, n::Int, ::Type{C} = Chain) where {T,C}
+function R2RLine{T}(kind::R2RKind, n::Int, ::Type{C} = TypedKernels) where {T,C}
   n >= 1 || throw(ArgumentError("length must be positive"))
   kind == REDFT00 && n < 2 && throw(ArgumentError("REDFT00 needs length ≥ 2"))
   base = kind in (RODFT10,) ? REDFT10 : kind == RODFT01 ? REDFT01 : kind == RODFT11 ? REDFT11 : kind

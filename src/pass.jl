@@ -88,7 +88,7 @@ end
 function pass_build(::Type{K}, v::StridedArray{Complex{T},N}, d::Int, σ::Int, nt::Int, k,
                     lanes::Int, Sd::Int, offs::Vector{Int}) where {K,T,N}
   sz = size(v); st = strides(v); n = sz[d]
-  B = d == 1 ? 1 : lane_block(lanes, n, k isa AnyChain ? nt : 1)
+  B = d == 1 ? 1 : lane_block(lanes, n, k isa RChain ? nt : 1)
   nw = d == 1 ? n : B * n
   PassPlan{T,N,K}(sz, st, d, σ, k, lanes, Sd, offs, B, nt, thread_buffers(T, nw, 2nt))
 end
@@ -165,14 +165,14 @@ function run_pass!(py::Ptr{T}, px::Ptr{T}, p::PassPlan{T}) where {T}
     run_fourstep!(py + off, px + off, k, p.nthreads)
   elseif p.d == 1
     # lines in groups on the tasks (kernels with buffers of their own on one task)
-    each_line(length(p.offs), p.sz[1], k isa AnyChain ? p.nthreads : 1) do c, i
+    each_line(length(p.offs), p.sz[1], k isa RChain ? p.nthreads : 1) do c, i
       local off = p.offs[i + 1] * CT
       run!(py + off, px + off, cptr(p.bufs[2c-1]), cptr(p.bufs[2c]), k, 1)
     end
   else
     B = p.B; nb = cld(p.lanes, B)
     nitems = nb * length(p.offs)
-    ntasks = (k isa AnyChain && p.nthreads > 1 && length(p.offs) * p.lanes * p.sz[p.d] >= TUNING[].thread_min_work) ? p.nthreads : 1
+    ntasks = (k isa RChain && p.nthreads > 1 && length(p.offs) * p.lanes * p.sz[p.d] >= TUNING[].thread_min_work) ? p.nthreads : 1
     parallel_items(nitems, ntasks) do c, it
       local g, b; g, b = divrem(it, nb)
       local i0 = b * B

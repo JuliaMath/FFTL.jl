@@ -7,8 +7,8 @@
 #
 #   "lean"  (default) 1024/1000/1009 in 1D, 16×16 and 8×8×8, both element types, all three
 #                      transforms, RPlan, plan_rfft and plan_pass. It covers the common
-#                      codelets (radices 4, 5, 8, 9, 10 and 16, plus Bluestein) and the JIT
-#                      paths for both the compile-time and the run-time plans.
+#                      codelets (radices 4, 5, 8, 9, 10 and 16, plus Bluestein) and the
+#                      plan types of both the default and the run-time plans.
 #   "broad"            the measured shapes 10^5, 2^20, 256×256, 64×64×64 plus the radix
 #                      12/6/3 lengths (360, 243), 128, and a four-step (threads = 4) case.
 #   "none"             no workload at all (for CI or when the image size is more important

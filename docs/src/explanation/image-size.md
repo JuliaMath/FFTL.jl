@@ -43,10 +43,9 @@ later Julia versions, so re-run the count below after an upgrade.
 ## What keeps it small
 
 1. **Plain methods for the fixed set.** The stage kernels that `RChain` dispatches to (radix × sign ×
-   vector type, empty zero-input mask or full output mask) and the compiled chains of the smooth lengths
-   up to `SMALL_N` are defined in `src/kernel_methods.jl` with `@eval`, from the same body-building
+   vector type) are defined in `src/kernel_methods.jl` with `@eval`, from the same body-building
    functions the generators call. The `@generated` methods stay as the fallback for every other combination
-   (other radices, vector types and chains), so behaviour is unchanged. A plain method keeps its (compressed) source
+   (the lazy radices), so behaviour is unchanged. A plain method keeps its (compressed) source
    and its machine code, not its optimised IR.
 2. **Lazy radices.** The codelets of the radices in `LAZY_RADICES` (17, 19, 23, 29, 31 by default; the
    preference `lazy_radices`, read in `src/rchain.jl`) are 54 % of the statements of the stage kernels and are rarely needed. They are not
@@ -68,6 +67,10 @@ later Julia versions, so re-run the count below after an upgrade.
 
 To add a radix, put it in `RADICES`; `kernel_methods.jl` defines its plain methods. To make a radix lazy,
 add it to the default of the preference in `src/rchain.jl`.
+
+The numbers on this page were measured while the smooth lengths up to 128 had compiled chains of their
+own (583 more plain methods). Without them the image on an AMD EPYC 9354 (AVX-512, which has more vector
+types than the M1) went from 72 MB to 61 MB; the M1 numbers have not been measured again.
 
 ## What is left
 

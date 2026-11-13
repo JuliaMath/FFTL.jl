@@ -1,5 +1,4 @@
-# Stockham chain with the radix sequence as run-time data. Same stages, twiddle tables, buffer
-# schedule and vector-type rules as `Chain` (plan.jl), but the stage sequence is a loop over
+# Stockham chain with the radix sequence as run-time data: the stage sequence is a loop over
 # plain code that calls the codelet of each stage from a fixed set (radix × sign × vector type),
 # selected by an integer index. Nothing is compiled per length, and the execution path contains
 # no call into a generated function whose body calls further generated functions, so it can be
@@ -42,9 +41,6 @@ end
 using Preferences: @load_preference
 const LAZY_RADICES = Tuple(Int.(@load_preference("lazy_radices", [17, 19, 23, 29, 31])))
 all(in(RADICES), LAZY_RADICES) || error("LAZY_RADICES must be radices from RADICES")
-
-# Whether the factorisation of n has a prime factor whose codelet is compiled on first use.
-has_lazy_factor(n::Int) = any(in(LAZY_RADICES), keys(factorize(n)[1]))
 
 # Codelet dispatch: one function per kind of stage call, a switch over the codelet index,
 # generated for both element types so that every call has constant type arguments. Codelets of
@@ -120,13 +116,22 @@ const OP_LAST_TAIL = 4
 const OP_GROUP = 5        # first stage vectorised over the butterflies p
 const OP_SMALL = 6        # first stage over the butterflies p on the widest vector (stage_small!)
 
-struct StageCall
+struct StageCall{T}
   op::Int
   c::Int                  # codelet of the vectorised part
   c1::Int                 # codelet of the scalar remainder (one complex value per vector)
   m::Int
   s::Int
   rem::Int
+  pt::Ptr{T}              # twiddle table of the stage (C_NULL for a last stage), see link_calls!
+end
+
+# One stage of a batch of lines or of a lane block: the vector type is chosen per call from the
+# stride, so the record holds the codelet index of the widest vector type (the index of vector
+# type vi is c + (vi - 1)·length(RADICES)) and the twiddle table.
+struct BatchStage{T}
+  c::Int
+  pt::Ptr{T}              # C_NULL for the last stage
 end
 
 """
@@ -134,17 +139,17 @@ end
 
 Stockham chain of length `n` and sign `σ` with the radix sequence `rs` stored as a vector.
 """
-struct RChain{T} <: Kernel{T}
-  n::Int
-  σ::Int
-  rs::Vector{Int}
-  tw::Vector{Vector{Complex{T}}}      # stage i: w^(kp) at (R-1)p + k
-  tw1::Vector{Complex{T}}             # first stage: w^(kp) at (k-1)m + p
-  single::Vector{StageCall}           # the stage calls of a single line
+mutable struct RChain{T} <: Kernel{T}
+  const n::Int
+  const σ::Int
+  const rs::Vector{Int}
+  const tw::Vector{Vector{Complex{T}}}      # stage i: w^(kp) at (R-1)p + k
+  const tw1::Vector{Complex{T}}             # first stage: w^(kp) at (k-1)m + p
+  const single::Vector{StageCall{T}}        # the stage calls of a single line
+  const batch::Vector{BatchStage{T}}        # the stages of a batch or a lane block
+  const one::Int                            # codelet of a single line that is one stage, else 0
+  linked::UInt                              # address of the chain when its stage records were linked
 end
-
-# Either kind of Stockham chain: the compiled Chain (short smooth lengths) or the run-time RChain.
-const AnyChain = Union{Chain,RChain}
 
 RChain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
   cached(() -> build_rchain(T, n, σ, rs), CacheKey(:rchain, T, n, σ, collect(Int, rs)))::RChain{T}
@@ -152,10 +157,38 @@ RChain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
 function build_rchain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
   all(in(RADICES), rs) || throw(ArgumentError("radix without a codelet in RADICES"))
   tw, tw1 = chain_tables(T, n, σ, rs)
-  RChain{T}(n, σ, collect(Int, rs), tw, tw1, single_schedule(T, n, σ, collect(Int, rs)))
+  calls = single_schedule(T, n, σ, collect(Int, rs))
+  batch = [BatchStage{T}(codelet_index(T, σ, 1, r), Ptr{T}(C_NULL)) for r in rs]
+  P = RChain{T}(n, σ, collect(Int, rs), tw, tw1, calls, batch, length(calls) == 1 ? calls[1].c : 0, UInt(0))
+  link_calls!(P)
+  P
 end
 
-# The stage calls of a single line, with the rules of `chain_body` for S = 1: stage i takes the
+# The stage records carry the address of their twiddle table, so that a stage loop reads one
+# flat vector and nothing else (a load through the chain inside the loop needs a GC frame, which
+# costs more than a short stage). The tables belong to the chain and are never resized. The
+# addresses are valid for the chain object they were taken for: a copy, or a chain that was stored
+# in a package image and loaded into another process, is at another address than `linked` and is
+# linked again before its records are used.
+@inline linked(P::RChain) = P.linked == UInt(pointer_from_objref(P))
+
+@noinline function link_calls!(P::RChain{T}) where {T}
+  calls = P.single
+  for i in eachindex(calls)
+    st = calls[i]
+    pt = st.op == OP_GROUP || st.op == OP_SMALL ? cptr(P.tw1) :
+         st.op == OP_MID || st.op == OP_MID_TAIL ? cptr(P.tw[i]) : Ptr{T}(C_NULL)
+    calls[i] = StageCall{T}(st.op, st.c, st.c1, st.m, st.s, st.rem, pt)
+  end
+  batch = P.batch
+  for i in 1:length(batch)-1
+    batch[i] = BatchStage{T}(batch[i].c, cptr(P.tw[i]))
+  end
+  P.linked = UInt(pointer_from_objref(P))
+  nothing
+end
+
+# The stage calls of a single line: stage i takes the
 # widest vector type whose complex count fits its stride s = R_1⋯R_(i-1), the remainder
 # s mod C runs one complex value at a time; the first stage is grouped over the butterflies
 # when its stride is 1, with stage_small! where that is wider.
@@ -169,7 +202,7 @@ function single_schedule(::Type{T}, n::Int, σ::Int, rs::Vector{Int}) where {T}
       break
     end
   end
-  calls = StageCall[]
+  calls = StageCall{T}[]
   K = length(rs)
   L = n; s = 1
   for i in 1:K
@@ -182,13 +215,13 @@ function single_schedule(::Type{T}, n::Int, σ::Int, rs::Vector{Int}) where {T}
     c = codelet_index(T, σ, vi, r); c1 = codelet_index(T, σ, nv, r)
     m = L ÷ r
     if i == 1 && small_first(ncs, group, r, n)
-      push!(calls, StageCall(OP_SMALL, codelet_index(T, σ, 1, r), c1, m, s, 0))
+      push!(calls, StageCall{T}(OP_SMALL, codelet_index(T, σ, 1, r), c1, m, s, 0, Ptr{T}(C_NULL)))
     elseif i == K
-      push!(calls, StageCall(rem == 0 ? OP_LAST : OP_LAST_TAIL, c, c1, m, s, rem))
+      push!(calls, StageCall{T}(rem == 0 ? OP_LAST : OP_LAST_TAIL, c, c1, m, s, rem, Ptr{T}(C_NULL)))
     elseif i == 1 && group != 0 && ncs[vi] == 1
-      push!(calls, StageCall(OP_GROUP, codelet_index(T, σ, group, r), c1, m, s, 0))
+      push!(calls, StageCall{T}(OP_GROUP, codelet_index(T, σ, group, r), c1, m, s, 0, Ptr{T}(C_NULL)))
     else
-      push!(calls, StageCall(rem == 0 ? OP_MID : OP_MID_TAIL, c, c1, m, s, rem))
+      push!(calls, StageCall{T}(rem == 0 ? OP_MID : OP_MID_TAIL, c, c1, m, s, rem, Ptr{T}(C_NULL)))
     end
     L = m; s *= r
   end
@@ -201,21 +234,23 @@ end
 @inline stage_dst(py, px, pw1, pw2, i, K, inplace) =
   inplace ? (i == K ? px : (isodd(K - i) ? pw1 : pw2)) : (iseven(K - i) ? py : pw1)
 
-function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, S::Int) where {T}
-  K = length(P.rs)
+# The single line is kept apart from the batch: the batch needs a GC frame, which a short single
+# line must not pay for.
+@inline run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, S::Int) where {T} =
+  S == 1 ? run_single!(py, px, pw1, pw2, P) : run_batch!(py, px, pw1, pw2, P, S)
+
+@noinline function run_batch!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, S::Int) where {T}
+  K = length(P.batch)
   if K == 0
     py == px || unsafe_copyto!(py, px, 2S)
     return nothing
   end
-  if P.n <= SMALL_N && SMALL_INDEX[P.n] > 0
-    i = SMALL_INDEX[P.n] + (P.σ == 1 ? 1 : 0)
-    small_run!(py, px, pw1, pw2, P, i, S) && return nothing
-  end
-  S == 1 && return run_single!(py, px, pw1, pw2, P)
+  linked(P) || link_calls!(P)
+  pb = pointer(P.batch)
   ncs = ladder_ncomplex(T)
   nv = length(ncs)
-  σ = P.σ
-  # base: the widest complex count that divides S (as stride_dispatch in plan.jl)
+  NR = length(RADICES)
+  # base: the widest complex count that divides S
   base = 1
   for C in ncs
     if C > 1 && S % C == 0
@@ -224,221 +259,172 @@ function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, S:
     end
   end
   inplace = py == px
-  GC.@preserve P begin
-    L = P.n; s = S; sst = 1; src = px
-    for i in 1:K
-      r = P.rs[i]
-      dst = stage_dst(py, px, pw1, pw2, i, K, inplace)
-      # base > 1: the widest vector type dividing base·sst (no remainder); base = 1 (odd S):
-      # the widest one that fits sst, with the remainder of s split off at run time
-      vi = 1
-      if base > 1
-        while (base * sst) % ncs[vi] != 0
-          vi += 1
-        end
-      else
-        while ncs[vi] > sst
-          vi += 1
-        end
+  L = P.n; s = S; sst = 1; src = px
+  @inbounds for i in 1:K
+    st = unsafe_load(pb, i)
+    dst = stage_dst(py, px, pw1, pw2, i, K, inplace)
+    # base > 1: the widest vector type dividing base·sst (no remainder); base = 1 (odd S):
+    # the widest one that fits sst, with the remainder of s split off at run time
+    vi = 1
+    if base > 1
+      while (base * sst) % ncs[vi] != 0
+        vi += 1
       end
-      c = codelet_index(T, σ, vi, r)
-      rem = s % ncs[vi]
-      if i == K
-        if rem == 0
-          cstage_last!(dst, src, s, c)
-        else
-          cstage_last_range!(dst, src, s, 0, s - rem, c)
-          cstage_last_range!(dst, src, s, s - rem, s, codelet_index(T, σ, nv, r))
-        end
-      else
-        m = L ÷ r
-        pt = cptr(P.tw[i])
-        if rem == 0
-          cstage!(dst, src, pt, m, s, c)
-        else
-          cstage_range!(dst, src, pt, m, s, 0, s - rem, c)
-          cstage_range!(dst, src, pt, m, s, s - rem, s, codelet_index(T, σ, nv, r))
-        end
-        L = m; s *= r
+    else
+      while ncs[vi] > sst
+        vi += 1
       end
-      src = dst
-      sst *= r
     end
+    c = st.c + (vi - 1) * NR
+    rem = s % ncs[vi]
+    if i == K
+      r = L
+      if rem == 0
+        cstage_last!(dst, src, s, c)
+      else
+        cstage_last_range!(dst, src, s, 0, s - rem, c)
+        cstage_last_range!(dst, src, s, s - rem, s, st.c + (nv - 1) * NR)
+      end
+    else
+      r = RADICES[(st.c - 1) % NR + 1]
+      m = L ÷ r
+      if rem == 0
+        cstage!(dst, src, st.pt, m, s, c)
+      else
+        cstage_range!(dst, src, st.pt, m, s, 0, s - rem, c)
+        cstage_range!(dst, src, st.pt, m, s, s - rem, s, st.c + (nv - 1) * NR)
+      end
+      L = m; s *= r
+    end
+    src = dst
+    sst *= r
   end
   nothing
 end
 
-function run_single!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}) where {T}
-  calls = P.single
-  K = length(calls)
+# A single line. One stage is one codelet call; several stages run the stage loop.
+@inline function run_single!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}) where {T}
+  c = P.one
+  if c != 0
+    cstage_last!(py, px, 1, c)
+    return nothing
+  end
+  run_calls!(py, px, pw1, pw2, P)
+end
+
+# The stage loop of a single line. The calls are read through a raw pointer, so that no reference
+# is live across a stage (the chain itself is kept alive by the caller); a reference loaded from
+# the chain here or passed in by the caller costs a GC frame. The codelet switches are inlined: a
+# stage is one jump and one call.
+@inline function stage_loop!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, pc::Ptr{StageCall{T}}, K::Int) where {T}
   inplace = py == px
-  GC.@preserve P begin
-    src = px
-    for i in 1:K
-      st = calls[i]
-      dst = stage_dst(py, px, pw1, pw2, i, K, inplace)
-      op = st.op
-      if op == OP_MID
-        cstage!(dst, src, cptr(P.tw[i]), st.m, st.s, st.c)
-      elseif op == OP_GROUP
-        cstage_group!(dst, src, cptr(P.tw1), st.m, st.c)
-      elseif op == OP_SMALL
-        cstage_small!(dst, src, cptr(P.tw1), st.m, st.c)
-      elseif op == OP_LAST
-        cstage_last!(dst, src, st.s, st.c)
-      elseif op == OP_MID_TAIL
-        pt = cptr(P.tw[i])
-        cstage_range!(dst, src, pt, st.m, st.s, 0, st.s - st.rem, st.c)
-        cstage_range!(dst, src, pt, st.m, st.s, st.s - st.rem, st.s, st.c1)
-      else
-        cstage_last_range!(dst, src, st.s, 0, st.s - st.rem, st.c)
-        cstage_last_range!(dst, src, st.s, st.s - st.rem, st.s, st.c1)
-      end
-      src = dst
+  src = px
+  for i in 1:K
+    st = unsafe_load(pc, i)
+    dst = stage_dst(py, px, pw1, pw2, i, K, inplace)
+    op = st.op
+    if op == OP_LAST
+      @inline cstage_last!(dst, src, st.s, st.c)
+    elseif op == OP_MID
+      @inline cstage!(dst, src, st.pt, st.m, st.s, st.c)
+    elseif op == OP_SMALL
+      @inline cstage_small!(dst, src, st.pt, st.m, st.c)
+    elseif op == OP_GROUP
+      @inline cstage_group!(dst, src, st.pt, st.m, st.c)
+    elseif op == OP_MID_TAIL
+      @inline cstage_range!(dst, src, st.pt, st.m, st.s, 0, st.s - st.rem, st.c)
+      @inline cstage_range!(dst, src, st.pt, st.m, st.s, st.s - st.rem, st.s, st.c1)
+    else
+      @inline cstage_last_range!(dst, src, st.s, 0, st.s - st.rem, st.c)
+      @inline cstage_last_range!(dst, src, st.s, st.s - st.rem, st.s, st.c1)
     end
+    src = dst
+  end
+  nothing
+end
+
+# The calls of a chain, linked.
+@inline function linked_calls(P::RChain{T}) where {T}
+  linked(P) || link_calls!(P)
+  pointer(P.single)
+end
+
+@noinline function run_calls!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}) where {T}
+  K = length(P.single)
+  if K == 0
+    py == px || unsafe_copyto!(py, px, 2)
+    return nothing
+  end
+  stage_loop!(py, px, pw1, pw2, linked_calls(P), K)
+end
+
+# `count` single lines, `bytes` apart.
+@noinline function run_calls_rows!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, count::Int, bytes::Int) where {T}
+  K = length(P.single)
+  if K == 0
+    for j in 0:count-1
+      py == px || unsafe_copyto!(py + j * bytes, px + j * bytes, 2)
+    end
+    return nothing
+  end
+  pc = linked_calls(P)
+  for j in 0:count-1
+    stage_loop!(py + j * bytes, px + j * bytes, pw1, pw2, pc, K)
   end
   nothing
 end
 
 function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, Sx::Int, Sy::Int, B::Int) where {T}
-  rs = P.rs; K = length(rs); σ = P.σ
+  K = length(P.batch)
   if K == 0
     lane_copy!(py, px, Sy, Sx, B, 1)
     return nothing
   end
-  if P.n <= SMALL_N && SMALL_INDEX[P.n] > 0
-    i = SMALL_INDEX[P.n] + (P.σ == 1 ? 1 : 0)
-    small_lanes_run!(py, px, pw1, pw2, P, i, Sx, Sy, B) && return nothing
-  end
+  linked(P) || link_calls!(P)
+  pb = pointer(P.batch)
   ncs = ladder_ncomplex(T)
   # widest vector type whose complex count divides B, else the narrowest
   vi = length(ncs)
-  for j in 1:length(ncs)-1
+  @inbounds for j in 1:length(ncs)-1
     if B % ncs[j] == 0
       vi = j
       break
     end
   end
-  GC.@preserve P begin
-    if K == 1    # one stage loads all inputs of a butterfly before it stores: py may equal px
-      cstage_last_lanes!(py, px, 1, Sx, Sy, B, codelet_index(T, σ, vi, rs[1]))
-      return nothing
-    end
-    L = P.n; s0 = 1; src = px; srcS = Sx
-    for i in 1:K
-      r = rs[i]
-      c = codelet_index(T, σ, vi, r)
-      if i == K
-        cstage_last_lanes!(py, src, s0, srcS, Sy, B, c)
-      else
-        dst = isodd(i) ? pw1 : pw2
-        m = L ÷ r
-        cstage_lanes!(dst, src, cptr(P.tw[i]), m, s0, srcS, B, B, c)
-        L = m; s0 *= r
-        src = dst; srcS = B
-      end
-    end
+  NR = length(RADICES)
+  off = (vi - 1) * NR
+  if K == 1    # one stage loads all inputs of a butterfly before it stores: py may equal px
+    cstage_last_lanes!(py, px, 1, Sx, Sy, B, unsafe_load(pb).c + off)
+    return nothing
   end
-  nothing
-end
-
-# Small lengths: the stage loop of a single line runs as compiled code for each smooth length up
-# to SMALL_N and both signs. The entries of a length are consecutive (σ = -1, then σ = +1); one
-# table lookup per call finds them. The compiled chain uses the tables of the RChain, and its
-# radix sequence is checked against the compiled one, so any other plan takes the stage loop.
-const SMALL_N = 128
-const SMALL_ENTRIES = [(n, σ) for n in 2:SMALL_N if smooth(n) && !has_lazy_factor(n) for σ in (-1, 1)]
-const SMALL_INDEX = let t = zeros(Int, SMALL_N)
-  for (i, (n, σ)) in enumerate(SMALL_ENTRIES)
-    σ == -1 && (t[n] = i)
-  end
-  t
-end
-
-@noinline function small_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, S::Int,
-                              ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
-  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
-  GC.@preserve P run!(py, px, pw1, pw2, c, S)
-end
-
-@noinline function small_lanes_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T},
-                                      Sx::Int, Sy::Int, B::Int, ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
-  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
-  GC.@preserve P run_lanes!(py, px, pw1, pw2, c, Sx, Sy, B)
-end
-
-# Binary tree of compares over the entry index (a flat chain of ~120 compares costs ~50 ns per
-# call). Each leaf checks the radix sequence of the RChain against the compiled one. `leaf` gives
-# the statement of a leaf for the chain type C with K stages.
-function small_tree(T, lo, hi, leaf)
-  if lo == hi
-    n, σ = SMALL_ENTRIES[lo]
-    rs = Tuple(radices(n, 1; esize = sizeof(Complex{T})))
-    K = length(rs)
-    same = Any[:(i == $lo), :(length(P.rs) == $K)]
-    for (j, r) in enumerate(rs)
-      push!(same, :(P.rs[$j] == $r))
-    end
-    return :(if $(Expr(:&&, same...))
-               $(leaf(:(Chain{$T,$rs,$σ,$K}), K))
-               return true
-             end)
-  end
-  mid = (lo + hi) ÷ 2
-  :(if i <= $mid
-      $(small_tree(T, lo, mid, leaf))
+  L = P.n; s0 = 1; src = px; srcS = Sx
+  for i in 1:K
+    st = unsafe_load(pb, i)
+    c = st.c + off
+    if i == K
+      cstage_last_lanes!(py, src, s0, srcS, Sy, B, c)
     else
-      $(small_tree(T, mid + 1, hi, leaf))
-    end)
-end
-
-for T in (Float32, Float64)
-  @eval function small_run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::RChain{$T}, i::Int, S::Int)
-    $(small_tree(T, 1, length(SMALL_ENTRIES),
-                 (C, K) -> :(small_chain!(py, px, pw1, pw2, P, S, $C, Val($K))))
-    )
-    false
-  end
-  @eval function small_lanes_run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::RChain{$T},
-                                  i::Int, Sx::Int, Sy::Int, B::Int)
-    $(small_tree(T, 1, length(SMALL_ENTRIES),
-                 (C, K) -> :(small_lanes_chain!(py, px, pw1, pw2, P, Sx, Sy, B, $C, Val($K))))
-    )
-    false
-  end
-end
-
-# Rows of a plane: `count` single lines of the chain, row j at py + j·rowstride complex values.
-# A compiled chain takes all rows in one call: one dispatch per plane instead of one per row.
-@noinline function small_rows_chain!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T},
-                                     count::Int, rowstride::Int, ::Type{C}, ::Val{K}) where {T,C<:Chain{T},K}
-  c = C(P.n, ntuple(i -> P.tw[i], Val(K)), P.tw1)
-  bytes = rowstride * 2 * sizeof(T)
-  GC.@preserve P for j in 0:count-1
-    run!(py + j * bytes, px + j * bytes, pw1, pw2, c, 1)
+      dst = isodd(i) ? pw1 : pw2
+      r = @inbounds RADICES[(st.c - 1) % NR + 1]
+      m = L ÷ r
+      cstage_lanes!(dst, src, st.pt, m, s0, srcS, B, B, c)
+      L = m; s0 *= r
+      src = dst; srcS = B
+    end
   end
   nothing
 end
 
-for T in (Float32, Float64)
-  @eval function small_rows_run!(py::Ptr{$T}, px::Ptr{$T}, pw1::Ptr{$T}, pw2::Ptr{$T}, P::RChain{$T},
-                                 i::Int, count::Int, rowstride::Int)
-    $(small_tree(T, 1, length(SMALL_ENTRIES),
-                 (C, K) -> :(small_rows_chain!(py, px, pw1, pw2, P, count, rowstride, $C, Val($K))))
-    )
-    false
-  end
-end
-
-# Generic: one call of run! per row (any kernel), compiled chains through their dispatch.
+# One single line per row.
 function run_rows!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::RChain{T}, count::Int, rowstride::Int) where {T}
-  if P.n <= SMALL_N && SMALL_INDEX[P.n] > 0
-    i = SMALL_INDEX[P.n] + (P.σ == 1 ? 1 : 0)
-    small_rows_run!(py, px, pw1, pw2, P, i, count, rowstride) && return nothing
-  end
   bytes = rowstride * 2 * sizeof(T)
-  for j in 0:count-1
-    run!(py + j * bytes, px + j * bytes, pw1, pw2, P, 1)
+  c = P.one
+  if c != 0
+    for j in 0:count-1
+      @inline cstage_last!(py + j * bytes, px + j * bytes, 1, c)
+    end
+  else
+    run_calls_rows!(py, px, pw1, pw2, P, count, bytes)
   end
   nothing
 end

@@ -727,48 +727,77 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
 
   # quick run: Float64 only (the first RChain call compiles every codelet of its element type)
   @testset "runtime-radix chains, $T" for T in pick((Float64, Float32), (Float64,))
-    # RChain runs the same codelets in the same order as Chain: results must be identical
+    # single lines out of place and in place, lane blocks and strided batches against the
+    # direct DFT at a few frequencies; the two forms of each pair run the same codelets
     p(a) = Ptr{T}(pointer(a))
-    for n in pick([1, 2, 7, 8, 16, 60, 100, 128, 243, 1000, 31 * 27, 4096, 2^14, 3^8, 2 * 10007 - 14],
-                  thin(T, [1, 8, 60, 128, 243, 1000, 31 * 27, 2^14]))
-      rs = FFTL.radices(n, 1; esize = sizeof(Complex{T}))
-      c = FFTL.build_chain(T, n, -1, rs); rc = FFTL.RChain{T}(n, -1, rs)
+    at(y, ks, B = 1, i = 0) = [y[i + B * k + 1] for k in ks]
+    for n in pick([2, 7, 8, 16, 60, 100, 128, 243, 1000, 31 * 27, 4096, 2^14, 3^8, 2 * 10007 - 14],
+                  thin(T, [2, 8, 60, 128, 243, 1000, 31 * 27, 2^14]))
+      rc = FFTL.RChain{T}(n, -1, FFTL.radices(n, 1; esize = sizeof(Complex{T})))
       x = randn(Complex{T}, n); w1 = similar(x); w2 = similar(x)
-      y1 = similar(x); y2 = similar(x); z1 = copy(x); z2 = copy(x)
-      GC.@preserve x y1 y2 z1 z2 w1 w2 begin
-        FFTL.run!(p(y1), p(x), p(w1), p(w2), c, 1); FFTL.run!(p(y2), p(x), p(w1), p(w2), rc, 1)
-        FFTL.run!(p(z1), p(z1), p(w1), p(w2), c, 1); FFTL.run!(p(z2), p(z2), p(w1), p(w2), rc, 1)
+      y = similar(x); z = copy(x)
+      GC.@preserve x y z w1 w2 begin
+        FFTL.run!(p(y), p(x), p(w1), p(w2), rc, 1)
+        FFTL.run!(p(z), p(z), p(w1), p(w2), rc, 1)
       end
-      @test y1 == y2 && z1 == z2
+      ks, ref = dft_at(x, -1)
+      @test relerr(at(y, ks), ref) < 4tol(T)
+      @test y == z
       # three lanes, element j of lane i at i + 3j; strided batch S = 3 through run!
       B = 3; xs = randn(Complex{T}, B * n); wl1 = similar(xs); wl2 = similar(xs)
-      l1 = similar(xs); l2 = similar(xs); s1 = similar(xs); s2 = similar(xs)
-      cS = FFTL.build_chain(T, n, 1, FFTL.radices(n, B; esize = sizeof(Complex{T})))
+      l = similar(xs); s = similar(xs)
       rS = FFTL.RChain{T}(n, 1, FFTL.radices(n, B; esize = sizeof(Complex{T})))
-      GC.@preserve xs l1 l2 s1 s2 wl1 wl2 begin
-        FFTL.run_lanes!(p(l1), p(xs), p(wl1), p(wl2), cS, B, B, B); FFTL.run_lanes!(p(l2), p(xs), p(wl1), p(wl2), rS, B, B, B)
-        FFTL.run!(p(s1), p(xs), p(wl1), p(wl2), cS, B); FFTL.run!(p(s2), p(xs), p(wl1), p(wl2), rS, B)
+      GC.@preserve xs l s wl1 wl2 begin
+        FFTL.run_lanes!(p(l), p(xs), p(wl1), p(wl2), rS, B, B, B)
+        FFTL.run!(p(s), p(xs), p(wl1), p(wl2), rS, B)
       end
-      @test l1 == l2 && s1 == s2
+      for i in 0:B-1
+        ks, ref = dft_at(xs[i+1:B:end], 1)
+        @test relerr(at(l, ks, B, i), ref) < 4tol(T)
+        @test relerr(at(s, ks, B, i), ref) < 4tol(T)
+      end
+    end
+    # a chain whose stage records are not linked to it (a copy, or one loaded from a package
+    # image) links them again at the first run
+    rs = FFTL.radices(60, 1; esize = sizeof(Complex{T}))
+    ref = FFTL.RChain{T}(60, -1, rs); rc = FFTL.build_rchain(T, 60, -1, rs)
+    unlink!(c) = (for i in eachindex(c.single)
+                    st = c.single[i]
+                    c.single[i] = FFTL.StageCall{T}(st.op, st.c, st.c1, st.m, st.s, st.rem, C_NULL)
+                    c.batch[i] = FFTL.BatchStage{T}(c.batch[i].c, C_NULL)
+                  end; c.linked = 0)
+    x = randn(Complex{T}, 4 * 60); y1 = similar(x); y2 = similar(x); w1 = similar(x); w2 = similar(x)
+    GC.@preserve x y1 y2 w1 w2 begin
+      unlink!(rc); FFTL.run!(p(y1), p(x), p(w1), p(w2), ref, 1); FFTL.run!(p(y2), p(x), p(w1), p(w2), rc, 1)
+      @test y1[1:60] == y2[1:60]
+      unlink!(rc); FFTL.run!(p(y1), p(x), p(w1), p(w2), ref, 4); FFTL.run!(p(y2), p(x), p(w1), p(w2), rc, 4)
+      @test y1 == y2
+      unlink!(rc); FFTL.run_lanes!(p(y1), p(x), p(w1), p(w2), ref, 4, 4, 4); FFTL.run_lanes!(p(y2), p(x), p(w1), p(w2), rc, 4, 4, 4)
+      @test y1 == y2
+      unlink!(rc); FFTL.run_rows!(p(y1), p(x), p(w1), p(w2), ref, 4, 60); FFTL.run_rows!(p(y2), p(x), p(w1), p(w2), rc, 4, 60)
+      @test y1 == y2
+    end
+    # a chain of length 1 copies
+    rc = FFTL.RChain{T}(1, -1, Int[]); x = randn(Complex{T}, 3); y = similar(x); w = similar(x)
+    GC.@preserve x y w begin
+      FFTL.run!(p(y), p(x), p(w), p(w), rc, 1); @test y[1] == x[1]
+      FFTL.run!(p(y), p(x), p(w), p(w), rc, 3); @test y == x
+      fill!(y, 0); FFTL.run_rows!(p(y), p(x), p(w), p(w), rc, 3, 1); @test y == x
     end
   end
 
   @testset "small-stride stages, $T" for T in (Float64, Float32)
-    # stage_small!: every power-of-two radix as the first stage, in both chain forms, against
-    # the direct DFT
+    # stage_small!: every power-of-two radix as the first stage, against the direct DFT
     p(a) = Ptr{T}(pointer(a))
     C = FFTL.ladder_ncomplex(T)[1]
     for r in (2, 4, 8, 16), σ in (-1, 1)
       rs = [r, 2C]
       n = prod(rs)
-      c = FFTL.build_chain(T, n, σ, rs); rc = FFTL.RChain{T}(n, σ, rs)
+      rc = FFTL.RChain{T}(n, σ, rs)
       @test (rc.single[1].op == FFTL.OP_SMALL) == (C > 4)
-      x = randn(Complex{T}, n); w1 = similar(x); w2 = similar(x); y1 = similar(x); y2 = similar(x)
-      GC.@preserve x y1 y2 w1 w2 begin
-        FFTL.run!(p(y1), p(x), p(w1), p(w2), c, 1); FFTL.run_single!(p(y2), p(x), p(w1), p(w2), rc)
-      end
-      @test y1 == y2
-      @test relerr(y2, dft(ComplexF64.(x), σ)) < tol(T)
+      x = randn(Complex{T}, n); w1 = similar(x); w2 = similar(x); y = similar(x)
+      GC.@preserve x y w1 w2 FFTL.run_single!(p(y), p(x), p(w1), p(w2), rc)
+      @test relerr(y, dft(ComplexF64.(x), σ)) < tol(T)
     end
   end
 
