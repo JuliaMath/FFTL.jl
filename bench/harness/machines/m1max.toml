@@ -1,0 +1,12 @@
+# Machine profile: Apple M1 Max (8 performance cores), runs on the Mac itself.
+# `label` is the public name written into the .meta files; never a host name.
+
+id = "m1max"
+group = "mac"                    # one physical machine with m1gpu: their jobs run one after another
+label = "Apple M1 Max"
+project = "."                     # Julia project, relative to bench/ (this directory is the environment)
+threads = [1, 8]                  # thread counts run by default (override with --threads)
+max_load = 8.0                    # refuse to start when the 1-minute load is higher (--force overrides)
+
+# Pinning per thread count (taskset, Linux only). macOS cannot pin, so the table is empty.
+[pin]

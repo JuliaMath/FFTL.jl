@@ -1,53 +1,53 @@
-# Overview benchmark data shared by the two figures of the benchmarks page: panels, competitors,
-# file choice and loading.
+# Panels of the two benchmark figures. The panels are read from panels.toml; each one is an
+# aggregated table, results/panel-<key>.csv, with one row per case and library. The tables come
+# from the benchmark harness (aggregate.jl), or for the legacy panels from its import script.
+# The figures read nothing else.
 #
-# The data lives in bench/results/ (versioned with the package): one CSV and one .meta per
-# overview run. The .meta carries the provenance (FFTL commit, Julia version, machine, load
-# averages, start and end); its `end:` line marks a finished run. Fresh data is produced by the
-# benchmark harness and copied in here.
+# A row carries the speed-up `ratio` of its library against the best other library of the panel
+# (> 1: faster), the 95 % bootstrap interval `ratio_lo`/`ratio_hi` (NaN with fewer than three
+# rounds), and `valid` (false above the accuracy tolerance; the figures drop those rows).
+
+using TOML
 
 const BENCH = @__DIR__
 const RES = joinpath(BENCH, "results")
+const COMPNAME = Dict("fftl" => "FFTL", "fftw_measure" => "FFTW", "ducc" => "ducc0", "vdsp" => "vDSP",
+                      "mpsgraph" => "MPSGraph", "metal" => "MPSGraph", "cufft" => "cuFFT", "vkfft" => "VkFFT")
 
-const PANELS = [
-    (key = "m1t1",   title = "Apple M1 Max CPU, 1 thread",    file = "overview-m1-t1-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc", "vdsp"]),
-    (key = "epyct1", title = "AMD EPYC 7702 CPU, 1 thread",   file = "overview-epyc7702-t1-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc"]),
-    (key = "m1gpu",  title = "Apple M1 Max GPU",              file = "overview-m1-gpu-kinds-e75616c.csv", comps = ["metal", "vkfft"]),
-    (key = "m1t8",   title = "Apple M1 Max CPU, 8 threads",   file = "overview-m1-t8-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc"], single = "overview-m1-t1-kinds-8e31d3a.csv"),
-    (key = "epyct16", title = "AMD EPYC 7702 CPU, 16 threads", file = "overview-epyc7702-t16-kinds-8e31d3a.csv", comps = ["fftw_measure", "ducc"], single = "overview-epyc7702-t1-kinds-8e31d3a.csv"),
-    (key = "a6000",  title = "NVIDIA RTX A6000 GPU",          file = "overview-a6000-gpu.csv",          comps = ["cufft", "vkfft"]),
-]
-const COMPNAME = Dict("fftw_measure" => "FFTW", "ducc" => "ducc0", "vdsp" => "vDSP",
-                      "metal" => "MPSGraph", "cufft" => "cuFFT",
-                      "vkfft" => "VkFFT")
+const PANELS = [(key = p["key"], title = p["title"], machine = p["machine"], comps = Vector{String}(p["competitors"]))
+                for p in TOML.parsefile(joinpath(BENCH, "panels.toml"))["panel"]]
 
-# The all-kinds overview (`<name>-kinds.csv`, column `kind`) replaces the c2c-only file once its
-# run has finished, i.e. its `.meta` has an `end:` line; an aborted run keeps the c2c-only file.
-# VkFFT enters per call; its batched timing (lib vkfft_batch) amortises launches over many
-# transforms in one submission and is not compared with FFTL's per-call time.
-function datafile(f)
-    k = occursin("-kinds", f) ? f : replace(f, ".csv" => "-kinds.csv")
-    meta = joinpath(RES, replace(k, ".csv" => ".meta"))
-    finished = isfile(meta) && any(startswith("end:"), eachline(meta))
-    isfile(joinpath(RES, k)) && finished ? k : f
-end
-
-# (kind, T, dims, shape) => lib => seconds
-function load(file)
-    rows = Dict{NTuple{4,String},Dict{String,Float64}}()
-    lines = eachline(joinpath(RES, datafile(file)))
-    hdr = Dict(String(h) => i for (i, h) in enumerate(split(first(lines), ",")))
-    for l in lines
-        c = split(l, ",")
-        length(c) >= length(hdr) || continue
-        kind = haskey(hdr, "kind") ? String(c[hdr["kind"]]) : "c2c"
-        key = (kind, String(c[hdr["T"]]), String(c[hdr["dims"]]), String(c[hdr["shape"]]))
-        # cuFFT is timed through CUDA.jl ("cufft") and from a native harness ("cufft_native");
-        # it enters at the faster of the two.
-        lib = String(c[hdr["lib"]]) == "cufft_native" ? "cufft" : String(c[hdr["lib"]])
-        t = parse(Float64, c[hdr["seconds"]])
-        r = get!(rows, key, Dict{String,Float64}())
-        r[lib] = min(get(r, lib, Inf), t)
+# Smooth lengths: every dimension has prime factors of at most 31 (FFTL's codelet limit, MAX_RADIX_PRIME).
+const CODELET_LIMIT = 31
+function largest_prime_factor(n)
+  m, p, last = n, 2, 1
+  while p * p <= m
+    while m % p == 0
+      last = p; m ÷= p
     end
-    return rows
+    p += 1
+  end
+  m > 1 ? max(last, m) : last
 end
+is_smooth(shape::AbstractString) = all(d -> largest_prime_factor(parse(Int, d)) <= CODELET_LIMIT, split(shape, "x"))
+
+# Rows of one panel as NamedTuples. Invalid rows stay in: the callers filter on `valid`.
+function load_panel(p)
+  lines = filter(!isempty, readlines(joinpath(RES, "panel-$(p.key).csv")))
+  hdr = Dict(String(h) => i for (i, h) in enumerate(split(lines[1], ",")))
+  num(c, k) = parse(Float64, c[hdr[k]])
+  rows = NamedTuple[]
+  for l in lines[2:end]
+    c = split(l, ",")
+    push!(rows, (kind = String(c[hdr["kind"]]), T = String(c[hdr["T"]]), n = parse(Int, c[hdr["n"]]),
+                 class = String(c[hdr["class"]]), family = String(c[hdr["family"]]),
+                 lib = String(c[hdr["lib"]]), ratio = num(c, "ratio"), ratio_lo = num(c, "ratio_lo"),
+                 ratio_hi = num(c, "ratio_hi"), valid = c[hdr["valid"]] == "true",
+                 aa_ratio = num(c, "aa_ratio"), shape = String(c[hdr["shape"]]),
+                 smooth = is_smooth(String(c[hdr["shape"]])), held = c[hdr["family"]] == "heldout"))
+  end
+  rows
+end
+
+# Libraries of a panel, FFTL first, competitors in panels.toml order.
+present_libs(rows, p) = [l for l in ["fftl"; p.comps] if any(r -> r.lib == l, rows)]

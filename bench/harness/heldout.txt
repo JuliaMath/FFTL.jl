@@ -1,0 +1,25 @@
+# Held-out sizes: seed 20261110, drawn by harness/make_heldout.jl. Format: dims, then the shape.
+# Never used for tuning; do not edit, draw a new set under a new seed instead.
+1 558
+1 3040
+1 21
+1 104
+1 27
+1 1014
+1 2695
+1 775
+1 2376
+1 57
+1 578
+1 225
+1 92935
+1 6673
+1 40440
+1 20819
+2 601 323
+2 1124 314
+2 1230 1242
+2 1412 372
+3 70 45 80
+3 139 117 156
+3 124 38 100

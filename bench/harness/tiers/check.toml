@@ -1,0 +1,9 @@
+# Tier "check": exercises the statistics (three rounds, A/A pair) on a sample of the catalog.
+# For testing the harness and aggregate.jl; its numbers are not for the figures.
+
+name = "check"
+stride = 15
+rounds = 3
+budget = 0.02
+aa = true
+kinds = ["c2c", "r2c", "c2r", "r2r_REDFT10", "r2r_REDFT00", "r2r_REDFT01", "r2r_REDFT11", "r2r_RODFT10", "r2r_DHT"]
