@@ -386,8 +386,12 @@ function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N
   lsz = even ? setdim(sz, d1, n ÷ 2) : S1 ? (n, P) : (P, n)
   w = todevice(backend, [Complex{T}((σ < 0 ? complex(0, -0.5) : complex(0, 1)) * cispi(2σ * k / n)) for k in 0:h-1])
   fuse = even && d1 == 1 && FFTL.factorize(n ÷ 2, KA_MAX_PRIME)[2] == 1
+  # odd n with a fused line plan (Rader or one-pass Bluestein): packing in its loads and stores
+  # (rpack, line.rhook == 9), else the kernels ka_r2co_pre!/post! around it
   line = fuse ? KAPlan(backend, T, lsz, σ; region = d1:d1, rhook = σ, rtab = w) :
-         KAPlan(backend, T, lsz, σ; region = even ? (d1:d1) : S1 ? (1:1) : (2:2))
+         even ? KAPlan(backend, T, lsz, σ; region = d1:d1) :
+         KAPlan(backend, T, lsz, σ; region = S1 ? (1:1) : (2:2),
+                rpack = (σ < 0 ? :r2c : :c2r, prod(sz[1:d1-1]; init = 1), n, L))
   rest = length(reg) > 1 ? KAPlan(backend, T, hsz, σ; region = reg[2:end]) : nothing
   bufs = Any[devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, hsz)]
   KARealPlan{T,N,typeof(backend)}(sz, reg, σ, line, rest, w, bufs, backend)
@@ -409,7 +413,9 @@ function LinearAlgebra.mul!(y::AbstractArray, p::KARealPlan{T}, x::AbstractArray
   asz(a) = eltype(a) === T && S == 1 ? reinterpret(Complex{T}, a) : nothing
   if p.σ < 0
     out = p.rest === nothing ? y : hb
-    if p.line.rhook != 0
+    if p.line.rhook == 9
+      launch!(out, x, p.line)
+    elseif p.line.rhook != 0
       xz = asz(x)
       xz === nothing && (run!(ka_pack!, be, S * M * outer, z, x, S, M); xz = z)
       launch!(out, xz, p.line)
@@ -429,7 +435,9 @@ function LinearAlgebra.mul!(y::AbstractArray, p::KARealPlan{T}, x::AbstractArray
     if p.rest !== nothing
       launch!(hb, x, p.rest); src = hb
     end
-    if p.line.rhook != 0
+    if p.line.rhook == 9
+      launch!(y, src, p.line)
+    elseif p.line.rhook != 0
       yz = asz(y)
       launch!(yz === nothing ? z : yz, src, p.line)
       yz === nothing && run!(ka_unpack!, be, S * M * outer, y, z, S, M)
@@ -649,7 +657,8 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       L = prod(sz) ÷ n; P = cld(L, 2); S1 = prod(sz[1:d-1]; init = 1) == 1
       zsz = S1 ? (n, P) : (P, n)
       tw = todevice(backend, [Complex{T}(cispi(-j / (2n))) for j in 0:n-1])
-      push!(dims, (:dct2o, Int(k), KAPlan(backend, T, zsz, -1; region = S1 ? 1 : 2), tw,
+      rp = (k == FFTL.RODFT10 ? :dst2 : :dct2, prod(sz[1:d-1]; init = 1), n, L)
+      push!(dims, (:dct2o, Int(k), KAPlan(backend, T, zsz, -1; region = S1 ? 1 : 2, rpack = rp), tw,
                    devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
       continue
     end
@@ -696,9 +705,13 @@ function LinearAlgebra.mul!(y::AbstractArray{T}, p::KAR2RPlan{T}, x::AbstractArr
     elseif dim[1] === :dct2o
       _, kind, P, tw, z, Z = dim
       L = S * outer; Pl = cld(L, 2); dst = Int(kind == Int(FFTL.RODFT10))
-      run!(ka_dct2o_pre!, be, Pl * n, z, src, S, n, L, Pl, dst)
-      launch!(Z, z, P)
-      run!(ka_dct2o_post!, be, Pl * n, y, Z, tw, S, n, L, Pl, dst)
+      if P.rhook == 9
+        launch!(y, src, P)
+      else
+        run!(ka_dct2o_pre!, be, Pl * n, z, src, S, n, L, Pl, dst)
+        launch!(Z, z, P)
+        run!(ka_dct2o_post!, be, Pl * n, y, Z, tw, S, n, L, Pl, dst)
+      end
     elseif dim[1] === :half
       _, kind, P, w, tw, z, Z = dim
       M = n ÷ 2; dst = Int(kind == Int(FFTL.RODFT10) || kind == Int(FFTL.RODFT01))
