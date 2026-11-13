@@ -5,45 +5,40 @@
 # (contiguous in p).
 # Kernels take raw pointers (to the real part of the first complex value); callers keep the
 # arrays alive. Indices are zero-based offsets in units of complex values.
+# This file builds the bodies of the stage kernels; kernel_methods.jl defines one method per
+# (radix, sign, vector type) from them, with the arguments listed in STAGE_KERNELS.
 #
 # A transform along a dimension with stride S (batch of S interleaved transforms) is the same
 # chain started with s = S: the S lanes become part of the contiguous index q.
 
 @inline cptr(x::Array{Complex{T}}) where {T} = Ptr{T}(pointer(x))
 
-# General stage, vectorised over q: s must be a multiple of the complex lanes of VT.
-stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
-  stage!(py, px, pt, m, s, 0, m, Val(R), Val(σ), VT)
-
-function stage_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
+# The statements of one butterfly of radix R in a stage body: the loads of the inputs from the
+# addresses `ld(j)`, j = 0…R-1, the DFT, the statements `pre`, and the stores `st(X_k, k)`.
+function butterfly(::Type{T}, R::Int, σ::Int, ::Type{VT}, ld, st, pre = ()) where {T,VT}
   stmts, a, X = codelet(R, σ)
+  vcat([:($(a[j]) = vload($VT, $(ld(j - 1)))) for j in 1:R], stmts, collect(Any, pre), [st(X[k+1], k) for k in 0:R-1])
+end
+
+# General stage, vectorised over q: s must be a multiple of the complex lanes of VT.
+# The body of stage! (q over 0:s-1) and of stage_range! (q over qlo:qhi-1).
+function stage_body(::Type{T}, R::Int, σ::Int, ::Type{VT}, qlo = 0, qhi = :s) where {T,VT}
   C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, $(stream_addr(:xb, :xr, j - 1)))) for j in 1:R]
+  st(X, k) = k == 0 ? :(vstore($X, yb0)) : :(vstore(ccmul_at($X, $(Symbol("w", k))), $(stream_addr(:yb, :yr, k))))
   twl = [:($(Symbol("w", k)) = pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T))) for k in 1:R-1]
-  stores = Any[:(vstore($(X[1]), yb0))]
-  for k in 1:R-1
-    push!(stores, :(vstore(ccmul_at($(X[k+1]), $(Symbol("w", k))), $(stream_addr(:yb, :yr, k)))))
-  end
   quote
     $(stream_strides(:xr, R, :(s * m * $B))...)
     $(stream_strides(:yr, R, :(s * $B))...)
     for p in plo:phi-1
       $(twl...)
-      for q in 0:$C:s-1
+      for q in $qlo:$C:$qhi-1
         $(stream_bases(:xb, :xr, R, :(px + (q + s * p) * $B))...)
-        $(loads...)
-        $(stmts...)
-        $(stream_bases(:yb, :yr, R, :(py + (q + s * $R * p) * $B))...)
-        $(stores...)
+        $(butterfly(T, R, σ, VT, j -> stream_addr(:xb, :xr, j), st,
+                    stream_bases(:yb, :yr, R, :(py + (q + s * $R * p) * $B)))...)
       end
     end
     nothing
   end
-end
-
-@generated function stage!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, plo::Int, phi::Int,
-                           ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  stage_body(T, R, σ, VT)
 end
 
 # base + i·2^e as one scaled-index address computation (a GEP over an element of 2^e bytes), so
@@ -75,87 +70,39 @@ stream_strides(r, R, unit) =
 # Stage over a q range: a stride that is not a multiple of the complex lanes of VT runs the
 # first s - s % C lanes in vectors of C complex values and the remainder one complex value at a
 # time.
-function stage_range_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
-  stmts, a, X = codelet(R, σ)
-  C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, $(stream_addr(:xb, :xr, j - 1)))) for j in 1:R]
-  twl = [:($(Symbol("w", k)) = pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T))) for k in 1:R-1]
-  stores = Any[:(vstore($(X[1]), yb0))]
-  for k in 1:R-1
-    push!(stores, :(vstore(ccmul_at($(X[k+1]), $(Symbol("w", k))), $(stream_addr(:yb, :yr, k)))))
-  end
-  quote
-    $(stream_strides(:xr, R, :(s * m * $B))...)
-    $(stream_strides(:yr, R, :(s * $B))...)
-    for p in plo:phi-1
-      $(twl...)
-      for q in qlo:$C:qhi-1
-        $(stream_bases(:xb, :xr, R, :(px + (q + s * p) * $B))...)
-        $(loads...)
-        $(stmts...)
-        $(stream_bases(:yb, :yr, R, :(py + (q + s * $R * p) * $B))...)
-        $(stores...)
-      end
-    end
-    nothing
-  end
-end
-
-@generated function stage_range!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int, qlo::Int, qhi::Int,
-                                 plo::Int, phi::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  stage_range_body(T, R, σ, VT)
-end
+stage_range_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT} = stage_body(T, R, σ, VT, :qlo, :qhi)
 
 # Last stage (m = 1): all twiddles are 1.
-stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
-  stage_last!(py, px, s, 0, s, Val(R), Val(σ), VT)
-
 function stage_last_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
-  stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); B = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, $(stream_addr(:xb, :r, j - 1)))) for j in 1:R]
-  stores = [:(vstore($(X[k+1]), $(stream_addr(:yb, :r, k)))) for k in 0:R-1]
   quote
     $(stream_strides(:r, R, :(s * $B))...)
     for q in qlo:$C:qhi-1
       $(stream_bases(:xb, :r, R, :(px + q * $B))...)
-      $(loads...)
-      $(stmts...)
-      $(stream_bases(:yb, :r, R, :(py + q * $B))...)
-      $(stores...)
+      $(butterfly(T, R, σ, VT, j -> stream_addr(:xb, :r, j), (X, k) -> :(vstore($X, $(stream_addr(:yb, :r, k)))),
+                  stream_bases(:yb, :r, R, :(py + q * $B)))...)
     end
     nothing
   end
 end
 
-@generated function stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, qlo::Int, qhi::Int,
-                                ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  stage_last_body(T, R, σ, VT)
-end
-
-# First stage with s = 1 for vectors of C = 2 or 4 complex values (m a multiple of C):
+# First stage with s = 1 for vectors of C = 2 or 4 complex values:
 # butterflies p, …, p+C-1 share a register. Groups of C outputs X_k…X_(k+C-1) are transposed
 # (complex value l of each output into one vector) so that each store writes C consecutive
 # outputs of one butterfly; remaining outputs (R not a multiple of C) are stored one complex
-# value at a time. Butterflies beyond a multiple of C (m % C) run one complex value at a time.
-stage_first_group!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
-  stage_first_group!(py, px, pt, m, 0, m, Val(R), Val(σ), VT)
-
-@inline function stage_first_group!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, plo::Int, phi::Int,
+# value at a time. Butterflies beyond a multiple of C (m % C) run one complex value at a time, with
+# the same kernel on a vector of one complex value.
+@inline function stage_first_group!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int,
                                     ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  C = ncomplex(VT)
-  rem = (phi - plo) % C
-  if rem == 0
-    stage_first_group_range!(py, px, pt, m, plo, phi, Val(R), Val(σ), VT)
-  else
-    stage_first_group_range!(py, px, pt, m, plo, phi - rem, Val(R), Val(σ), VT)
-    stage_first_group_1!(py, px, pt, m, phi - rem, phi, Val(R), Val(σ), Vec{2,T})
-  end
+  rem = m % ncomplex(VT)
+  stage_first_group_range!(py, px, pt, m, 0, m - rem, Val(R), Val(σ), VT)
+  rem == 0 || stage_first_group_range!(py, px, pt, m, m - rem, m, Val(R), Val(σ), Vec{2,T})
+  nothing
 end
 
 function stage_first_group_range_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
   C = ncomplex(VT)
-  C in (2, 4) || error("the grouped first stage needs 2 or 4 complex values per vector")
+  C in (1, 2, 4) || error("the grouped first stage needs 1, 2 or 4 complex values per vector")
   stmts, a, X = codelet(R, σ)
   N = 2C; CB = 2sizeof(T)
   loads = [:($(a[j]) = vload($VT, px + (p + $(j - 1) * m) * $CB)) for j in 1:R]
@@ -172,7 +119,7 @@ function stage_first_group_range_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) wh
   k = 0
   while k + C <= R
     for l in 0:C-1
-      z = C == 2 ? pick(outs[k+1], outs[k+2], l) :
+      z = C == 1 ? outs[k+1] : C == 2 ? pick(outs[k+1], outs[k+2], l) :
           :(shufflevector($(pick(outs[k+1], outs[k+2], l)), $(pick(outs[k+3], outs[k+4], l)),
                           Val((0, 1, 2, 3, 4, 5, 6, 7))))
       push!(st, :(vstore($z, py + ($R * (p + $l) + $k) * $CB)))
@@ -194,11 +141,6 @@ function stage_first_group_range_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) wh
     end
     nothing
   end
-end
-
-@generated function stage_first_group_range!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, plo::Int, phi::Int,
-                                             ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  stage_first_group_range_body(T, R, σ, VT)
 end
 
 # Complex values of u ++ v (2C) in chunks of S, alternating u_0 v_0 u_1 v_1 …: the lane masks of
@@ -269,68 +211,23 @@ function stage_small_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
   end
 end
 
-@generated function stage_small!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, ::Val{R}, ::Val{σ},
-                                 ::Type{VT}) where {T,R,σ,VT}
-  stage_small_body(T, R, σ, VT)
-end
-
-# Scalar tail of the grouped first stage: one complex value per vector, the twiddle table in
-# the grouped layout (k-1)m + p, one store per output.
-function stage_first_group_1_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
-  ncomplex(VT) == 1 || error("the scalar tail of the grouped first stage needs one complex value per vector")
-  stmts, a, X = codelet(R, σ)
-  CB = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, px + (p + $(j - 1) * m) * $CB)) for j in 1:R]
-  twm = Any[]
-  stores = Any[:(vstore($(X[1]), py + $R * p * $CB))]
-  for k in 1:R-1
-    b = Symbol("b", k)
-    push!(twm, :($b = ccmul($(X[k+1]), vload($VT, pt + ($(k - 1) * m + p) * $CB))))
-    push!(stores, :(vstore($b, py + ($R * p + $k) * $CB)))
-  end
-  quote
-    for p in plo:phi-1
-      $(loads...)
-      $(stmts...)
-      $(twm...)
-      $(stores...)
-    end
-    nothing
-  end
-end
-
-@generated function stage_first_group_1!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, plo::Int, phi::Int,
-                                         ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  stage_first_group_1_body(T, R, σ, VT)
-end
-
 # Stages on a block of B lanes (cache blocking of a dimension pass, and its unit of work among
 # threads): element j of lane i
 # is at i + Sx·j in the input and at i + Sy·j in the output, so a block can be read from the array
 # (Sx = S) into a compact buffer (Sy = B) and back. The index q of the formulas above is
 # i + S·q0 with i = 0…B-1, q0 = 0…s0-1. B must be a multiple of the complex lanes of VT.
-stage_lanes!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s0::Int, Sx::Int, Sy::Int, B::Int,
-             ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
-  stage_lanes!(py, px, pt, m, s0, Sx, Sy, B, 0, m, Val(R), Val(σ), VT)
-
 function stage_lanes_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
-  stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); Bt = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, px + (i + Sx * (q0 + s0 * (p + $(j - 1) * m))) * $Bt)) for j in 1:R]
   twl = [:($(Symbol("w", k)) = cbroadcast($VT, pt + ($(R - 1) * p + $(k - 1)) * $(2sizeof(T)))) for k in 1:R-1]
-  stores = Any[:(vstore($(X[1]), py + (i + Sy * o) * $Bt))]
-  for k in 1:R-1
-    push!(stores, :(vstore(ccmul($(X[k+1]), $(Symbol("w", k))), py + (i + Sy * (o + $k * s0)) * $Bt)))
-  end
+  st(X, k) = k == 0 ? :(vstore($X, py + (i + Sy * o) * $Bt)) :
+                      :(vstore(ccmul($X, $(Symbol("w", k))), py + (i + Sy * (o + $k * s0)) * $Bt))
   quote
     for p in plo:phi-1
       $(twl...)
       for q0 in 0:s0-1
         o = q0 + s0 * $R * p
         for i in 0:$C:B-1
-          $(loads...)
-          $(stmts...)
-          $(stores...)
+          $(butterfly(T, R, σ, VT, j -> :(px + (i + Sx * (q0 + s0 * (p + $j * m))) * $Bt), st)...)
         end
       end
     end
@@ -338,33 +235,33 @@ function stage_lanes_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
   end
 end
 
-@generated function stage_lanes!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s0::Int, Sx::Int, Sy::Int,
-                                 B::Int, plo::Int, phi::Int, ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  stage_lanes_body(T, R, σ, VT)
-end
-
-stage_last_lanes!(py::Ptr{T}, px::Ptr{T}, s0::Int, Sx::Int, Sy::Int, B::Int,
-                  ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT} =
-  stage_last_lanes!(py, px, s0, Sx, Sy, B, 0, s0, Val(R), Val(σ), VT)
-
 function stage_last_lanes_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
-  stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); Bt = 2sizeof(T)
-  loads = [:($(a[j]) = vload($VT, px + (i + Sx * (q0 + s0 * $(j - 1))) * $Bt)) for j in 1:R]
-  stores = [:(vstore($(X[k+1]), py + (i + Sy * (q0 + s0 * $k)) * $Bt)) for k in 0:R-1]
   quote
     for q0 in qlo:qhi-1
       for i in 0:$C:B-1
-        $(loads...)
-        $(stmts...)
-        $(stores...)
+        $(butterfly(T, R, σ, VT, j -> :(px + (i + Sx * (q0 + s0 * $j)) * $Bt),
+                    (X, k) -> :(vstore($X, py + (i + Sy * (q0 + s0 * $k)) * $Bt)))...)
       end
     end
     nothing
   end
 end
 
-@generated function stage_last_lanes!(py::Ptr{T}, px::Ptr{T}, s0::Int, Sx::Int, Sy::Int, B::Int, qlo::Int, qhi::Int,
-                                      ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  stage_last_lanes_body(T, R, σ, VT)
-end
+# The stage kernels: name, the arguments between (py, px) and (Val(R), Val(σ), VT), and the body.
+const STAGE_KERNELS = (
+  (:stage!, (:pt, :m, :s, :plo, :phi), stage_body),
+  (:stage_range!, (:pt, :m, :s, :qlo, :qhi, :plo, :phi), stage_range_body),
+  (:stage_last!, (:s, :qlo, :qhi), stage_last_body),
+  (:stage_first_group_range!, (:pt, :m, :plo, :phi), stage_first_group_range_body),
+  (:stage_small!, (:pt, :m), stage_small_body),
+  (:stage_lanes!, (:pt, :m, :s0, :Sx, :Sy, :B, :plo, :phi), stage_lanes_body),
+  (:stage_last_lanes!, (:s0, :Sx, :Sy, :B, :qlo, :qhi), stage_last_lanes_body))
+
+# Whether a kernel exists for vector type i of the ladder and radix R: the looped radices have
+# one kernel of their own (primestage.jl), the grouped first stage takes at most 4 complex values
+# per vector, stage_small! the widest vector type and a power-of-two radix.
+kernel_exists(name::Symbol, ladder, i::Int, R::Int) =
+  looped(R) ? false :
+  name === :stage_first_group_range! ? ncomplex(ladder[i]) <= 4 :
+  name === :stage_small! ? i == 1 && ispow2(R) : true

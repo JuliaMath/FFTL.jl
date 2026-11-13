@@ -320,7 +320,7 @@ function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N
   even = iseven(n) && n > 2
   lsz = even ? setdim(sz, d1, n ÷ 2) : sz
   w = todevice(backend, [Complex{T}((σ < 0 ? complex(0, -0.5) : complex(0, 1)) * cispi(2σ * k / n)) for k in 0:h-1])
-  fuse = even && d1 == 1 && FFTL.factorize(n ÷ 2)[2] == 1
+  fuse = even && d1 == 1 && FFTL.factorize(n ÷ 2, KA_MAX_PRIME)[2] == 1
   line = fuse ? KAPlan(backend, T, lsz, σ; region = d1:d1, rhook = σ, rtab = w) : KAPlan(backend, T, lsz, σ; region = d1:d1)
   rest = length(reg) > 1 ? KAPlan(backend, T, hsz, σ; region = reg[2:end]) : nothing
   bufs = Any[devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, hsz)]
@@ -434,7 +434,7 @@ end
 
 function KAFourStep(backend, ::Type{T}, N::Int, P::Int) where {T}
   S = N ÷ P
-  @assert S * P == N && FFTL.factorize(S)[2] == 1
+  @assert S * P == N && FFTL.factorize(S, KA_MAX_PRIME)[2] == 1
   pP = KAPlan(backend, T, (S, P), -1; region = 2:2)
   pS = KAPlan(backend, T, (S, P), -1; region = 1:1)
   # W_N^m = thi[m ÷ W + 1] · tlo[m % W + 1] with W ≈ √N: two small tables, computed in double
@@ -497,7 +497,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
   for (k, d) in zip(ks, reg)
     n = sz[d]
     k == FFTL.REDFT00 && n < 2 && throw(ArgumentError("REDFT00 needs length ≥ 2"))
-    if k == FFTL.REDFT00 && n >= 3 && FFTL.factorize(n - 1)[2] == 1
+    if k == FFTL.REDFT00 && n >= 3 && FFTL.factorize(n - 1, KA_MAX_PRIME)[2] == 1
       # DCT-I: r2c of the even extension (length 2(n-1)) by one complex DFT of length n - 1, the
       # extension built at the first pass's loads, real parts at the last pass (rhook 8)
       n1 = n - 1
@@ -514,7 +514,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       # (with Bluestein the pack step runs in the first pass's chirp loads)
       n1 = n - 1; zsz = setdim(sz, d, n1)
       u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
-      f1, P1 = FFTL.factorize(n1)
+      f1, P1 = FFTL.factorize(n1, KA_MAX_PRIME)
       if nameof(typeof(backend)) === :CUDABackend && length(sz) == 1 && P1 > 1 && n1 >= KA_FOURSTEP_MIN
         # one large prime factor: four-step DFT (KAFourStep) instead of Bluestein of length 2n
         push!(dims, (:dct1, false, KAFourStep(backend, T, n1, P1), u,
@@ -534,7 +534,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
                    devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
       continue
     end
-    if k in (FFTL.REDFT11, FFTL.RODFT11) && iseven(n) && n >= 4 && FFTL.factorize(n ÷ 2)[2] == 1
+    if k in (FFTL.REDFT11, FFTL.RODFT11) && iseven(n) && n >= 4 && FFTL.factorize(n ÷ 2, KA_MAX_PRIME)[2] == 1
       # DCT-IV/DST-IV of even length: complex backward DFT of n/2 between element-wise twiddles,
       # all in the DFT's passes (pass_kernel's rhook 6/7)
       M = n ÷ 2
@@ -551,7 +551,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       σ = k in (FFTL.REDFT10, FFTL.RODFT10) ? -1 : 1
       w = todevice(backend, [Complex{T}(cispi(-2j / n)) for j in 0:M])
       tw = todevice(backend, [Complex{T}(cispi(-j / (2n))) for j in 0:M])
-      if σ > 0 && FFTL.factorize(M)[2] == 1
+      if σ > 0 && FFTL.factorize(M, KA_MAX_PRIME)[2] == 1
         # the whole DCT-III/DST-III in the line plan's passes (pass_kernel's rhook 4/5):
         # C_K = P_K (y_K - i y_(n-K)) + Q_K (y_(M-K) + i y_(M+K)) with a_k = conj(t_k)/2,
         # P_K = a_K (2 + 2i conj w_K), Q_K = conj(a_(M-K)) (2 - 2i conj w_K)
@@ -564,7 +564,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
           continue
         end
       end
-      if σ < 0 && FFTL.factorize(M)[2] == 1
+      if σ < 0 && FFTL.factorize(M, KA_MAX_PRIME)[2] == 1
         # the whole DCT-II/DST-II in the line plan's passes (pass_kernel's rhook 2/3)
         u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-2j / n)) for j in 0:M])
         P = KAPlan(backend, T, hsz, -1; region = d:d, rhook = k == FFTL.REDFT10 ? 2 : 3, rtab = (u, tw))

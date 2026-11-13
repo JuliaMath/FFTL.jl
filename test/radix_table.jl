@@ -9,10 +9,10 @@ const RADIX_TABLE_STRIDES = (1, 1024)
 const RADIX_TABLE_LARGE = (2048, 4096, 8192, 16384, 32768, 65536, 100000, 120000, 131072, 262144,
                            786432, 1048576)
 
-# Lengths with prime factors up to MAX_RADIX_PRIME (the lengths a chain handles), from 2 to 1024
-# and the large ones above.
+# Lengths with prime factors up to 31 (the radices the rules were derived for), from 2 to 1024 and
+# the large ones above.
 radix_table_lengths() =
-  vcat(filter(n -> FFTL.factorize(n)[2] == 1, 2:1024), collect(RADIX_TABLE_LARGE))
+  vcat(filter(n -> FFTL.factorize(n, 31)[2] == 1, 2:1024), collect(RADIX_TABLE_LARGE))
 
 # x86 has two rule sets: 16 vector registers (AVX2) and 32 (AVX-512)
 radix_table_path(arch = string(Sys.ARCH)) =

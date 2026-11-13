@@ -1,7 +1,7 @@
 # Transforms for element types beyond the hardware floats (BigFloat, Double64, Float128, …):
 # plain Julia on arrays, no SIMD and no pointers (BigFloat is not an isbits type), single-threaded.
 # Accuracy over speed: twiddles are computed in T, smooth lengths go through a recursive
-# mixed-radix FFT, lengths with a prime factor above MAX_RADIX_PRIME through Bluestein's
+# mixed-radix FFT, lengths with a prime factor above GENERIC_MAX_PRIME through Bluestein's
 # algorithm. Real transforms reduce to complex DFTs: r2c/c2r through the full complex line, the
 # real-to-real kinds through a complex DFT of length 2n (2(n-1) for DCT-I, 2(n+1) for DST-I)
 # with pre- and post-twiddles:
@@ -36,11 +36,14 @@ function generic_roots(::Type{T}, n::Int, σ::Int) where {T}
   w
 end
 
+# Largest prime factor that the mixed-radix transform takes as a radix.
+const GENERIC_MAX_PRIME = 31
+
 """
     GLine{T}
 
 One-dimensional DFT of length `n`, sign `σ`, for a generic float type: mixed radix, or Bluestein
-when a prime factor exceeds MAX_RADIX_PRIME.
+when a prime factor exceeds GENERIC_MAX_PRIME.
 """
 struct GLine{T}
   n::Int
@@ -57,7 +60,7 @@ end
 
 function GLine{T}(n::Int, σ::Int) where {T}
   n >= 1 || throw(ArgumentError("length must be positive"))
-  f, rest = factorize(n)
+  f, rest = factorize(n, GENERIC_MAX_PRIME)
   if rest == 1
     rs = Int[]
     for p in reverse!(sort!(collect(keys(f)))), _ in 1:f[p]

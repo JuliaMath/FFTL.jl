@@ -19,7 +19,7 @@
     @test_broken @inferred FFTL.plan_fft(x, (1, 2))
   end
   # Bluestein length, the plan holds the work buffers
-  let x = randn(Complex{T}, 37), y = similar(x)
+  let x = randn(Complex{T}, 79), y = similar(x)
     p = FFTL.plan_fft(x)
     mul!(y, p, x)
     @test (@inferred mul!(y, p, x)) === y
@@ -60,7 +60,7 @@
     @test_broken @inferred FFTL.plan_pass(v, 2)
   end
   # Complex views: independent layouts, multidimensional passes and the large column block.
-  for (sz, region) in (((10240, 4), (1,)), ((3, 8, 2), (1, 3)), ((4, 37, 2), (2,)), ((3, 1, 2), (2,)))
+  for (sz, region) in (((10240, 4), (1,)), ((3, 8, 2), (1, 3)), ((4, 79, 2), (2,)), ((3, 1, 2), (2,)))
     inputs = realpass_layouts(Complex{T}, sz)
     outputs = realpass_layouts(Complex{T}, sz)
     for mk in (FFTL.plan_fft, FFTL.plan_bfft, FFTL.plan_ifft)
@@ -75,7 +75,7 @@
     end
   end
   # High-level real plans and their inverses, with independent and changing layouts.
-  for (sz, region) in (((10240, 4), (1,)), ((3, 8, 2), (2, 3)), ((3, 37, 2), (2,)), ((3, 1, 2), (2,)))
+  for (sz, region) in (((10240, 4), (1,)), ((3, 8, 2), (2, 3)), ((3, 79, 2), (2,)), ((3, 1, 2), (2,)))
     d = first(region); n = sz[d]; osz = Base.setindex(sz, n ÷ 2 + 1, d)
     reals = realpass_layouts(T, sz); spectra = realpass_layouts(Complex{T}, osz)
     pf = FFTL.plan_rfft(reals[2], region; threads = 1)
@@ -92,7 +92,7 @@
   end
   # real transforms
   # Real passes reuse their offset storage even on the first call with new stride values.
-  for (sz, d) in (((8,), 1), ((3, 9, 2), 2), ((2, 37, 1), 2), ((3, 1, 2), 2), ((10240, 4), 1))
+  for (sz, d) in (((8,), 1), ((3, 9, 2), 2), ((2, 79, 1), 2), ((3, 1, 2), 2), ((10240, 4), 1))
     n = sz[d]; osz = Base.setindex(sz, n ÷ 2 + 1, d)
     for forward in (true, false)
       inputs = realpass_layouts(forward ? T : Complex{T}, forward ? sz : osz)
@@ -159,7 +159,7 @@ exe_r2r!(p, y, x) = GC.@preserve x y FFTL.execute_r2r!(p, pointer(y), pointer(x)
     @test (@inferred exe!(p, y, x)) === nothing
     @test (@allocated exe!(p, y, x)) == 0
   end
-  let p = (@inferred FFTL.RPlan{T}([37], [1], 1; threads = 1)), x = randn(Complex{T}, 37), y = similar(x)   # Bluestein
+  let p = (@inferred FFTL.RPlan{T}([79], [1], 1; threads = 1)), x = randn(Complex{T}, 79), y = similar(x)   # Bluestein
     exe!(p, y, x)
     @test (@allocated exe!(p, y, x)) == 0
   end

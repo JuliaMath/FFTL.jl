@@ -26,20 +26,27 @@
 """
     MAX_RADIX_PRIME
 
-Largest prime factor handled by a codelet; lengths with larger prime factors use Bluestein's
-algorithm.
+Largest prime factor that is a radix of a chain; lengths with larger prime factors use Bluestein's
+algorithm. The primes from `LOOPED_RADIX_MIN` on share one kernel (primestage.jl), so the limit
+is where that kernel stops being faster than Bluestein's algorithm for a line of prime length.
 """
-const MAX_RADIX_PRIME = 31
+const MAX_RADIX_PRIME = 73
 
-function factorize(n::Int)
+# The primes up to MAX_RADIX_PRIME.
+const RADIX_PRIMES = Tuple(p for p in 2:MAX_RADIX_PRIME if all(p % d != 0 for d in 2:isqrt(p)))
+
+# The exponents of the prime factors up to pmax, and the remaining part of n (1 if n has no
+# larger prime factor).
+function factorize(n::Int, pmax::Int = MAX_RADIX_PRIME)
   f = Dict{Int,Int}()
-  for p in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31)
+  for p in RADIX_PRIMES
+    p > pmax && break
     while n % p == 0
       f[p] = get(f, p, 0) + 1
       n ÷= p
     end
   end
-  f, n          # n > 1: remaining part with prime factors > MAX_RADIX_PRIME
+  f, n
 end
 
 smooth(n::Int) = factorize(n)[2] == 1
@@ -142,7 +149,7 @@ function heuristic_radices(n::Int, S::Int, esize::Int = 16)
       push!(r, 5)
     end
   end
-  for p in (7, 11, 13, 17, 19, 23, 29, 31), _ in 1:get(f, p, 0)
+  for p in RADIX_PRIMES, _ in 1:(p >= 7 ? get(f, p, 0) : 0)
     push!(r, p)
   end
   pow2 = vcat(fill(8, eight), fill(4, fours), fill(2, two))

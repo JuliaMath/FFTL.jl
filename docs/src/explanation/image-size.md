@@ -42,35 +42,32 @@ later Julia versions, so re-run the count below after an upgrade.
 
 ## What keeps it small
 
-1. **Plain methods for the fixed set.** The stage kernels that `RChain` dispatches to (radix × sign ×
-   vector type) are defined in `src/kernel_methods.jl` with `@eval`, from the same body-building
-   functions the generators call. The `@generated` methods stay as the fallback for every other combination
-   (the lazy radices), so behaviour is unchanged. A plain method keeps its (compressed) source
-   and its machine code, not its optimised IR.
-2. **Lazy radices.** The codelets of the radices in `LAZY_RADICES` (17, 19, 23, 29, 31 by default; the
-   preference `lazy_radices`, read in `src/rchain.jl`) are 54 % of the statements of the stage kernels and are rarely needed. They are not
-   in the image. A call with such a codelet index reaches `cstage_*_lazy`, which finds a callable object
-   for the (radix, sign, vector type) in a table and creates it at the first call; Julia compiles its
-   kernel then. A first call of a length with such a factor takes 70–100 ms; later calls cost about
-   0.02 µs more than a precompiled codelet. Calling the stage kernel with run-time `Val` arguments
-   instead of the table cost 0.22 µs per transform, 10 % at n = 1088.
+1. **Plain methods for the fixed set.** The stage kernels (`STAGE_KERNELS` in `src/kernels.jl`: radix ×
+   sign × vector type) are defined in `src/kernel_methods.jl` with `@eval`, from the functions that build
+   their bodies. A plain method keeps its (compressed) source and its machine code, not its optimised IR.
+   There are no `@generated` stage kernels.
+2. **One kernel for the large prime radices.** The radices 17 to 73 have no codelets of their own: one
+   kernel (`src/primestage.jl`) takes the radix and a table as arguments and is compiled once per vector
+   type. Straight-line codelets for 17, 19, 23, 29 and 31 were 54 % of the statements of the stage kernels;
+   they used to be left out of the image and compiled at the first call (70–100 ms, the "lazy radices"
+   column of the table above).
 
-   `juliac` compiles nothing at run time, so a program that is compiled with `--trim` sets the preference
-   `lazy_radices = []`: every codelet is then compiled into it. `libfftl/LocalPreferences.toml` does this
-   for the C library; a project that builds FFTL into its own trimmed library sets it in its
-   `LocalPreferences.toml` (the project must have FFTL as a direct dependency):
+To add a radix up to 16, put it in `RADICES`; `kernel_methods.jl` defines its methods. A larger prime
+needs no code: raise `MAX_RADIX_PRIME` (see [Design decisions](@ref "Design decisions") for where the
+kernel stops being faster than Bluestein's algorithm).
 
-   ```toml
-   [FFTL]
-   lazy_radices = []
-   ```
+The numbers on this page were measured on the M1 while the smooth lengths up to 128 had compiled chains
+of their own (583 more plain methods) and the radices 17–31 were compiled at first use. On an AMD EPYC
+9354 (AVX-512, which has seven vector types where the M1 has three) the image file went from 68.5 MB
+with the compiled chains to 58.6 MB without them and to 66.2 MB with the kernel for the large primes
+(which is in the image, where the lazy codelets were not). The C library, which contains every kernel
+in either case, went from 55.6 MB to 49.5 MB and to 26.8 MB (`libfftl.so`, x86-64-v3, `--trim=safe`). The M1 numbers have not been measured again.
 
-To add a radix, put it in `RADICES`; `kernel_methods.jl` defines its plain methods. To make a radix lazy,
-add it to the default of the preference in `src/rchain.jl`.
-
-The numbers on this page were measured while the smooth lengths up to 128 had compiled chains of their
-own (583 more plain methods). Without them the image on an AMD EPYC 9354 (AVX-512, which has more vector
-types than the M1) went from 72 MB to 61 MB; the M1 numbers have not been measured again.
+With the workload, nearly all of the image is the stage kernels: the dispatch switches of `RChain` name
+every kernel, so the first transform compiles all of them. On the EPYC 9354 (measured with the prime
+limit at 127, which does not change the kernels) the image was 65 MB with the workload and 20.5 MB
+without, precompilation took 61 s and 13 s, `using FFTL` 185 ms and 110 ms, and the first transform
+16–37 ms with the workload and 23–35 s without.
 
 ## What is left
 
@@ -88,7 +85,6 @@ Further steps that were considered:
 | step | gain | cost |
 |:--|:--|:--|
 | methods generic in the element and vector type instead of one per vector type | about 4 MB (stored sources ÷ 3) | the compiler must fold `ncomplex` and `sizeof` of the type parameters; needs a speed check |
-| radices 11 and 13 lazy as well | 4 MB (28 MB), a few ms of load time (inside the noise) | 70–100 ms at the first call of lengths with those factors, which are common |
 | no PrecompileTools | about 25 ms of load time (Dates, TOML, Preferences) | the workload is written with `precompile` calls |
 | no `Float32` in the workload | 16 MB (at 73 MB) | 6 s at the first `Float32` call |
 

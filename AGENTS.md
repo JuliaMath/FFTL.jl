@@ -26,9 +26,10 @@ Read this file before changing the package. The documentation holds the rest:
   before it is written down, or it is marked as not verified. A change that claims to be faster comes
   with an interleaved A/B measurement on one machine (medians, and the spread of the same code against
   itself); see `docs/src/explanation/performance.md`.
-- **Kernels of a fixed set are plain methods, not `@generated`.** A package image keeps the complete
-  optimised IR of every precompiled `@generated` specialisation. `@generated` methods stay as the
-  fallback for combinations outside the precompiled set. See `docs/src/explanation/image-size.md`.
+- **Kernels are plain methods, not `@generated`.** A package image keeps the complete optimised IR
+  of every precompiled `@generated` specialisation. The stage kernels are defined with `@eval` for
+  the fixed set of radices, signs and vector types; there is no `@generated` fallback. See
+  `docs/src/explanation/image-size.md`.
 - **Nothing private in the repository.** Code, documentation, data files, commit messages and pull request
   descriptions contain no host names or accounts of machines, no local paths, no private contact data and no
   names of people beyond the authors of the package. A machine is named by its processor ("AMD EPYC 7702",

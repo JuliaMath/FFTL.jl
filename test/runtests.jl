@@ -69,8 +69,10 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   @testset "codelets and chains against the direct DFT, $T" for T in (Float64, Float32)
     for n in pick([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 24, 32, 48, 49, 60, 64, 80, 100,
                    105, 120, 128, 143, 169, 210, 243, 256, 360, 384, 500, 512, 1000, 1024,
-                   17, 19, 23, 29, 31, 68, 289, 928, 31 * 27],
-                  thin(T, [1, 2, 3, 4, 5, 7, 8, 11, 13, 16, 31, 60, 128, 243, 1000, 31 * 27]))
+                   17, 19, 23, 29, 31, 68, 289, 928, 31 * 27,
+                   # the looped prime radices: alone, first, last, twice, with a scalar remainder
+                   37, 41, 53, 61, 67, 73, 2 * 47, 8 * 59, 64 * 71, 23 * 43, 61^2, 3 * 73 * 5, 17 * 37 * 16],
+                  thin(T, [1, 2, 3, 4, 5, 7, 8, 11, 13, 16, 31, 60, 128, 243, 1000, 31 * 27, 73, 8 * 59, 23 * 43, 3 * 73 * 5]))
       x = randn(Complex{T}, n)
       ref = dft(ComplexF64.(x))
       @test relerr(FFTL.fft(x), ref) < tol(T)
@@ -79,7 +81,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "Bluestein, $T" for T in (Float64, Float32)
-    for n in pick([37, 41, 74, 101, 37^2, 1009], [37, 74, 1009])
+    for n in pick([79, 83, 158, 101, 79^2, 1009], [79, 158, 1009])
       x = randn(Complex{T}, n)
       @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
       @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < 10tol(T)
@@ -88,9 +90,9 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
 
   @testset "smooth part times leftover, $T" for T in (Float64, Float32)
     # n = s·q: a chain of length s, Bluestein on the leftover q (prime or composite)
-    for n in pick([2 * 37, 3 * 41, 16 * 43, 29 * 37, 64 * 37, 2 * 37^2, 5 * 13 * 37, 2 * 37 * 41, 6 * 1009,
-                   2 * 37 * 41 * 43, 6 * 37^2 * 41],
-                  [2 * 37, 29 * 37, 2 * 37 * 41, 6 * 1009])
+    for n in pick([2 * 79, 3 * 83, 16 * 89, 29 * 79, 64 * 79, 2 * 79^2, 5 * 13 * 79, 2 * 79 * 83, 6 * 1009,
+                   17 * 79 * 83, 6 * 79^2],
+                  [2 * 79, 29 * 79, 2 * 79 * 83, 6 * 1009])
       x = randn(Complex{T}, n)
       @test FFTL.plan_fft(x; threads = 1).kernels[1] isa FFTL.Composite
       @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
@@ -98,8 +100,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
     # a leftover split into prime powers (the planner does this for large leftovers only): first
     # stages that are composite and Bluestein kernels themselves
-    for (n, s, q) in pick([(2 * 37 * 41 * 43, 2 * 37 * 41, 43), (37 * 41, 37, 41), (6 * 37^2 * 41, 6 * 37^2, 41)],
-                          [(2 * 37 * 41 * 43, 2 * 37 * 41, 43), (37 * 41, 37, 41)])
+    for (n, s, q) in pick([(2 * 79 * 83 * 89, 2 * 79 * 83, 89), (79 * 83, 79, 83), (6 * 79^2 * 83, 6 * 79^2, 83)],
+                          [(2 * 79 * 83 * 89, 2 * 79 * 83, 89), (79 * 83, 79, 83)])
       x = randn(Complex{T}, n)
       for σ in (-1, 1)
         k = FFTL.Composite{T}(n, s, q, σ, 1)
@@ -110,7 +112,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       end
     end
     # lanes of a 2D array: along dimension 1 (contiguous lines) and dimension 2 (strided lanes)
-    for (sz, region) in ((((2 * 37, 5)), (1,)), ((3, 2 * 37), (2,)), ((5, 3 * 41), (1, 2)))
+    for (sz, region) in ((((2 * 79, 5)), (1,)), ((3, 2 * 79), (2,)), ((5, 3 * 83), (1, 2)))
       x = randn(Complex{T}, sz)
       @test relerr(FFTL.fft(x, region), dftn(x, region)) < 10tol(T)
       z = copy(x); p = FFTL.plan_fft(x, region); mul!(z, p, z)
@@ -129,11 +131,11 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "multidimensional, $T" for T in (Float64, Float32)
-    cases = pick([((8, 12), (1, 2)), ((16, 16), (1, 2)), ((17, 6), (1, 2)), ((5, 37), (1, 2)),
+    cases = pick([((8, 12), (1, 2)), ((16, 16), (1, 2)), ((17, 6), (1, 2)), ((5, 79), (1, 2)),
                   ((3, 8), (2,)), ((3, 8), (1, 2)), ((12, 7), (1,)), ((1, 9), (1, 2)),
                   ((4, 6, 10), (1, 2, 3)), ((3, 5, 7), (1, 2, 3)), ((6, 4, 5), (1, 3)), ((6, 4, 5), (2,)),
                   ((16, 9, 2, 3), (1, 2, 3, 4))],
-                 thin(T, [((8, 12), (1, 2)), ((5, 37), (1, 2)), ((3, 8), (2,)), ((1, 9), (1, 2)),
+                 thin(T, [((8, 12), (1, 2)), ((5, 79), (1, 2)), ((3, 8), (2,)), ((1, 9), (1, 2)),
                           ((4, 6, 10), (1, 2, 3)), ((6, 4, 5), (1, 3)), ((16, 9, 2, 3), (1, 2, 3, 4))]))
     for (sz, region) in cases
       x = randn(Complex{T}, sz)
@@ -150,9 +152,9 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "complex strided plans, $T" for T in (Float64, Float32)
-    for (sz, region) in (((8,), (1,)), ((37, 3), (1,)), ((3, 74, 2), (2,)),
+    for (sz, region) in (((8,), (1,)), ((79, 3), (1,)), ((3, 158, 2), (2,)),
                          ((8, 6), (1, 2)), ((3, 8, 2), (2,)), ((4, 3, 2), (1, 3)),
-                         ((19, 8, 2), (2,)), ((16, 37, 2), (2,)), ((1, 9), (1, 2)),
+                         ((19, 8, 2), (2,)), ((16, 79, 2), (2,)), ((1, 9), (1, 2)),
                          ((3, 1, 2), (2,)), ((2, 3, 4, 2), (3,)))
       x = randn(Complex{T}, sz)
       inputs = realpass_layouts(Complex{T}, sz)
@@ -205,7 +207,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     @test_throws DimensionMismatch mul!(zeros(Complex{T}, 2, 4), p, v)
     if Threads.nthreads() > 1
       for (sz, region) in (((128, 512), (1,)), ((33, 1024), (2,)),
-                           ((8192,), (1,)), ((20011,), (1,)), ((2 * 37 * 41 * 43,), (1,)))
+                           ((8192,), (1,)), ((20011,), (1,)), ((2 * 79 * 83 * 89,), (1,)))
         x = randn(Complex{T}, sz)
         v = realpass_layouts(Complex{T}, sz)[4]; v .= x
         w = realpass_layouts(Complex{T}, sz)[5]
@@ -221,7 +223,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       # slices, interior-axis lane blocks (including a partial block), and multiple passes.
       # The three-lane case has gather workspace with two planned tasks, but none with three.
       for (sz, region) in (((1009, 64), (1,)), ((65, 1009), (2,)), ((2018, 33), (1,)),
-                           ((65, 2018), (2,)), ((19, 129, 32), (2, 3)), ((3, 6054, 2), (2,)))
+                           ((65, 2018), (2,)), ((19, 237, 32), (2, 3)), ((3, 6054, 2), (2,)))
         x = randn(Complex{T}, sz)
         inputs = realpass_layouts(Complex{T}, sz)
         third = view(fill(Complex{T}(7), 3 .* sz .+ 4), ntuple(i -> 2:3:3sz[i]-1, length(sz))...)
@@ -255,8 +257,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   @testset "threads, $T" for T in (Float64, Float32)
     # sizes above the threading threshold: slices (dimension 1 of a 2D array), lane blocks
     # (last dimension), odd strides (last block with fewer lanes than the vector width)
-    for sz in pick([(256, 256), (64, 64, 64), (33, 1024), (100, 100, 10), (8, 4096), (1024, 37), (2 * 3^11,), (5^7,)],
-                   [(64, 64, 64), (33, 1024), (1024, 37), (2 * 3^11,)])
+    for sz in pick([(256, 256), (64, 64, 64), (33, 1024), (100, 100, 10), (8, 4096), (1024, 79), (2 * 3^11,), (5^7,)],
+                   [(64, 64, 64), (33, 1024), (1024, 79), (2 * 3^11,)])
       x = randn(Complex{T}, sz)
       ref = FFTL.plan_fft(x; threads = 1) * x
       for nt in pick((2, 3, 4), (3,))
@@ -302,10 +304,10 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       end
     end
     # many lines with a prime factor above MAX_RADIX_PRIME: slices and lane blocks over the tasks,
-    # Bluestein kernels (127, 1009, 37) and composite kernels (129 = 3·43, 2018 = 2·1009)
+    # Bluestein kernels (127, 1009, 79) and composite kernels (237 = 3·79, 2018 = 2·1009)
     for (sz, region) in pick([((256, 127, 16), 1:3), ((16, 256, 127), (3,)), ((1009, 64), (1,)), ((64, 1009), (2,)),
-                              ((37, 37, 37), 1:3), ((129, 300), 1:2), ((300, 129), 1:2), ((2018, 32), (1,)), ((32, 2018), (2,))],
-                             [((256, 127, 16), 1:3), ((64, 1009), (2,)), ((1009, 64), (1,)), ((300, 129), 1:2)])
+                              ((79, 79, 79), 1:3), ((237, 300), 1:2), ((300, 237), 1:2), ((2018, 32), (1,)), ((32, 2018), (2,))],
+                             [((256, 127, 16), 1:3), ((64, 1009), (2,)), ((1009, 64), (1,)), ((300, 237), 1:2)])
       x = randn(Complex{T}, sz...)
       for mk in (FFTL.plan_fft, FFTL.plan_bfft)
         p1 = mk(x, region; threads = 1)
@@ -326,7 +328,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "real strided plans, $T" for T in (Float64, Float32)
-    for (sz, region) in (((1,), (1,)), ((8,), (1,)), ((9, 4), (1,)), ((3, 37, 2), (2,)),
+    for (sz, region) in (((1,), (1,)), ((8,), (1,)), ((9, 4), (1,)), ((3, 79, 2), (2,)),
                          ((4, 6), (1, 2)), ((4, 5), (2, 1)), ((3, 8, 2), (2, 3)),
                          ((8, 3, 4), (1, 3)), ((3, 1, 2), (2,)))
       # Preserve the existing sorted region and choice of the halved dimension.
@@ -394,7 +396,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       end
       # The complex passes of real plans also select LinesMT, including inverse passes into
       # the plan's dense scratch. Use independent dense references for the inverse inputs.
-      for (sz, region) in (((4, 1009, 32), (1, 2)), ((8, 65, 129), (1, 3)), ((65, 8, 129), (2, 3)))
+      for (sz, region) in (((4, 1009, 32), (1, 2)), ((8, 65, 237), (1, 3)), ((65, 8, 237), (2, 3)))
         d = first(region); n = sz[d]; osz = Base.setindex(sz, n ÷ 2 + 1, d)
         x = randn(T, sz)
         ref = FFTL.plan_rfft(x, region; threads = 1) * x
@@ -458,7 +460,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       @test relerr(yv ./ n, x) < 10tol(T)
     end
     # Reuse each plan while changing input strides, output strides, both, then back to dense.
-    for (sz, d) in (((8,), 1), ((9, 4), 1), ((3, 8, 2), 2), ((2, 37, 1), 2), ((3, 1, 2), 2))
+    for (sz, d) in (((8,), 1), ((9, 4), 1), ((3, 8, 2), 2), ((2, 79, 1), 2), ((3, 1, 2), 2))
       n = sz[d]
       x = randn(T, sz)
       osz = Base.setindex(sz, n ÷ 2 + 1, d)
@@ -550,12 +552,12 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
 
   @testset "run-time pass plans, $T" for T in (Float64, Float32)
     # the plan type depends on the element type and the dimension count only
-    for (sz, d) in (((100, 3), 1), ((1009, 3), 1), ((64, 5), 1), ((37, 6), 2), ((6, 130), 2))
+    for (sz, d) in (((100, 3), 1), ((1009, 3), 1), ((64, 5), 1), ((79, 6), 2), ((6, 130), 2))
       p = FFTL.plan_pass_runtime(randn(Complex{T}, sz), d)
       @test p isa FFTL.PassPlan{T,2,FFTL.RPassKern{T}}
     end
     # against the length-specialised plan, every kernel kind: smooth, Bluestein, composite, four-step
-    for (n, sz_other, nt) in ((64, 5, 1), (100, 7, 1), (1000, 3, 2), (1009, 4, 1), (2 * 37 * 41, 2, 1),
+    for (n, sz_other, nt) in ((64, 5, 1), (100, 7, 1), (1000, 3, 2), (1009, 4, 1), (2 * 79 * 83, 2, 1),
                               (2^17, 1, 3))
       x = randn(Complex{T}, n, sz_other)
       for sign in (-1, 1)
@@ -591,11 +593,11 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "real transforms, $T" for T in (Float64, Float32)
-    for (sz, region) in pick([((8,), 1), ((9,), 1), ((10,), 1), ((15,), 1), ((16,), 1), ((37,), 1), ((100,), 1),
+    for (sz, region) in pick([((8,), 1), ((9,), 1), ((10,), 1), ((15,), 1), ((16,), 1), ((79,), 1), ((100,), 1),
                               ((101,), 1), ((1024,), 1), ((1023,), 1), ((3 * 2^11,), 1),
                               ((8, 6), (1, 2)), ((9, 6), (1, 2)), ((7, 10), (1, 2)), ((8, 6), (2,)), ((12, 7), (2,)),
                               ((6, 8, 5), (1, 2, 3)), ((6, 8, 5), (2, 3)), ((6, 9, 5), (2, 3)), ((5, 4, 6), (3,)), ((16, 9), (1,))],
-                             thin(T, [((9,), 1), ((16,), 1), ((37,), 1), ((1024,), 1), ((3 * 2^11,), 1),
+                             thin(T, [((9,), 1), ((16,), 1), ((79,), 1), ((1024,), 1), ((3 * 2^11,), 1),
                                       ((9, 6), (1, 2)), ((12, 7), (2,)), ((6, 8, 5), (1, 2, 3)), ((6, 9, 5), (2, 3))]))
       x = randn(T, sz)
       reg = sort([region...]); d1 = reg[1]; n = sz[d1]; h = n ÷ 2 + 1
@@ -759,22 +761,23 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
     # a chain whose stage records are not linked to it (a copy, or one loaded from a package
     # image) links them again at the first run
-    rs = FFTL.radices(60, 1; esize = sizeof(Complex{T}))
-    ref = FFTL.RChain{T}(60, -1, rs); rc = FFTL.build_rchain(T, 60, -1, rs)
+    # (4·3·17: the table of the looped radix is linked as well)
+    rs = FFTL.radices(204, 1; esize = sizeof(Complex{T}))
+    ref = FFTL.RChain{T}(204, -1, rs); rc = FFTL.build_rchain(T, 204, -1, rs)
     unlink!(c) = (for i in eachindex(c.single)
                     st = c.single[i]
-                    c.single[i] = FFTL.StageCall{T}(st.op, st.c, st.c1, st.m, st.s, st.rem, C_NULL)
-                    c.batch[i] = FFTL.BatchStage{T}(c.batch[i].c, C_NULL)
+                    c.single[i] = FFTL.StageCall{T}(st.op, st.c, st.c1, st.m, st.s, C_NULL, C_NULL)
+                    c.batch[i] = FFTL.BatchStage{T}(c.batch[i].c, C_NULL, C_NULL)
                   end; c.linked = 0)
-    x = randn(Complex{T}, 4 * 60); y1 = similar(x); y2 = similar(x); w1 = similar(x); w2 = similar(x)
+    x = randn(Complex{T}, 4 * 204); y1 = similar(x); y2 = similar(x); w1 = similar(x); w2 = similar(x)
     GC.@preserve x y1 y2 w1 w2 begin
       unlink!(rc); FFTL.run!(p(y1), p(x), p(w1), p(w2), ref, 1); FFTL.run!(p(y2), p(x), p(w1), p(w2), rc, 1)
-      @test y1[1:60] == y2[1:60]
+      @test y1[1:204] == y2[1:204]
       unlink!(rc); FFTL.run!(p(y1), p(x), p(w1), p(w2), ref, 4); FFTL.run!(p(y2), p(x), p(w1), p(w2), rc, 4)
       @test y1 == y2
       unlink!(rc); FFTL.run_lanes!(p(y1), p(x), p(w1), p(w2), ref, 4, 4, 4); FFTL.run_lanes!(p(y2), p(x), p(w1), p(w2), rc, 4, 4, 4)
       @test y1 == y2
-      unlink!(rc); FFTL.run_rows!(p(y1), p(x), p(w1), p(w2), ref, 4, 60); FFTL.run_rows!(p(y2), p(x), p(w1), p(w2), rc, 4, 60)
+      unlink!(rc); FFTL.run_rows!(p(y1), p(x), p(w1), p(w2), ref, 4, 204); FFTL.run_rows!(p(y2), p(x), p(w1), p(w2), rc, 4, 204)
       @test y1 == y2
     end
     # a chain of length 1 copies
@@ -794,7 +797,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       rs = [r, 2C]
       n = prod(rs)
       rc = FFTL.RChain{T}(n, σ, rs)
-      @test (rc.single[1].op == FFTL.OP_SMALL) == (C > 4)
+      @test (FFTL.stage_kind(rc.single[1]) == FFTL.OP_SMALL) == (C > 4)
       x = randn(Complex{T}, n); w1 = similar(x); w2 = similar(x); y = similar(x)
       GC.@preserve x y w1 w2 FFTL.run_single!(p(y), p(x), p(w1), p(w2), rc)
       @test relerr(y, dft(ComplexF64.(x), σ)) < tol(T)
@@ -804,8 +807,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   # run-time plans (RChain kernels): same results as the reference, four-step and plane fusion
   @testset "RPlan, $T" for T in pick((Float64, Float32), (Float64,))
     for (sz, reg, nt) in pick([((1000,), [1], 1), ((2 * 3^11,), [1], 3), ((1009,), [1], 1), ((64, 48), [1, 2], 1),
-                               ((37, 100), [1, 2], 3), ((16, 9, 5), [1, 2, 3], 1), ((8, 37, 6), [2], 3), ((40, 36, 10), [1, 3], 3)],
-                              [((2 * 3^11,), [1], 3), ((1009,), [1], 1), ((37, 100), [1, 2], 3), ((16, 9, 5), [1, 2, 3], 1), ((8, 37, 6), [2], 3)])
+                               ((79, 100), [1, 2], 3), ((16, 9, 5), [1, 2, 3], 1), ((8, 79, 6), [2], 3), ((40, 36, 10), [1, 3], 3)],
+                              [((2 * 3^11,), [1], 3), ((1009,), [1], 1), ((79, 100), [1, 2], 3), ((16, 9, 5), [1, 2, 3], 1), ((8, 79, 6), [2], 3)])
       x = randn(Complex{T}, sz)
       p = FFTL.RPlan{T}(collect(sz), reg, -1; threads = nt)
       ref = FFTL.plan_fft(x, Tuple(reg); threads = 1) * x
@@ -855,7 +858,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     setprecision(BigFloat, 128) do
       B = BigFloat; btol = 1e-35
       dftB(x, σ) = [sum(x[j+1] * cispi(B(2σ) * mod(j * k, length(x)) / length(x)) for j in 0:length(x)-1) for k in 0:length(x)-1]
-      for n in pick((1, 2, 7, 12, 16, 37, 97, 100), (7, 16, 37))
+      for n in pick((1, 2, 7, 12, 16, 79, 97, 100), (7, 16, 79))
         x = Complex{B}.(randn(ComplexF64, n))
         @test eltype(FFTL.fft(x)) == Complex{B}
         @test relerr(FFTL.fft(x), dftB(x, -1)) < btol
@@ -865,7 +868,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       x = Complex{B}.(randn(ComplexF64, 6, 5, 4))
       @test relerr(FFTL.fft(x, (1, 3)), FFTL.fft(FFTL.fft(x, 1), 3)) < btol
       @test relerr(FFTL.ifft(FFTL.fft(x)), x) < btol
-      for (sz, reg) in (((16,), 1:1), ((37,), 1:1), ((6, 5), 1:2), ((6, 5), 2:2), ((4, 5, 3), (1, 3)))
+      for (sz, reg) in (((16,), 1:1), ((79,), 1:1), ((6, 5), 1:2), ((6, 5), 2:2), ((4, 5, 3), (1, 3)))
         xr = B.(randn(sz...))
         X = FFTL.rfft(xr, reg)
         d1 = minimum(reg)
@@ -897,7 +900,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       @test relerr(FFTL.plan_brfft(X, n; threads = 3) * X, n .* x) < 10tol(T)
     end
     # non-smooth lengths, even and odd: the half-length (even) or the full-length (odd) DFT on threads
-    for (T, n) in ((Float64, 37888), (Float64, 92935), (Float64, 2 * 1009 * 37), (Float32, 33490), (Float32, 92935), (Float32, 100003))
+    for (T, n) in ((Float64, 80896), (Float64, 92935), (Float64, 2 * 1009 * 79), (Float32, 33490), (Float32, 92935), (Float32, 100003))
       x = randn(T, n)
       p = FFTL.plan_rfft(x; threads = 3)
       @test p.four isa Union{FFTL.CompositeMT,FFTL.BluesteinMT}
