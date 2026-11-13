@@ -1128,10 +1128,12 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     hlim = hook_limits(lim, backend)
     Gb = blue && length(rs) == 1 ? max(blue_ragged_G(M, E, B, hlim, prof), min(G0, (hlim.wmax * maximum(local_radices(M, true))) ÷ M)) : 0
     if blue && length(rs) == 1 && (G0 * M ÷ maximum(local_radices(M)) >= 32 || Gb > G0)
-      # ragged lanes in any case: G from the kernel's own (balanced) radices; W ≤ 256 on Metal
+      # G from the kernel's own (balanced) radices, W ≤ 256 on Metal; ragged lanes unless the
+      # divisor G stays (a single line keeps the plain kernel) and nothing is packed
       dst = arr_next(cur)
+      rg = blueG !== nothing || rpack !== nothing || Gb != G0
       push!(specs, (R = M, s = 1, m = 1, M = M, E = E, B = B, σ = -1, Nx = N, Ny = N, blue2 = true,
-                    ragged = true, rpack = rpack, G = something(blueG, Gb), cin = cin, cout = bhat, src = cur, dst = dst))
+                    ragged = rg, rpack = rpack, G = something(blueG, Gb), cin = cin, cout = bhat, src = cur, dst = dst))
       cur = dst
       continue
     end
