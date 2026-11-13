@@ -3,18 +3,16 @@
 The [algorithms](@ref "Algorithms") explain what is computed. This page explains how the code
 is organised and why, for someone who wants to change it.
 
-## Specialisation by type, not by configuration
+## Specialisation by type for the codelets, data for the plan
 
-A plan is a Julia value, and its type says what it is. A Stockham chain is
-`Chain{T,Rs,σ,K}`: the element type `T`, the radix sequence `Rs` as a tuple of integers, the sign
-`σ` and the kernel type `K` are type parameters. The compiler therefore sees the complete stage
-sequence when it compiles the transform, unrolls the loop over stages where it can, and emits
-machine code for exactly that sequence. The price is one compilation per radix sequence, which
-is what the [plan cache](@ref "Plans and reuse") and the [precompile workload](@ref "Precompilation")
-are for.
+A codelet is specialised by type: the stage kernels take the radix, the sign and the vector type as
+type parameters, and the straight-line code of each combination is compiled once. The combinations
+form a fixed set (radix × sign × vector type × element type), so all of them are compiled with the
+package.
 
-The codelets follow the same rule. `@generated` functions build the straight-line code for a
-given radix, element type and vector width when they are first called with those types.
+The stage sequence of a length is data. A Stockham chain (`RChain`, `src/rchain.jl`) holds its
+radix sequence and one record per stage (codelet index, stride, twiddle table), and a loop calls the
+codelet of each stage. Nothing is compiled when a plan of a new length is made.
 
 ## Codelets on SIMD vectors
 
@@ -56,25 +54,28 @@ buffers per task are the minimum: the Stockham stages ping-pong between them.
 That buffer ownership is why a plan must not run on two tasks at once. The plan is a
 container for the buffers, not a stateless function.
 
-## Two forms of the same chain
+## The stage loop
 
-There are two representations of a Stockham chain:
+`RChain` calls codelets from the fixed set in a plain loop, selected by an integer index. A short line
+is a few nanoseconds of arithmetic, so the loop is written to cost little next to it:
 
-- `Chain` (`src/plan.jl`) has the radix sequence in its type and the stage sequence is unrolled at compile
-  time. It is the fastest form for short lines: a call carries no dispatch.
-- `RChain` (`src/rchain.jl`) has the radix sequence as data and calls codelets from a fixed set (radix ×
-  sign × vector type × element type) in a plain loop, selected by an integer index.
+- A line that is one stage is one codelet call, without the loop.
+- The stage records lie in one flat vector and carry the address of their twiddle table, and the loop
+  reads them through a raw pointer. A reference loaded from the chain inside the loop would need a GC
+  frame, which costs more than a short stage.
+- The chain is a mutable struct, so it is passed as one pointer; an immutable chain is copied to the
+  stack of each caller.
+- The switch over the codelet index is inlined into the loop: a stage is one jump and one call.
+- The rows of a plane run inside one call of the loop function.
 
-The plan chooses when it is built: `Chain` for smooth lengths up to `SMALL_N` = 128, `RChain` for every
-other smooth length. A new radix sequence of `Chain` is a new type, so the first plan of such a size is
-compilation; `RChain` has no per-size compilation, and its codelet set is finite, so it can be
-precompiled completely. On x86 the run-time choice of the codelet costs 9–20 ns per call, which is why
-the short lengths keep the compiled form.
+The addresses in the stage records are valid for the chain object they were taken for. A chain
+remembers its own address at that moment; a copy of a plan, or a plan stored in a package image and
+loaded into another process, is at another address and links its records again before it uses them.
 
 `RChain` is also what the C library is built from. `juliac --trim` removes everything it cannot resolve
-at build time, and a chain whose type is only known at run time cannot be compiled that way. The
+at build time and compiles nothing at run time; the fixed codelet set is all a chain of any length needs. The
 [libfftl how-to](@ref "C library (libfftl)") describes what the library is built from, and
-[Design decisions](@ref "Design decisions") gives the measurements behind the split. The stage kernels of
+[Design decisions](@ref "Design decisions") gives the measurements behind the single chain form. The stage kernels of
 the fixed codelet set are plain methods, not `@generated` ones, to keep the package image small; see
 [Package size and load time](@ref "Package size and load time").
 

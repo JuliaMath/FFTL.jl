@@ -74,29 +74,49 @@ with one thread, and from ×0.77 to ×1.16 with 16 threads.
 measured on Zen 2 only, and the 4 MiB rule is checked on 12 lengths that also took part in its
 derivation.
 
-## Two chain forms: compiled for short smooth lengths, run-time data for the rest
+## One chain form: the radix sequence is data
 
-**Decision (2026-11-09).** `kernel` builds the compiled `Chain` (radix sequence in the type) for smooth
-lengths n ≤ 128 (`SMALL_N`) and the `RChain` (radix sequence as data, a fixed set of codelets) for
-every other smooth length. The choice is made when the plan is built, so a call carries no dispatch.
-Both forms share the twiddle tables, the radix rule and the vector-type rules (bitwise equal in 552
-checks). `RChain` is also the only form the trimmed C library can contain.
+**Decision (2026-11-13).** Every smooth length runs on `RChain`: the radix sequence and the stage
+records are data, the codelets come from a fixed set. There is no chain type with the radix sequence
+in its type, and nothing is compiled per length. `RChain` is also the only form the trimmed C library
+can contain.
 
-**Why.** A plan of a new size with `Chain` is compilation, not planning: 0.31–0.48 s for plan and first
-call against 0.013–0.044 s with the run-time plan (M1, one fresh process per case). But on x86 the
-run-time choice of the codelet costs 9–20 ns per call (n = 16, `Float64`: `Chain` 22 ns, `RChain`
-39 ns), which is 1.2–1.5× for short lines. With the split, short lengths are at parity or better. Warm execution of the run-time plan against the
-compiled one was 1.00–1.08 on the cases measured, with one exception (Bluestein, 100003, `Float32`: 1.42,
-cause open).
+**Why.** The compiled chain (`Chain{T,Rs,σ,K}`, used for smooth lengths up to 128 until this decision)
+existed because the run-time chain cost 9–20 ns more per call on x86. That cost was not the choice of
+the codelet at run time (about 1 ns per stage) but the code around it: GC frames for references loaded
+from the chain, the copy of an immutable chain into each caller, bounds checks, and one more call level
+per stage. With those removed (see [Implementation](@ref "Implementation")) the compiled chain has no
+advantage left. AMD EPYC 9354 (AVX-512), one thread, `plan_fft` and `mul!`, 92 cases (`Float64` and
+`Float32`; lines of 2 to 4096, planes of 8 × 8 to 128 × 128, cubes of 8³ to 64³, in-place, backward and
+real transforms), 8 rounds in alternating processes, median time over the median time with the compiled
+chain:
 
-**Replaced.** The idea of removing `Chain` altogether (2026-11-08) and the earlier decision to keep the
-JIT and run-time plan families as separate types (2026-11-02).
+- geometric mean 0.973; 27 cases below 0.95, 8 above 1.05;
+- lines of one stage (2, 4, 16): 0.80–0.95; 8 × 8, 8 × 8 × 8, 7 × 12, 5 × 64: 0.85–0.91;
+- the cases above 1.05 are short lines of two or three stages: `Float32` 20, 32, 96 and 100 (1.09–1.10),
+  37 rows of 64 (1.13), `rfft` of 64 (1.07 and 1.09), and `Float64` 12 × 7 (1.05). The stage loop runs
+  about 50 instructions per stage around the codelet (no mispredicted branches), 2.4 ns per stage
+  against direct calls of the two kernels of `Float32` 32.
+- The machine was shared during the measurement: over the 8 rounds the slowest time of the compiled
+  chain over its fastest is 1.04 in the median over the cases, 1.19 at the 90th percentile and 1.55 at
+  most.
+
+Not verified on aarch64.
+
+What the single form removes: 583 compiled chain methods and their generators, the dispatch trees from
+an `RChain` of a short length into the compiled chains, and the compilation at the first plan of a
+short length with a radix sequence outside the compiled set (a short dimension with a large stride).
+The package has 1796 methods instead of 2385, the package image on this machine is 61 MB instead
+of 72 MB, and `libfftl.so` (x86-64-v3, `--trim=safe`) is 49.5 MB instead of 55.6 MB.
+
+**Replaced.** The two chain forms (2026-11-09: compiled `Chain` for smooth lengths up to 128, `RChain`
+for the rest), and before that the idea of removing `Chain` without changing the stage loop
+(2026-11-08) and the separate JIT and run-time plan families (2026-11-02).
 
 ## Kernels of a fixed set are plain methods, not `@generated`
 
-**Decision (2026-11-10).** The stage kernels of the codelet set that `RChain` dispatches to, and the
-compiled chains of the short lengths, are plain methods defined in `src/kernel_methods.jl` from the
-bodies the `@generated` methods build. The `@generated` methods remain as the fallback.
+**Decision (2026-11-10).** The stage kernels of the codelet set that `RChain` dispatches to are plain
+methods defined in `src/kernel_methods.jl` from the bodies the `@generated` methods build. The `@generated` methods remain as the fallback.
 
 **Why.** A package image keeps the complete optimised IR of every precompiled `@generated`
 specialisation, 130 MB of the 146 MB image. See [Package size and load time](@ref "Package size and load time").
@@ -157,9 +177,8 @@ and matches the direct DFT to 3·10⁻¹⁴ when called from C. Planning on 64 �
 `d = 1` and 0.9 µs for `d = 2` on the M1 (the specialised plan: 4.7 µs and 2.8 µs). Applying the
 specialised and the run-time plans is within noise of each other on the same views.
 
-**Costs.** The run-time kernels dispatch per stage, which costs a little on short lines (the reason the
-specialised plans stay the default). For real lengths with large prime factors, the run-time kernel is a
-Bluestein transform, without the composite split of the specialised plan.
+**Costs.** For real lengths with large prime factors, the run-time kernel is a Bluestein transform,
+without the composite split of the specialised plan.
 
 ## The interface: FFTW.jl's names, FFTL's own functions, AbstractFFTs as a backend
 

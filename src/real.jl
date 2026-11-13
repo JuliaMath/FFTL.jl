@@ -28,11 +28,11 @@ end
 const RKern{T} = Union{RChain{T},RBluestein{T}}
 rkernel(::Type{T}, n::Int, σ::Int) where {T} =
   (smooth(n) ? RChain{T}(n, σ, radices(n, 1; esize = sizeof(Complex{T}))) : Bluestein{T}(n, σ, RChain))::RKern{T}
-ckernel(::Type{T}, n::Int, σ::Int, ::Type{Chain}) where {T} = kernel(T, n, σ)
+ckernel(::Type{T}, n::Int, σ::Int, ::Type{TypedKernels}) where {T} = kernel(T, n, σ)
 ckernel(::Type{T}, n::Int, σ::Int, ::Type{RChain}) where {T} = rkernel(T, n, σ)
 
-# C: Chain (kernel type in the line's type) or RChain (RKern{T}, for run-time plans)
-function RealLine{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
+# C: TypedKernels (kernel type in the line's type) or RChain (RKern{T}, for run-time plans)
+function RealLine{T}(n::Int, σ::Int, ::Type{C} = TypedKernels) where {T,C}
   inner = ckernel(T, iseven(n) ? n ÷ 2 : n, σ, C)
   u = σ == -1 ? ComplexF64(0, -0.5) : ComplexF64(0, 1)
   w = Complex{T}[]
@@ -351,7 +351,7 @@ line_tasks(K, nt) = own_buffers(K) ? 1 : nt
 # One line kernel per task. A kernel with buffers of its own (Bluestein, composite) cannot run on two
 # tasks at once, so each task gets a copy; the other kernels are shared.
 # The copies have the kernel type of the line (C = RChain for the run-time plans).
-task_reallines(line::RealLine{T}, n::Int, σ::Int, nt::Int, ::Type{C} = Chain) where {T,C} =
+task_reallines(line::RealLine{T}, n::Int, σ::Int, nt::Int, ::Type{C} = TypedKernels) where {T,C} =
   own_buffers(line) && nt > 1 ? [line; [RealLine{T}(n, σ, C) for _ in 2:nt]] : [line]
 rline_tasks(L, nt) = length(L) > 1 ? length(L) : line_tasks(L[1], nt)
 rline_task(L, c) = L[length(L) > 1 ? c : 1]

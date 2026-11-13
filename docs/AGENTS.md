@@ -35,8 +35,8 @@ rules there apply to everything written here as well. Everything in this folder 
 - **Explanation** (`src/explanation/`): the DFT and its conventions, FFTW and FFTL (history, papers, what
   FFTL takes from FFTW; written from papers and documentation only), algorithms (Stockham chains,
   codelets, Bluestein, multidimensional without transposition, four-step, real and real-to-real
-  reductions), implementation (type specialisation, SIMD, kernel cache, cache sizes, the two chain forms,
-  why libfftl needs `RChain`), design decisions (what was decided and why, with the evidence), package
+  reductions), implementation (type specialisation, SIMD, kernel cache, cache sizes, the stage loop of the
+  chain, why libfftl needs `RChain`), design decisions (what was decided and why, with the evidence), package
   size and load time, performance (measurement protocol).
 - **Reference** (`src/reference/`): Julia API (`@docs`), AbstractFFTs (what is implemented), libfftl C API
   (prose on FFTW3's interface as libfftl implements it; the header pages are generated from
@@ -46,7 +46,7 @@ rules there apply to everything written here as well. Everything in this folder 
 
 ## Decisions for the manual
 
-The design decisions of the package (interface, chain forms, rules for lengths, package size) are on the
+The design decisions of the package (interface, the chain, rules for lengths, package size) are on the
 Design decisions page. These concern the manual itself:
 
 - **Interface in the text:** the manual writes the exported names without prefix; next to `using FFTL` it

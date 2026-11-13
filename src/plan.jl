@@ -1,20 +1,32 @@
-# Kernels for one dimension: a Stockham chain for lengths whose prime factors are
-# ≤ MAX_RADIX_PRIME, Bluestein's algorithm on top of two chains otherwise. Both transform a batch
+# Kernels for one dimension: a Stockham chain (`RChain`, rchain.jl) for lengths whose prime factors
+# are ≤ MAX_RADIX_PRIME, Bluestein's algorithm on top of two chains otherwise. Both transform a batch
 # of S interleaved sequences (element j of lane i at offset i + S·j), see kernels.jl.
 
 abstract type Kernel{T} end
 
 """
-    Chain{T,Rs,σ,K}
+    TypedKernels
 
-Stockham chain with radix sequence `Rs` (a tuple, part of the type so that the stage sequence is
-compiled into one function) and sign `σ`.
+Tag of the plans that carry the types of their kernels in their own type (the default plans), as
+opposed to `RChain`, the tag of the run-time plans, whose kernels are of one fixed type.
 """
-struct Chain{T,Rs,σ,K} <: Kernel{T}
-  n::Int
-  tw::NTuple{K,Vector{Complex{T}}}    # stage i: w^(kp) at (R-1)p + k
-  tw1::Vector{Complex{T}}             # first stage: w^(kp) at (k-1)m + p
-end
+abstract type TypedKernels end
+
+"""
+    run!(py, px, pw1, pw2, P::Kernel, S)
+
+Transform S interleaved sequences of length `P.n` from `px` into `py` (which may equal `px`),
+using the work buffers `pw1`, `pw2` (S·n complex values each).
+"""
+function run! end
+
+"""
+    run_lanes!(py, px, pw1, pw2, P::Kernel, Sx, Sy, B)
+
+Transform a block of B lanes; element j of lane i at `px + i + Sx·j` and `py + i + Sy·j`
+(py may equal px). The work buffers hold B·n complex values each.
+"""
+function run_lanes! end
 
 # Read-only parts of kernels (chains, four-step twiddles, Bluestein chirp and filter) are shared
 # between plans and threads: a second plan of a size costs a lookup. Bounded; when full, an
@@ -72,21 +84,13 @@ Drop the twiddle and filter tables that FFTL keeps for reuse by later plans.
 """
 clear_cache!() = (@lock KCACHE_LOCK empty!(KCACHE); nothing)
 
-Chain{T}(n::Int, σ::Int, rs::AbstractVector{Int} = radices(n)) where {T} =
-  cached(() -> build_chain(T, n, σ, rs), CacheKey(:chain, T, n, σ, collect(Int, rs)))
-
-function build_chain(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T}
-  tw, tw1 = chain_tables(T, n, σ, rs)
-  Chain{T,Tuple(rs),σ,length(rs)}(n, Tuple(tw), tw1)
-end
-
 # The first of several stages of a single line runs stage_small! (the widest vector, C complex
 # values, outputs interleaved in registers) where the grouped first stage (vector index group
 # of the complex counts ncs, 0 for none) would be narrower.
 small_first(ncs, group::Int, r::Int, n::Int) =
   r < n && ispow2(r) && (n ÷ r) % ncs[1] == 0 && ncs[1] > (group == 0 ? 1 : ncs[group])
 
-# Stage twiddles and first-stage table of a radix sequence, shared by Chain and RChain.
+# Stage twiddles and first-stage table of a radix sequence.
 chain_tables(::Type{T}, n::Int, σ::Int, rs::AbstractVector{Int}) where {T} =
   cached(() -> build_tables(T, n, σ, rs), CacheKey(:tables, T, n, σ, collect(Int, rs)))::Tuple{Vector{Vector{Complex{T}}},Vector{Complex{T}}}
 
@@ -165,136 +169,6 @@ function first_twiddles(::Type{T}, W::Vector{ComplexF64}, r::Int) where {T}
     t[(k-1)*m+p+1] = Complex{T}(W[(k*p)%n+1])
   end
   t
-end
-
-# Stage calls of a chain from `src` through `dsts` (one destination per stage). `base` is a
-# number of complex values known to divide S (1 if nothing is known); stage i has stride
-# S·(R_1⋯R_(i-1)) and takes the widest vector type whose complex count divides base·R_1⋯R_(i-1).
-# With `single` (S = 1) the first stage groups 2 or 4 butterflies in one vector when m allows.
-# Stage calls with the q (or butterfly) remainder known at generation time: divisible stages
-# take the plain kernels (the same calls as before the tail batching), single lines with a
-# scalar remainder get the vectorised range plus the scalar tail emitted directly.
-# rem === nothing (a runtime stride, e.g. an odd batch size) takes the
-# splitting wrappers, which divide at run time.
-function mid_call(dst, src, tw, r, σ, V, V1, rem)
-  rem === nothing && return :(stage_split!($dst, $src, $tw, m, s, Val($r), Val($σ), $V))
-  rem == 0 && return :(stage!($dst, $src, $tw, m, s, Val($r), Val($σ), $V))
-  quote
-    stage_range!($dst, $src, $tw, m, s, 0, s - $rem, 0, m, Val($r), Val($σ), $V)
-    stage_range!($dst, $src, $tw, m, s, s - $rem, s, 0, m, Val($r), Val($σ), $V1)
-  end
-end
-
-function last_call(dst, src, r, σ, V, V1, rem)
-  rem === nothing && return :(stage_last_split!($dst, $src, s, Val($r), Val($σ), $V))
-  rem == 0 && return :(stage_last!($dst, $src, s, Val($r), Val($σ), $V))
-  quote
-    stage_last!($dst, $src, s, 0, s - $rem, Val($r), Val($σ), $V)
-    stage_last!($dst, $src, s, s - $rem, s, Val($r), Val($σ), $V1)
-  end
-end
-
-function group_call(dst, src, tw1, r, σ, GV, V1, rem)
-  rem === nothing && return :(stage_first_group!($dst, $src, $tw1, m, Val($r), Val($σ), $GV))
-  rem == 0 && return :(stage_first_group_range!($dst, $src, $tw1, m, 0, m, Val($r), Val($σ), $GV))
-  quote
-    stage_first_group_range!($dst, $src, $tw1, m, 0, m - $rem, Val($r), Val($σ), $GV)
-    stage_first_group_1!($dst, $src, $tw1, m, m - $rem, m, Val($r), Val($σ), $V1)
-  end
-end
-
-function chain_body(T, Rs, σ, src, dsts, base, single)
-  K = length(Rs)
-  n = prod(Rs; init = 1)
-  ladder = vec_ladder(T)
-  # vector type of a grouped first stage: the widest with 2 or 4 complex values (the scalar
-  # remainder of m is handled by the kernel)
-  group = findfirst(V -> ncomplex(V) in (2, 4), ladder)
-  # L and s are compile-time constants where provable (prod(Rs) == n is validated by
-  # build_tables; the single dispatch guarantees S == 1), so the remainders of the stages are
-  # known at generation time.
-  body = Any[:(L = $n), single ? :(s = 1) : :(s = S)]
-  sst = 1
-  for i in 1:K
-    r = Rs[i]
-    dst = dsts[i]
-    # widest vector type whose complex count fits the stride (single lines take a scalar
-    # remainder; batched lines need divisibility)
-    V = base == 1 ? ladder[findfirst(V -> ncomplex(V) <= base * sst, ladder)] :
-                    ladder[findfirst(V -> (base * sst) % ncomplex(V) == 0, ladder)]
-    # the q remainder of this stage: a compile-time constant for single lines, provably zero
-    # for batched lines (their stride is a multiple of the vector type), runtime for odd batch
-    # sizes
-    rem = single ? sst % ncomplex(V) : (base > 1 ? 0 : nothing)
-    if single && i == 1 && small_first(map(ncomplex, ladder), something(group, 0), r, n)
-      push!(body, :(stage_small!($dst, $src, cptr(P.tw1), $(n ÷ r), Val($r), Val($σ), $(ladder[1]))),
-            :(L = L ÷ $r), :(s *= $r))
-    elseif i == K
-      push!(body, last_call(dst, src, r, σ, V, single_vec(T), rem))
-    elseif single && i == 1 && group !== nothing && ncomplex(V) == 1
-      # the first stage of a single line: vectorised over the butterflies (scalar remainder
-      # handled by the kernel)
-      push!(body, :(m = L ÷ $r))
-      GV = ladder[group]
-      push!(body, group_call(dst, src, :(cptr(P.tw1)), r, σ, GV, single_vec(T), (n ÷ r) % ncomplex(GV)))
-      push!(body, :(L = m), :(s *= $r))
-    else
-      push!(body, :(m = L ÷ $r))
-      push!(body, mid_call(dst, src, :(cptr(P.tw[$i])), r, σ, V, single_vec(T), rem))
-      push!(body, :(L = m), :(s *= $r))
-    end
-    src = dst
-    sst *= r
-  end
-  body
-end
-
-# Branches on S: S = 1, then the complex counts of the ladder (widest first) that divide S.
-function stride_dispatch(T, body)
-  ex = body(1, false)
-  for V in reverse(vec_ladder(T))
-    C = ncomplex(V)
-    C == 1 && continue
-    ex = :(S % $C == 0 ? $(body(C, false)) : $ex)
-  end
-  :(S == 1 ? $(body(1, true)) : $ex)
-end
-
-"""
-    run!(py, px, pw1, pw2, P::Kernel, S)
-
-Transform S interleaved sequences of length `P.n` from `px` into `py` (which may equal `px`),
-using the work buffers `pw1`, `pw2` (S·n complex values each).
-"""
-function run_body(::Type{T}, Rs, σ::Int, K::Int) where {T}
-  K == 0 && return :(py == px || unsafe_copyto!(py, px, 2S); nothing)
-  # Out of place: the stages alternate between py and pw1 and end in py; px is only read.
-  oop = [iseven(K - i) ? :py : :pw1 for i in 1:K]
-  # In place: the first stage reads px, the last writes px, the ones between alternate between
-  # the two work buffers. A single stage (m = 1) loads all R inputs of a butterfly before it
-  # stores, so it works on px directly.
-  ip = Any[:px for _ in 1:K]
-  for i in K-1:-1:1
-    ip[i] = isodd(K - i) ? :pw1 : :pw2
-  end
-  dispatch(dsts) = stride_dispatch(T, (base, single) -> quote
-    $(chain_body(T, Rs, σ, :px, dsts, base, single)...)
-  end)
-  inplace = dispatch(ip)
-  quote
-    GC.@preserve P begin
-      if py != px
-        $(dispatch(oop))
-      else
-        $inplace
-      end
-    end
-    nothing
-  end
-end
-
-@generated function run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K}, S::Int) where {T,Rs,σ,K}
-  run_body(T, Rs, σ, K)
 end
 
 """
@@ -378,8 +252,8 @@ end
 # faster at every length up to 2^22.
 const BLUESTEIN_FOURSTEP_BYTES = Sys.ARCH === :aarch64 ? typemax(Int) : 1 << 23
 
-# C: the chain type of the two convolution transforms (Chain, or RChain for run-time plans)
-function Bluestein{T}(n::Int, σ::Int, ::Type{C} = Chain) where {T,C}
+# C: TypedKernels, or RChain for run-time plans (their convolution transforms are chains)
+function Bluestein{T}(n::Int, σ::Int, ::Type{C} = TypedKernels) where {T,C}
   M = bluestein_length(T, 2n - 1)
   # one assignment each: the closure below captures fwd, and a variable assigned in two
   # branches would be boxed (untyped, which juliac --trim cannot resolve)
@@ -393,7 +267,7 @@ end
 # The forward and backward transforms of length M of a Bluestein kernel. The run-time plans keep
 # their chains (one concrete type for juliac --trim).
 convolution_transforms(::Type{T}, M::Int, ::Type{C}) where {T,C} = (C{T}(M, -1), C{T}(M, 1))
-function convolution_transforms(::Type{T}, M::Int, ::Type{Chain}) where {T}
+function convolution_transforms(::Type{T}, M::Int, ::Type{TypedKernels}) where {T}
   if M * sizeof(Complex{T}) >= BLUESTEIN_FOURSTEP_BYTES && fourstep_split(M) > 0
     return (FourStep{T}(M, -1, 1), FourStep{T}(M, 1, 1))
   end
@@ -565,66 +439,10 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Composite{T}, S::Int) 
   run_lanes!(py, px, pw1, pw2, P, S, S, S)
 
 function kernel(::Type{T}, n::Int, σ::Int, S::Int = 1) where {T}
-  smooth(n) && n <= SMALL_N && !has_lazy_factor(n) && return Chain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
   smooth(n) && return RChain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
   s, q = composite_split(T, n)
   s == 1 && return Bluestein{T}(n, σ)
   Composite{T}(n, s, q, σ, S)
-end
-
-"""
-    run_lanes!(py, px, pw1, pw2, P::Chain, Sx, Sy, B)
-
-Transform a block of B lanes; element j of lane i at `px + i + Sx·j` and `py + i + Sy·j`
-(py may equal px). The work buffers hold B·n complex values each.
-"""
-function run_lanes_body(::Type{T}, Rs, σ::Int, K::Int) where {T}
-  function body(V)
-    ex = Any[:(L = P.n), :(s0 = 1)]
-    src, srcS = :px, :Sx
-    for i in 1:K
-      r = Rs[i]
-      last = i == K
-      dst, dstS = last ? (:py, :Sy) : (isodd(i) ? :pw1 : :pw2, :B)
-      if last
-        push!(ex, :(stage_last_lanes!($dst, $src, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
-      else
-        push!(ex, :(m = L ÷ $r))
-        push!(ex, :(stage_lanes!($dst, $src, cptr(P.tw[$i]), m, s0, $srcS, $dstS, B, Val($r), Val($σ), $V)))
-        push!(ex, :(L = m), :(s0 *= $r))
-      end
-      src, srcS = dst, dstS
-    end
-    ex
-  end
-  K == 0 && return :(lane_copy!(py, px, Sy, Sx, B, 1); nothing)
-  ladder = vec_ladder(T)
-  # widest vector type whose complex count divides B
-  function by_width(f)
-    ex = f(ladder[end])
-    for V in reverse(ladder[1:end-1])
-      ex = :(B % $(ncomplex(V)) == 0 ? $(f(V)) : $ex)
-    end
-    ex
-  end
-  if K == 1
-    # a single stage loads all R inputs of a butterfly before it stores: py may equal px
-    r = Rs[1]
-    single(V) = :(stage_last_lanes!(py, px, 1, Sx, Sy, B, Val($r), Val($σ), $V))
-    return quote
-      GC.@preserve P $(by_width(single))
-      nothing
-    end
-  end
-  quote
-    GC.@preserve P $(by_width(V -> quote $(body(V)...) end))
-    nothing
-  end
-end
-
-@generated function run_lanes!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Chain{T,Rs,σ,K},
-                               Sx::Int, Sy::Int, B::Int) where {T,Rs,σ,K}
-  run_lanes_body(T, Rs, σ, K)
 end
 
 # y[i + Sy·j] = x[i + Sx·j] for B lanes and n elements

@@ -116,7 +116,7 @@ check_size(p, x) = size(x) == p.sz ||
 # Dimensions 1 and 2 are fused per plane when a plane fits in cache (`run_planes!`).
 function apply_dims!(y::StridedArray{Complex{T}}, x::StridedArray{Complex{T}}, p::FFTLPlan{T}, ks::Tuple, ds::Tuple) where {T}
   isempty(ks) && return nothing
-  if length(ks) >= 2 && ds[1] == 1 && ds[2] == 2 && ks[1] isa AnyChain && ks[2] isa AnyChain
+  if length(ks) >= 2 && ds[1] == 1 && ds[2] == 2 && ks[1] isa RChain && ks[2] isa RChain
     n1, n2 = p.sz[1], p.sz[2]
     outer = dim_extent(p.sz, 2)[2]
     if fuse_planes(n1, n2, outer, p.nthreads)
@@ -193,7 +193,7 @@ function run_strided_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, d::Int,
   groups = CartesianIndices(ntuple(j -> j <= m || j == d ? 1 : p.sz[j], N))
   # LinesMT owns a kernel and buffers per task; a composite kernel holds at most k.B lanes.
   nt = k isa LinesMT ? min(p.nthreads, length(k.kernels)) :
-       k isa AnyChain && threaded(lanes, n, length(groups), p.nthreads) &&
+       k isa RChain && threaded(lanes, n, length(groups), p.nthreads) &&
        length(p.tbuf[1]) >= n ? p.nthreads : 1
   nw = nt == 1 ? length(p.work1) : length(p.tbuf[1])
   B = k isa LinesMT ? min(lanes, k.B) : min(lanes, lane_block(lanes, n, nt), nw ÷ n)

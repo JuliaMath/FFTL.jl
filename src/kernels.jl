@@ -46,23 +46,6 @@ end
   stage_body(T, R, σ, VT)
 end
 
-# Stage for strides that are not a multiple of the complex lanes of VT (odd batch sizes): the
-# first s - s % C lanes in vectors of C complex values, the scalar remainder one complex value
-# at a time.
-@inline function stage_split!(py::Ptr{T}, px::Ptr{T}, pt::Ptr{T}, m::Int, s::Int,
-                              ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  C = ncomplex(VT)
-  rem = s % C
-  if rem == 0
-    stage!(py, px, pt, m, s, Val(R), Val(σ), VT)
-  else
-    stage_range!(py, px, pt, m, s, 0, s - rem, 0, m, Val(R), Val(σ), VT)
-    stage_range!(py, px, pt, m, s, s - rem, s, 0, m, Val(R), Val(σ), Vec{2,T})
-  end
-end
-
-# Stage over a q range: the kernel behind the split of a single line, whose q extent is known
-# at generation time so the vectorised range and the scalar tail are emitted directly.
 # base + i·2^e as one scaled-index address computation (a GEP over an element of 2^e bytes), so
 # that the scaling stays in the addressing mode instead of becoming a value of its own.
 for (e, ty) in enumerate(("i8", "i16", "i32", "i64"))
@@ -89,6 +72,9 @@ stream_bases(base, r, R, first) =
 stream_strides(r, R, unit) =
   vcat(:($(Symbol(r, 1)) = $unit), [:($(Symbol(r, o)) = $o * $(Symbol(r, 1))) for o in (3, 5, 7) if o < R])
 
+# Stage over a q range: a stride that is not a multiple of the complex lanes of VT runs the
+# first s - s % C lanes in vectors of C complex values and the remainder one complex value at a
+# time.
 function stage_range_body(::Type{T}, R::Int, σ::Int, ::Type{VT}) where {T,VT}
   stmts, a, X = codelet(R, σ)
   C = ncomplex(VT); B = 2sizeof(T)
@@ -145,20 +131,6 @@ end
 @generated function stage_last!(py::Ptr{T}, px::Ptr{T}, s::Int, qlo::Int, qhi::Int,
                                 ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
   stage_last_body(T, R, σ, VT)
-end
-
-# Last stage for strides that are not a multiple of the complex lanes of VT (odd batch sizes):
-# the first s - s % C lanes in vectors, the scalar remainder one complex value at a time.
-@inline function stage_last_split!(py::Ptr{T}, px::Ptr{T}, s::Int,
-                                   ::Val{R}, ::Val{σ}, ::Type{VT}) where {T,R,σ,VT}
-  C = ncomplex(VT)
-  rem = s % C
-  if rem == 0
-    stage_last!(py, px, s, Val(R), Val(σ), VT)
-  else
-    stage_last!(py, px, s, 0, s - rem, Val(R), Val(σ), VT)
-    stage_last!(py, px, s, s - rem, s, Val(R), Val(σ), Vec{2,T})
-  end
 end
 
 # First stage with s = 1 for vectors of C = 2 or 4 complex values (m a multiple of C):
