@@ -220,6 +220,42 @@ end
   @inbounds x[t+1] = dst != 0 && isodd(j) ? -r : r
 end
 
+# DCT-II / DST-II (dst = 1) of odd length n along a dimension: the L = S·outer lines in memory
+# order, line l paired with line l + P (P = cld(L, 2); the last line of an odd L with zeros) as
+# z = v_l + i v_(l+P) in a (P, n) buffer, v the permuted line v_j = x_2j (2j < n), v_(n-1-j) =
+# x_2j+1 (for DST-II the line ((-1)^j x_j)). With Z = DFT_n(z) along dimension 2,
+#   V_l = (Z_k + conj Z_(n-k))/2, V_(l+P) = (Z_k - conj Z_(n-k))/(2i),  y_k = 2 Re(t_k V_k),
+# t_k = exp(-iπk/(2n)); DST-II writes y_k to n-1-k. Along dimension 1 (S = 1) the buffer is
+# (n, P) instead, so that neighbouring threads take neighbouring elements of a line.
+@inline dct2o_idx(t, n, P, S) = S == one(Int32) ? (t ÷ n, t % n, t) : (t % P, t ÷ P, t)
+@inline dct2o_at(p, k, n, P, S) = S == one(Int32) ? p * n + k : p + P * k
+
+@kernel function ka_dct2o_pre!(z, @Const(x), S, n, L, P, dst)
+  t = (@index(Global, Linear) - 1) % Int32
+  p, m, _ = dct2o_idx(t, n, P, S)
+  j = m < (n + Int32(1)) ÷ Int32(2) ? Int32(2) * m : Int32(2) * (n - Int32(1) - m) + Int32(1)
+  T = real(eltype(z))
+  sg = dst != 0 && isodd(j) ? -one(T) : one(T)
+  la = p; lb = p + P
+  a = @inbounds sg * x[la % S + S * n * (la ÷ S) + S * j + 1]
+  b = lb < L ? @inbounds(sg * x[lb % S + S * n * (lb ÷ S) + S * j + 1]) : zero(T)
+  @inbounds z[t+1] = complex(a, b)
+end
+
+@kernel function ka_dct2o_post!(y, @Const(Z), @Const(tw), S, n, L, P, dst)
+  t = (@index(Global, Linear) - 1) % Int32
+  p, k, _ = dct2o_idx(t, n, P, S)
+  T = real(eltype(Z))
+  zk = @inbounds Z[t+1]
+  zm = conj(@inbounds Z[dct2o_at(p, k == zero(Int32) ? zero(Int32) : n - k, n, P, S) + 1])
+  w = @inbounds tw[k+1]
+  kk = dst != 0 ? n - Int32(1) - k : k
+  la = p; lb = p + P
+  @inbounds y[la % S + S * n * (la ÷ S) + S * kk + 1] = real(w * (zk + zm))
+  # (Z_k - conj Z_(n-k))/(2i) times 2 t_k, real part
+  lb < L && @inbounds(y[lb % S + S * n * (lb ÷ S) + S * kk + 1] = imag(w * (zk - zm)))
+end
+
 # DCT-I of lines of length N + 1 as the r2c of their even extension xe (length 2N, xe_i = x_i for
 # i ≤ N, x_(2N-i) above) by a complex DFT of length N, for any N (Bluestein included):
 # z_K = xe_2K + i xe_2K+1, Z = DFT_N(z), y_K = Re[(Z_K + conj Z_(N-K))/2 + u_K (Z_K - conj Z_(N-K))]
@@ -577,6 +613,14 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
                    devzeros(backend, Complex{T}, hsz), devzeros(backend, Complex{T}, hsz)))
       continue
     end
+    if k in (FFTL.REDFT10, FFTL.RODFT10) && isodd(n) && n >= 3
+      L = prod(sz) ÷ n; P = cld(L, 2); S1 = prod(sz[1:d-1]; init = 1) == 1
+      zsz = S1 ? (n, P) : (P, n)
+      tw = todevice(backend, [Complex{T}(cispi(-j / (2n))) for j in 0:n-1])
+      push!(dims, (:dct2o, Int(k), KAPlan(backend, T, zsz, -1; region = S1 ? 1 : 2), tw,
+                   devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
+      continue
+    end
     L = k == FFTL.REDFT00 ? 2(n - 1) : k == FFTL.RODFT00 ? 2(n + 1) : k in (FFTL.DHT, FFTL.R2HC, FFTL.HC2R) ? n : 2n
     lsz = setdim(sz, d, L)
     pre, post = r2r_twiddles(T, k, n)
@@ -617,6 +661,12 @@ function LinearAlgebra.mul!(y::AbstractArray{T}, p::KAR2RPlan{T}, x::AbstractArr
       run!(ka_dst1_pre!, be, S * (n + 1) * outer, z, src, S, n + 1)
       launch!(Z, z, P)
       run!(ka_dst1_post!, be, S * ((n + 1) ÷ 2) * outer, y, Z, u, S, n + 1)
+    elseif dim[1] === :dct2o
+      _, kind, P, tw, z, Z = dim
+      L = S * outer; Pl = cld(L, 2); dst = Int(kind == Int(FFTL.RODFT10))
+      run!(ka_dct2o_pre!, be, Pl * n, z, src, S, n, L, Pl, dst)
+      launch!(Z, z, P)
+      run!(ka_dct2o_post!, be, Pl * n, y, Z, tw, S, n, L, Pl, dst)
     elseif dim[1] === :half
       _, kind, P, w, tw, z, Z = dim
       M = n ÷ 2; dst = Int(kind == Int(FFTL.RODFT10) || kind == Int(FFTL.RODFT01))
