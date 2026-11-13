@@ -71,6 +71,14 @@ rsync -a --exclude out/ --exclude Manifest.toml bench/ host:remote_root/
 
 and instantiate the environment there.
 
+## Single-case A/B (`ab/`)
+
+For a quick comparison of two package versions on a few cases (not the catalog): `ab/bench_pr.jl`
+(one thread) and `ab/bench_mt.jl` (N threads). Each variant has its own environment with the package
+developed from that checkout. Run the variants interleaved over several rounds, pinned to fixed cores,
+and compare the minimum per case. Measure a control (the same version twice) first: the noise is about
+±5 % on the machines we used.
+
 ## Machine profiles
 
 A profile names the machine, its public label (the only machine name that goes into any output),
