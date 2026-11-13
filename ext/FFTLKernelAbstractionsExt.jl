@@ -152,13 +152,16 @@ const TWLEV = 3             # number of factor tables of W_N^t
 # algorithm.
 const KA_MAX_PRIME = 31
 
-# Radices of a chain of length n. Powers of two: radix-R codelets and one remainder. Other
-# lengths: the fewest stages of radices ≤ 16 (a larger prime factor alone), of these the one
-# with the smallest largest radix, in decreasing order. Few, even stages need few rounds of
-# butterflies per thread (M1, fused one-pass kernels, µs for 1009² dimension 1 / 2: 1008 as
-# [12, 12, 7] 141/139, [16, 9, 7] 215/250, [8, 2, 9, 7] 249/310; 100 as [10, 10] 83/83,
-# [4, 5, 5] 99/73).
-local_radices(n) = ispow2(n) ? pow2_radices(n) : balanced_radices(n)
+# Radices of a chain of length n: the power-of-two part as radix-R codelets and one remainder
+# (first), then the odd part: pairs of 3 as 9, other primes (≤ KA_MAX_PRIME) alone.
+# `balanced` (the fused Bluestein and Rader kernels, many lines): for lengths that are not a
+# power of two the fewest stages of radices ≤ 16 (a larger prime factor alone), of these the
+# one with the smallest largest radix, in decreasing order. Few, even stages need few rounds of
+# butterflies per thread (M1, µs for 1009² dimension 1 / 2: 1008 as [12, 12, 7] 141/139,
+# [16, 9, 7] 215/250, [8, 2, 9, 7] 249/310; 100 as [10, 10] 83/83, [4, 5, 5] 99/73). Plain
+# passes keep the many small stages: a single line of 1500 (r2c 3000) runs in one workgroup,
+# where [4, 3, 5, 5, 5] has 300 threads and [15, 10, 10] 100 (41 against 58 µs).
+local_radices(n, balanced = false) = balanced && !ispow2(n) ? balanced_radices(n) : chain_radices(n)
 
 function balanced_radices(n)
   f, rest = FFTL.factorize(n, KA_MAX_PRIME)
@@ -183,10 +186,15 @@ function balanced_radices(n)
   best
 end
 
-function pow2_radices(n, R = lradix(n))
-  r = Int[]
-  while n >= R; push!(r, R); n ÷= R; end
-  n > 1 && push!(r, n)
+function chain_radices(n, R = lradix(n))
+  r = Int[]; m = n >> trailing_zeros(n); p2 = n ÷ m
+  while p2 >= R; push!(r, R); p2 ÷= R; end
+  p2 > 1 && push!(r, p2)
+  f, rest = FFTL.factorize(m, KA_MAX_PRIME)
+  @assert rest == 1 "prime factor > $(KA_MAX_PRIME)"
+  e3 = get(f, 3, 0)
+  append!(r, fill(9, e3 ÷ 2)); isodd(e3) && push!(r, 3)
+  for p in sort!(collect(keys(f))); p == 3 || append!(r, fill(p, f[p])); end
   r
 end
 
@@ -235,7 +243,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
   @lock PKERNELS_LOCK get!(PKERNELS, (R, G, σ, T, s, N, E, B, Nx, Ny, padx, pady, G * R > lim.nstat, rhook, pre, post, xreal, blue2, ragged, rader, raw)) do
     # padded layouts (n1, pad): logical index L at L + pad ⌊L / n1⌋
     PX = Int32.(padx); PY = Int32.(pady)
-    rs = local_radices(R)
+    rs = local_radices(R, blue2)
     m = N ÷ (R * s)
     sp = E * s                           # stride of q in memory
     Lp = E * N ÷ R                       # lanes per batch item
@@ -704,9 +712,9 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
 end
 
 # local chain twiddles (stage i: w_L^(k p) at off_i + (r-1) p + k), then the factor tables of W_N
-function pass_twiddles(T, R, σ, N)
+function pass_twiddles(T, R, σ, N, balanced = false)
   t = Complex{T}[]; L = R
-  for r in local_radices(R)
+  for r in local_radices(R, balanced)
     mm = L ÷ r
     append!(t, vec([Complex{T}(cispi(2σ * k * p / L)) for k in 1:r-1, p in 0:mm-1]))
     L = mm
@@ -917,7 +925,7 @@ end
 # (284 µs against 364 µs fused at G = 8).
 blue_ragged_G(M, E, B, lim, prof = :apple) =
   E == 1 && prof !== :apple ? 1 :
-  max(1, min(lim.nstat ÷ M, (lim.wmax * maximum(local_radices(M))) ÷ M, E > 1 ? 8 : max(1, 512 ÷ M), E * B))
+  max(1, min(lim.nstat ÷ M, (lim.wmax * maximum(local_radices(M, true))) ÷ M, E > 1 ? 8 : max(1, 512 ÷ M), E * B))
 
 # Bluestein along a dimension of length N (prime factor > KA_MAX_PRIME):
 # X_k = c_k Σ_j (x_j c_j) conj(c_{k-j}), c_j = exp(σ iπ j²/N), as a cyclic convolution of length
@@ -1013,12 +1021,13 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     # are below one SIMD group and ragged lanes give no larger G (then the two launches run
     # more workgroups at once)
     G0 = blue && length(rs) == 1 ? pass_G(M, 1, 1, E, B, gmax, lim) : 0
-    if blue && length(rs) == 1 && (G0 * M ÷ maximum(local_radices(M)) >= 32 || blue_ragged_G(M, E, B, lim, prof) > G0)
+    hlim = hook_limits(lim, backend)
+    Gb = blue && length(rs) == 1 ? max(blue_ragged_G(M, E, B, hlim, prof), min(G0, (hlim.wmax * maximum(local_radices(M, true))) ÷ M)) : 0
+    if blue && length(rs) == 1 && (G0 * M ÷ maximum(local_radices(M)) >= 32 || Gb > G0)
+      # ragged lanes in any case: G from the kernel's own (balanced) radices; W ≤ 256 on Metal
       dst = arr_next(cur)
-      rg = blue_ragged_G(M, E, B, lim, prof) > G0
-      sp = (R = M, s = 1, m = 1, M = M, E = E, B = B, σ = -1, Nx = N, Ny = N, blue2 = true,
-            cin = cin, cout = bhat, src = cur, dst = dst)
-      push!(specs, rg ? merge(sp, (ragged = true, G = something(blueG, blue_ragged_G(M, E, B, lim, prof)))) : sp)
+      push!(specs, (R = M, s = 1, m = 1, M = M, E = E, B = B, σ = -1, Nx = N, Ny = N, blue2 = true,
+                    ragged = true, G = something(blueG, Gb), cin = cin, cout = bhat, src = cur, dst = dst))
       cur = dst
       continue
     end
@@ -1105,7 +1114,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
                                       rhook = get(sp, :rh, 0), pre = get(sp, :pre, get(sp, :rh, 0) == 1),
                                       post = get(sp, :post, get(sp, :rh, 0) == -1), xreal = get(sp, :xreal, false),
                                       blue2 = get(sp, :blue2, false), ragged = get(sp, :ragged, false), rader = get(sp, :rader, false), raw)
-    t = pass_twiddles(T, sp.R, sp.σ, sp.M)
+    t = pass_twiddles(T, sp.R, sp.σ, sp.M, get(sp, :blue2, false))
     tw = KA.allocate(backend, Complex{T}, length(t)); copyto!(tw, t)
     if raw || bytes > 0
       # CUDA: compile the raw kernel for exactly the argument types this step launches with
