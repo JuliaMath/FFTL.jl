@@ -6,10 +6,10 @@
 # - r2c, n even (M = n/2): z_j = x_(2j) + i x_(2j+1), Z = DFT_M(z) along d, then
 #   X_k = (Z_k + conj Z_(M-k))/2 + w^k (Z_k - conj Z_(M-k))/(2i), w = exp(-2πi/n), k = 0…M,
 #   one thread per pair k, M - k.
-#   n odd: the complex DFT of the line, first n÷2+1 values.
+#   n odd: two real lines as one complex line, one complex DFT of n (ka_r2co_pre!).
 # - c2r, n even: Z_k = (X_k + conj X_(M-k)) + i w^k (X_k - conj X_(M-k)), w = exp(+2πi/n)
 #   (real parts of X_0, X_M only), z = backward DFT_M(Z), x_(2j) = Re z_j, x_(2j+1) = Im z_j.
-#   n odd: the Hermitian full line, backward DFT, real part.
+#   n odd: two Hermitian lines as one complex line, one backward DFT of n (ka_c2ro_pre!).
 # - r2r: a complex DFT (sign -1) of length L = 2n (2(n-1) for DCT-I, 2(n+1) for DST-I, n for DHT
 #   and the halfcomplex pair) of a pre-twiddled, zero-padded line and a post-twiddle, as in
 #   src/generic.jl (formulas there). Up to 2–4× the arithmetic of a dedicated kernel, any kind
@@ -52,17 +52,6 @@ end
   end
 end
 
-@kernel function ka_tocomplex!(z, @Const(x))
-  t = @index(Global, Linear)
-  @inbounds z[t] = complex(x[t])
-end
-
-@kernel function ka_half!(y, @Const(Z), S, n)
-  t = (@index(Global, Linear) - 1) % Int32
-  i, k, o = lineidx(t, S, n ÷ 2 + 1)
-  @inbounds y[t+1] = Z[i+S*(k+n*o)+1]
-end
-
 # one thread per pair k, M - k; u[k] = i · exp(2πik/n): Z_k = s + u_k d, Z_(M-k) = conj(s - u_k d)
 # with s = X_k + conj X_(M-k), d = X_k - conj X_(M-k); k = 0 from the real parts of X_0, X_M
 @kernel function ka_c2r_pre!(Z, @Const(X), @Const(u), S, M)
@@ -90,18 +79,6 @@ end
   end
 end
 
-@kernel function ka_hermitian!(F, @Const(X), S, n)
-  t = (@index(Global, Linear) - 1) % Int32
-  i, k, o = lineidx(t, S, n)
-  h = n ÷ 2 + 1
-  base = i + S * h * o
-  @inbounds F[t+1] = k == 0 ? complex(real(X[base+1])) : k < h ? X[base+S*k+1] : conj(X[base+S*(n-k)+1])
-end
-
-@kernel function ka_real!(y, @Const(z))
-  t = @index(Global, Linear)
-  @inbounds y[t] = real(z[t])
-end
 
 # r2r kinds as integers (FFTL.R2RKind values): REDFT00 0, REDFT10 1, REDFT01 2, REDFT11 3,
 # RODFT00 4, RODFT10 5, RODFT01 6, RODFT11 7, DHT 8, R2HC 9, HC2R 10
@@ -256,6 +233,56 @@ end
   lb < L && @inbounds(y[lb % S + S * n * (lb ÷ S) + S * kk + 1] = imag(w * (zk - zm)))
 end
 
+# r2c / c2r of odd length n along a dimension, two real lines per complex line as for the odd
+# DCT-II above (line l with line l + P, buffer (n, P) along dimension 1, else (P, n)):
+#   r2c: z = x_l + i x_(l+P), Z = DFT_n(z), X_l = (Z_k + conj Z_(n-k))/2,
+#        X_(l+P) = (Z_k - conj Z_(n-k))/(2i), k = 0…n÷2;
+#   c2r: Z_k = H_l,k + i H_(l+P),k with H the Hermitian line of the half spectrum (Re X_0 at
+#        k = 0), z = backward DFT_n(Z), x_l = Re z, x_(l+P) = Im z.
+@kernel function ka_r2co_pre!(z, @Const(x), S, n, L, P)
+  t = (@index(Global, Linear) - 1) % Int32
+  p, m, _ = dct2o_idx(t, n, P, S)
+  la = p; lb = p + P
+  a = @inbounds x[la % S + S * n * (la ÷ S) + S * m + 1]
+  b = lb < L ? @inbounds(x[lb % S + S * n * (lb ÷ S) + S * m + 1]) : zero(a)
+  @inbounds z[t+1] = complex(a, b)
+end
+
+@kernel function ka_r2co_post!(y, @Const(Z), S, n, h, L, P)
+  t = (@index(Global, Linear) - 1) % Int32
+  p, k, _ = dct2o_idx(t, h, P, S)
+  T = real(eltype(Z))
+  zk = @inbounds Z[dct2o_at(p, k, n, P, S) + 1]
+  zm = conj(@inbounds Z[dct2o_at(p, k == zero(Int32) ? zero(Int32) : n - k, n, P, S) + 1])
+  la = p; lb = p + P
+  @inbounds y[la % S + S * h * (la ÷ S) + S * k + 1] = (zk + zm) * T(0.5)
+  lb < L && @inbounds(y[lb % S + S * h * (lb ÷ S) + S * k + 1] = complex(imag(zk) - imag(zm), real(zm) - real(zk)) * T(0.5))
+end
+
+@kernel function ka_c2ro_pre!(Z, @Const(X), S, n, h, L, P)
+  t = (@index(Global, Linear) - 1) % Int32
+  p, k, _ = dct2o_idx(t, n, P, S)
+  la = p; lb = p + P
+  kk = k < h ? k : n - k
+  a = @inbounds X[la % S + S * h * (la ÷ S) + S * kk + 1]
+  b = lb < L ? @inbounds(X[lb % S + S * h * (lb ÷ S) + S * kk + 1]) : zero(a)
+  if k == zero(Int32)
+    a = complex(real(a)); b = complex(real(b))
+  elseif k >= h
+    a = conj(a); b = conj(b)
+  end
+  @inbounds Z[t+1] = a + complex(-imag(b), real(b))
+end
+
+@kernel function ka_c2ro_post!(y, @Const(z), S, n, L, P)
+  t = (@index(Global, Linear) - 1) % Int32
+  p, m, _ = dct2o_idx(t, n, P, S)
+  la = p; lb = p + P
+  v = @inbounds z[t+1]
+  @inbounds y[la % S + S * n * (la ÷ S) + S * m + 1] = real(v)
+  lb < L && @inbounds(y[lb % S + S * n * (lb ÷ S) + S * m + 1] = imag(v))
+end
+
 # DCT-I of lines of length N + 1 as the r2c of their even extension xe (length 2N, xe_i = x_i for
 # i ≤ N, x_(2N-i) above) by a complex DFT of length N, for any N (Bluestein included):
 # z_K = xe_2K + i xe_2K+1, Z = DFT_N(z), y_K = Re[(Z_K + conj Z_(N-K))/2 + u_K (Z_K - conj Z_(N-K))]
@@ -354,10 +381,13 @@ function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N
   d1 = reg[1]; n = sz[d1]; h = n ÷ 2 + 1
   hsz = setdim(sz, d1, h)
   even = iseven(n) && n > 2
-  lsz = even ? setdim(sz, d1, n ÷ 2) : sz
+  # odd n: two real lines per complex line, buffer (n, P) or (P, n) (ka_r2co_pre!)
+  L = prod(sz) ÷ n; P = cld(L, 2); S1 = prod(sz[1:d1-1]; init = 1) == 1
+  lsz = even ? setdim(sz, d1, n ÷ 2) : S1 ? (n, P) : (P, n)
   w = todevice(backend, [Complex{T}((σ < 0 ? complex(0, -0.5) : complex(0, 1)) * cispi(2σ * k / n)) for k in 0:h-1])
   fuse = even && d1 == 1 && FFTL.factorize(n ÷ 2, KA_MAX_PRIME)[2] == 1
-  line = fuse ? KAPlan(backend, T, lsz, σ; region = d1:d1, rhook = σ, rtab = w) : KAPlan(backend, T, lsz, σ; region = d1:d1)
+  line = fuse ? KAPlan(backend, T, lsz, σ; region = d1:d1, rhook = σ, rtab = w) :
+         KAPlan(backend, T, lsz, σ; region = even ? (d1:d1) : S1 ? (1:1) : (2:2))
   rest = length(reg) > 1 ? KAPlan(backend, T, hsz, σ; region = reg[2:end]) : nothing
   bufs = Any[devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, hsz)]
   KARealPlan{T,N,typeof(backend)}(sz, reg, σ, line, rest, w, bufs, backend)
@@ -388,9 +418,10 @@ function LinearAlgebra.mul!(y::AbstractArray, p::KARealPlan{T}, x::AbstractArray
       launch!(Z, z, p.line)
       run!(ka_r2c_post!, be, S * (M ÷ 2 + 1) * outer, out, Z, p.w, S, M)
     else
-      run!(ka_tocomplex!, be, length(x), z, x)
+      L = S * outer; P = cld(L, 2)
+      run!(ka_r2co_pre!, be, P * n, z, x, S, n, L, P)
       launch!(Z, z, p.line)
-      run!(ka_half!, be, S * h * outer, out, Z, S, n)
+      run!(ka_r2co_post!, be, P * h, out, Z, S, n, h, L, P)
     end
     p.rest === nothing || launch!(y, hb, p.rest)
   else
@@ -407,9 +438,10 @@ function LinearAlgebra.mul!(y::AbstractArray, p::KARealPlan{T}, x::AbstractArray
       launch!(z, Z, p.line)
       run!(ka_unpack!, be, S * M * outer, y, z, S, M)
     else
-      run!(ka_hermitian!, be, S * n * outer, Z, src, S, n)
+      L = S * outer; P = cld(L, 2)
+      run!(ka_c2ro_pre!, be, P * n, Z, src, S, n, h, L, P)
       launch!(z, Z, p.line)
-      run!(ka_real!, be, length(y), y, z)
+      run!(ka_c2ro_post!, be, P * n, y, z, S, n, L, P)
     end
   end
   y

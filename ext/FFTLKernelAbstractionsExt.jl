@@ -217,7 +217,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     Lp = E * N ÷ R                       # lanes per batch item
     batchlanes = Lp == 1 && G > 1        # one-pass transforms with E = 1: lanes are batch items
     @assert R * m * s == N
-    @assert ragged ? (s == 1 && m == 1 && E > 1 && rhook == 0 && padx == (1, 0) && pady == (1, 0)) :
+    @assert ragged ? (s == 1 && m == 1 && (E > 1 || blue2) && rhook == 0 && padx == (1, 0) && pady == (1, 0)) :
             batchlanes ? B % G == 0 : (Lp % G == 0 && (sp > 1 || m % G == 0))
     crossing = !ragged && sp > 1 && sp % G != 0   # lanes of a workgroup span several p: p, q per lane
     # ragged (one pass along a strided dimension): lanes are the E·B lines in memory order,
@@ -828,10 +828,14 @@ end
 # 125³ G 5 → 16 0.88×, 243² G 9 → 16 1.12×, 99³, 105³, 135²×64 1.00–1.03×).
 ragged_G(R, E, B, gmax, lim) = max(1, min(lim.nstat ÷ R, gmax, 16, (lim.wmax * maximum(local_radices(R))) ÷ R, E * B))
 
-# Lines per workgroup of the fused Bluestein kernel with ragged lanes along a strided dimension
-# (any number of lines; 101³ dim 2 on the M1: G 1/2/4/8/16 663/423/357/335/413 µs). Along
-# dimension 1 the two launches with G = 1 stay faster (101³ 284 µs against 364 µs at G = 8).
-blue_ragged_G(M, E, B, lim) = max(1, min(lim.nstat ÷ M, (lim.wmax * maximum(local_radices(M))) ÷ M, 8, E * B))
+# Lines per workgroup of the fused Bluestein kernel with ragged lanes (any number of lines).
+# M1, 101³, M = 256, µs: dimension 2 G 4/8 148/142; dimension 1 G 1/2/4/8/16 179/124/128/165/222
+# (two launches with G = 1: 193), about 512 values per workgroup as for other contiguous passes.
+# Along dimension 1 only with the Apple rule for M: at M = 224 the two launches were faster
+# (284 µs against 364 µs fused at G = 8).
+blue_ragged_G(M, E, B, lim, prof = :apple) =
+  E == 1 && prof !== :apple ? 1 :
+  max(1, min(lim.nstat ÷ M, (lim.wmax * maximum(local_radices(M))) ÷ M, E > 1 ? 8 : max(1, 512 ÷ M), E * B))
 
 # Bluestein along a dimension of length N (prime factor > KA_MAX_PRIME):
 # X_k = c_k Σ_j (x_j c_j) conj(c_{k-j}), c_j = exp(σ iπ j²/N), as a cyclic convolution of length
@@ -911,15 +915,15 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
     @assert prod(rs) == M
     push!(rsall, collect(rs))
     # one pass of M: the whole convolution in one kernel without scratch, unless its workgroups
-    # are below one SIMD group (G = 1 for 101³: 14 threads, where the two launches run more
-    # workgroups at once; 101³ 1.7× slower fused)
+    # are below one SIMD group and ragged lanes give no larger G (then the two launches run
+    # more workgroups at once)
     G0 = blue && length(rs) == 1 ? pass_G(M, 1, 1, E, B, gmax, lim) : 0
-    if blue && length(rs) == 1 && (G0 * M ÷ maximum(local_radices(M)) >= 32 || (E > 1 && blue_ragged_G(M, E, B, lim) > G0))
+    if blue && length(rs) == 1 && (G0 * M ÷ maximum(local_radices(M)) >= 32 || blue_ragged_G(M, E, B, lim, prof) > G0)
       dst = arr_next(cur)
-      rg = E > 1 && blue_ragged_G(M, E, B, lim) > G0
+      rg = blue_ragged_G(M, E, B, lim, prof) > G0
       sp = (R = M, s = 1, m = 1, M = M, E = E, B = B, σ = -1, Nx = N, Ny = N, blue2 = true,
             cin = cin, cout = bhat, src = cur, dst = dst)
-      push!(specs, rg ? merge(sp, (ragged = true, G = something(blueG, blue_ragged_G(M, E, B, lim)))) : sp)
+      push!(specs, rg ? merge(sp, (ragged = true, G = something(blueG, blue_ragged_G(M, E, B, lim, prof)))) : sp)
       cur = dst
       continue
     end
