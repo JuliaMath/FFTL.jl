@@ -24,10 +24,10 @@ struct RealLine{T,K<:Kernel{T}}
   w::Vector{Complex{T}}        # u_k, k = 0…n÷2 (even n), see above
 end
 
-# Run-time kernels (RChain, or Bluestein over RChain) for the run-time plans (rreal.jl).
-const RKern{T} = Union{RChain{T},RBluestein{T}}
+# Run-time kernels (RChain, or resampling over RChain) for the run-time plans (rreal.jl).
+const RKern{T} = Union{RChain{T},RResample{T}}
 rkernel(::Type{T}, n::Int, σ::Int) where {T} =
-  (smooth(n) ? RChain{T}(n, σ, radices(n, 1; esize = sizeof(Complex{T}))) : Bluestein{T}(n, σ, RChain))::RKern{T}
+  (smooth(n) ? RChain{T}(n, σ, radices(n, 1; esize = sizeof(Complex{T}))) : Resample{T}(n, σ, RChain))::RKern{T}
 ckernel(::Type{T}, n::Int, σ::Int, ::Type{TypedKernels}) where {T} = kernel(T, n, σ)
 ckernel(::Type{T}, n::Int, σ::Int, ::Type{RChain}) where {T} = rkernel(T, n, σ)
 
@@ -169,7 +169,7 @@ line_fourstep(p) = nothing
 # Half-length DFT of one line on several threads, by the kernel type.
 run_half!(py::Ptr{T}, px::Ptr{T}, K::FourStep{T}, nt::Int) where {T} = run_fourstep!(py, px, K, nt)
 run_half!(py::Ptr{T}, px::Ptr{T}, K::CompositeMT{T}, nt::Int) where {T} = run_composite_mt!(py, px, K, nt)
-run_half!(py::Ptr{T}, px::Ptr{T}, K::BluesteinMT{T}, nt::Int) where {T} = run_bluestein_mt!(py, px, K, nt)
+run_half!(py::Ptr{T}, px::Ptr{T}, K::ResampleMT{T}, nt::Int) where {T} = run_resample_mt!(py, px, K, nt)
 
 # Lines along dimension d of an array of size `sz` (real side), as (lane stride S, line offsets
 # in elements of the real side and of the complex side).
@@ -238,14 +238,14 @@ end
 sortregion(region, N) = Tuple(normregion(region, N))
 
 # One real line of length n on several tasks: the half-length DFT on several threads (four-step for
-# a smooth half length, composite or Bluestein for the others). The extra parallel pass for the
+# a smooth half length, composite or resampling for the others). The extra parallel pass for the
 # pairs needs about 256 KB per line for smooth lengths and 128 KB for non-smooth ones (M1, 8 threads,
 # gain of the threaded over the serial line: Float32 smooth 0.7 at 128 KB, 1.5 at 256 KB; non-smooth
 # 1.05 at 120-130 KB, 1.8 at 147 KB; Float64 non-smooth 1.5 at 240 KB).
 use_real_threads(::Type{T}, n, nt) where {T} =
   (use_fourstep(inner_length(n), nt) && n * sizeof(T) >= TUNING[].real_fourstep_bytes) ||
-  ((use_composite_mt(T, inner_length(n), nt) || use_bluestein_mt(inner_length(n), nt)) &&
-   n * sizeof(T) >= TUNING[].real_bluestein_bytes)
+  ((use_composite_mt(T, inner_length(n), nt) || use_resample_mt(inner_length(n), nt)) &&
+   n * sizeof(T) >= TUNING[].real_resample_bytes)
 
 # Odd n: the full-length DFT on several threads, in the line's buffers. Forward: the real line is
 # the real part of a complex line; backward: the half spectrum is completed by conjugate symmetry.
@@ -285,7 +285,7 @@ inner_length(n) = iseven(n) ? n ÷ 2 : n
 function half_threads(::Type{T}, h, σ, nt) where {T}
   use_fourstep(h, nt) && return FourStep{T}(h, σ, nt)
   use_composite_mt(T, h, nt) && return CompositeMT{T}(h, σ, nt)
-  use_bluestein_mt(h, nt) && return BluesteinMT{T}(h, σ, nt)
+  use_resample_mt(h, nt) && return ResampleMT{T}(h, σ, nt)
   nothing
 end
 
@@ -342,13 +342,13 @@ function Base.show(io::IO, p::BRFFTLPlan{T}) where {T}
   print(io, "FFTL c2r plan for $(join(p.sz, "×")) Complex{$T} → length $(p.d), dims $(p.region)")
 end
 
-# Whether a line kernel uses work buffers of its own (a Bluestein kernel holds them in the kernel,
+# Whether a line kernel uses work buffers of its own (a resampling kernel holds them in the kernel,
 # not in the task's buffer set): such lines run on one task.
-own_buffers(k) = k isa Union{Bluestein,Composite}
-own_buffers(K::RealLine) = K.inner isa Union{Bluestein,Composite}
+own_buffers(k) = k isa Union{Resample,Composite}
+own_buffers(K::RealLine) = K.inner isa Union{Resample,Composite}
 line_tasks(K, nt) = own_buffers(K) ? 1 : nt
 
-# One line kernel per task. A kernel with buffers of its own (Bluestein, composite) cannot run on two
+# One line kernel per task. A kernel with buffers of its own (resampling, composite) cannot run on two
 # tasks at once, so each task gets a copy; the other kernels are shared.
 # The copies have the kernel type of the line (C = RChain for the run-time plans).
 task_reallines(line::RealLine{T}, n::Int, σ::Int, nt::Int, ::Type{C} = TypedKernels) where {T,C} =

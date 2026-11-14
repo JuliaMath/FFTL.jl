@@ -43,7 +43,7 @@ line, all buffers at fixed page offsets, time of the radix-16 sequence over the 
 
 ## Rules for lengths are derived on some lengths and checked on others
 
-**Decision (2026-11-04).** The radix choice and the Bluestein length are rules on the prime
+**Decision (2026-11-04).** The radix choice and the grid length of a resampled transform are rules on the prime
 factorisation, not tables per length. A rule is derived from one part of the lengths (a brute-force
 search over all decompositions, or a cost model) and checked on lengths that were not used for the
 derivation, for example by parity of n or by a random split; only the checked result counts as
@@ -56,24 +56,95 @@ not single points.
 the M1. A dense sweep of every length 2…1024 against FFTW MEASURE (one thread, Zen 2, 2046 cases)
 showed 100 `Float32` and 64 `Float64` lengths slower than 1.5×, the worst at 3.4×.
 
-## Lengths with large prime factors: split off the smooth part, Bluestein on the rest
+## Lengths with large prime factors: split off the smooth part, resample the rest
 
 **Decision (2026-11-07).** For n = s·q, with q the part made of primes above `MAX_RADIX_PRIME` (73, at the
-time of the decision 31): one Cooley–Tukey
-step, a chain of length s, twiddles, and s Bluestein transforms of length q (`Composite`). A leftover q
-stays one Bluestein while its convolution is at most 4 MiB; above that, q is split into its prime
-powers, recursively. Bluestein convolutions of 8 MiB and more run as a serial four-step algorithm on
-x86 (1.3× from 2²⁰ on, Zen 2) but not on aarch64, where the chain is faster up to 2²² (M1 Max). With
-threads, `CompositeMT` is used when s is at least the number of threads and is bitwise equal to the
-serial kernel; otherwise the whole length is one `BluesteinMT`.
+time of the decision 31): one Cooley–Tukey step, a chain of length s, twiddles, and s resampled
+transforms of length q (`Composite`): one batched pass from 32 lanes on, lane by lane below
+(2026-11-12). A leftover q stays one resampled transform while its grid is at most 4 MiB; above that,
+q is split into its prime powers, recursively. Grids of 8 MiB and more are transformed by a serial
+four-step algorithm on x86 (1.3× from 2²⁰ on, Zen 2) but not on aarch64, where the chain is faster up
+to 2²² (M1 Max). With threads, `CompositeMT` is used when s is at least the number of threads and is
+bitwise equal to the serial kernel; otherwise the whole length is one `ResampleMT`.
 
-**Why.** The convolutions of length about 2q stay in cache, and the arithmetic equals one Bluestein of
-length n. On 45 non-smooth lengths (Zen 2) FFTL moved from ×0.64 to ×1.04 of the fastest other library
-with one thread, and from ×0.77 to ×1.16 with 16 threads.
+**Why.** The grids of length about 2q stay in cache. On 45 non-smooth lengths (Zen 2) FFTL moved from
+×0.64 to ×1.04 of the fastest other library with one thread, and from ×0.77 to ×1.16 with 16 threads
+(measured with Bluestein's algorithm on the leftover). Resampling needs one transform of a length of
+at least 2q where Bluestein's algorithm needs two: it took 0.51–0.82 of Bluestein's time for primes
+from 1009 to 100003 (Tiger Lake, one thread), at an error of 2–5·10⁻¹⁵ in `Float64` (Bluestein about
+5·10⁻¹⁶). The batched pass vectorises across the lanes and loses with few of them: against the lanes one
+by one it took 1.7–3.8 times as long at s = 2, 1.1–1.6 at s = 7, 0.73–1.04 at s = 16 and 0.56–1.04 at
+s = 32 (`Float64`, q = 37, 1009, 10007, EPYC 9354, one thread; `Float32` 2.1–7.3, 1.6–2.9, 0.84–1.31,
+0.87–0.96). The switch is on the lane count and not on the number of threads, which keeps serial and
+threaded plans bitwise equal.
+
+The grid of a single resampled transform has a margin on each side that holds copies of the other end
+(2026-11-12), so every output is interpolated from one contiguous load. Without it the outputs whose
+window wraps around the grid ends (7 per `Float64` transform, 3 per `Float32`) took a scalar loop at
+about ten times the cost of the others: 250 of 559 ns at n = 37 and 290 of 1104 ns at n = 101. With the
+margin, time over the time without it: n = 37: 0.55, 101: 0.75, 127: 0.79, 1009: 0.96, 100003: 0.98,
+101³: 0.78; against `main`: 0.81, 0.81, 0.77, 0.64, 0.80, 0.83, and 0.85 for 101³ on 8 threads (1.17
+before). `Float64`, EPYC 9354, minima of interleaved runs, the same code against itself within 6 %.
+The margin is a whole page: a margin of 128 bytes moves the grid off the page offset of the work
+buffers, and the prime length 100003 then took 1.03–1.05 of the time without margins.
+
+Against Bluestein's algorithm with the looped prime kernel in both (2026-11-14; `main` at 540d876, AMD
+EPYC 9354, one NUMA node of a shared machine, one process per variant and thread count, 3 rounds in
+rotating order, a second copy of `main` as A/A): over 73 one-thread cases (1-D lines up to 10⁷, planes,
+3-D, `rfft`, run-time plans, composite dimensions) the geometric mean of the time ratio is 0.74, 55
+cases faster beyond the A/A band and none slower; over 30–31 cases at 2, 4, 8, 16 and 32 threads 0.83,
+0.66, 0.68, 0.68 and 0.66, none slower beyond the band (A/A median deviation 5–23 %, largest at 2, 4
+and 32 threads). The seven cases with a median above 1.05 were measured again in 7 rounds: 0.60–1.01.
+1009·2¹⁶ (`Float64`, 16 threads) took 165 ms instead of 552–555 ms: on `main` the second step, lane
+by lane, took 445 of 554 ms, almost all of it in writing each output 2¹⁶ values from the last (107 ms
+with the same outputs written contiguously); the batched pass writes runs of consecutive outputs. Error against FFTW in
+`Float64` precision, largest over the cases: `Float64` 3.3·10⁻¹⁵ (Bluestein 1.0·10⁻¹⁵), `Float32`
+1.8·10⁻⁷ (Bluestein 3.1·10⁻⁷).
+
+**Replaced.** Bluestein's algorithm on the leftover and `BluesteinMT` for a whole line on threads
+(2026-11-07). Generic number types and the GPU passes keep Bluestein's algorithm.
 
 **Not done / not checked.** Rader's algorithm (5 of the 45 sweep lengths qualify). Both thresholds were
 measured on Zen 2 only, and the 4 MiB rule is checked on 12 lengths that also took part in its
-derivation.
+derivation. The 32-lane rule was measured on one AVX-512 machine only, not on AVX2 or aarch64, and the grid
+margin on x86 only (512-bit and 256-bit vectors), not on aarch64.
+
+## Plan tables of long lines from a few exact values
+
+**Decision (2026-11-14).** Two tables that a plan builds over the indices of a long line no longer
+take one transcendental call per entry:
+
+- The deconvolution factors of a resampled transform (`resample_corr`) are a sum of 26 (`Float64`) or
+  18 (`Float32`) cosines over the quadrature nodes, each sampled at consecutive indices t. With
+  t = t0 + k (t0 a multiple of 64), every cosine is one product of two correctly rounded values: one
+  `sincospi` per node and block of 64, and a table over k shared by all blocks. The node weights
+  a_q = w_q ψ(z_q) are computed once, not per index, and the factors are even in t, so half of them
+  are computed.
+- The factor tables of a long four-step (above `TUNING[].factor_twiddles`) take their n1 + n2 roots
+  from `unit_root`, which applies the symmetries of `unit_roots` to one index. The tables are bitwise
+  the same as before, without the table of all n roots they were taken from (2 GiB for 2²⁷).
+
+**Why.** Planning a prime length near 2²⁶ took 32 s, 30 of them in the deconvolution factors (67·10⁶
+indices, 26 `exp`, `sqrt` and `cospi` each). AMD EPYC 9354, 16 threads, a fresh plan with the cache
+cleared, 2 rounds in alternating processes, before → after:
+
+| length | kernel | plan |
+|:--|:--|:--|
+| 2²⁶ − 5 | `ResampleMT` | 32.0–32.8 s → 0.70 s |
+| 2²⁷ | `FourStep` | 1.65–1.69 s → 0.003 s |
+| 2²⁶ | `FourStep` | 0.81 s → 0.002 s |
+| 100003 | `ResampleMT` | 0.041 s → 0.006 s |
+
+`resample_corr` alone for 2²⁶ − 5 on one thread: 30.2 s → 0.68 s (`Float32` 0.43 s). Against 256-bit
+arithmetic (the same quadrature rule; n from 2 to 2²⁶ − 5, both ends of the index range and random
+indices), the product form has the error of one `cospi` per term: median 2.4–2.7 ulp, at most 8.9 ulp
+in `Float64` for both forms; in `Float32` the factors are bitwise the same for n up to 10⁶. A rotation
+recurrence (one complex multiply per step) is as fast but its error grows along the block: 1.2·10⁻¹³
+after 512 steps. Transform times are unchanged (the four-step's output is bitwise the same).
+
+**Not done.** The twiddles of the composite kernel (`Composite.tw`, `CompositeMT.tw`) are still a table
+of all n roots: 1 GiB and 1.4 s of planning for 1009·2¹⁶. The kernel reads it at run time, so factor
+tables there change the kernel.
 
 ## One chain form: the radix sequence is data
 
@@ -203,6 +274,15 @@ Bluestein's algorithm as a factor of a longer length, but the line of that prime
 79 on for `Float32` (1.05, 1.5 at 127) and from 97 on for `Float64` (1.01, 1.15 at 127). 73 is the
 largest prime for which every measured case is faster.
 
+Against resampling, which replaced Bluestein's algorithm (2026-11-14, EPYC 9354, one thread, the kernels
+called directly, median of 3 rounds): as a factor of 64p the looped kernel takes 0.29–0.44 of the
+composite kernel's time for every prime p from 37 to 73, in both precisions. A line of the prime alone
+in `Float64` takes 0.59–0.97 of the resampled time (0.97 at 73). In `Float32` resampling is faster
+from 47 on: the looped kernel takes 1.10–1.96 times as long (1.96 at 73), at 37–43 they are even
+(0.91–1.08). The looped kernel takes the same time in both precisions, the resampled transform
+0.49–0.64 of its `Float64` time in `Float32`. The limit stays at 73; a rule for `Float32` lines of a prime alone is not
+done.
+
 **Not done.** The loop for 11 and 13: with one kernel per radix (an earlier form of the loop) it was at
 0.98 of the codelets for `Float64` and 1.05–1.06 for `Float32`, and 1.08–1.10 for 7; not measured with
 the single kernel. A larger limit for lengths that are not a prime alone. aarch64 is not verified.
@@ -216,7 +296,7 @@ is 26.8 MB instead of 49.5 MB, its code 8.8 MB instead of 18.6 MB.
 
 **Decision (2026-11-10).** A pass plan (`plan_pass`, `plan_r2c_pass`, `plan_c2r_pass`) built with
 `_runtime` (`plan_pass_runtime`, `plan_r2c_pass_runtime`, `plan_c2r_pass_runtime`) uses run-time kernels
-only: RChain, Bluestein and composite transforms over RChain, the four-step algorithm over RChain. Its
+only: RChain, resampled and composite transforms over RChain, the four-step algorithm over RChain. Its
 type depends on the element type and the number of dimensions, not on the length. The specialised plans
 are unchanged.
 
@@ -229,7 +309,7 @@ and matches the direct DFT to 3·10⁻¹⁴ when called from C. Planning on 64 �
 `d = 1` and 0.9 µs for `d = 2` on the M1 (the specialised plan: 4.7 µs and 2.8 µs). Applying the
 specialised and the run-time plans is within noise of each other on the same views.
 
-**Costs.** For real lengths with large prime factors, the run-time kernel is a Bluestein transform,
+**Costs.** For real lengths with large prime factors, the run-time kernel is one resampled transform,
 without the composite split of the specialised plan.
 
 ## The interface: FFTW.jl's names, FFTL's own functions, AbstractFFTs as a backend

@@ -1,11 +1,11 @@
-# Plans whose kernels are all run-time data: RChain for smooth lengths, Bluestein over RChain
+# Plans whose kernels are all run-time data: RChain for smooth lengths, resampling over RChain
 # otherwise. Sizes, region and kernels live in vectors, so constructing a plan never builds a type
 # from run-time values and executing it compiles nothing per size; this is the path for code
 # compiled ahead of time (`juliac --trim`) and keeps the first plan of a new size cheap.
 # Same strategies as FFTLPlan: four-step for one long line on several threads, dimensions 1 and
 # 2 fused per plane when a plane fits in cache.
 
-const RBluestein{T} = Bluestein{T,RChain{T},RChain{T}}
+const RResample{T} = Union{Resample{T,RChain{T},RTable{T}},Resample{T,RChain{T},RPoly{T}}}
 const RFourStep{T} = FourStep{T,RChain{T},RChain{T}}
 
 """
@@ -20,15 +20,15 @@ mutable struct RPlan{T<:FFTLFloat} <: AbstractFFTs.Plan{Complex{T}}
   region::Vector{Int}
   σ::Int
   chains::Vector{RChain{T}}                      # per dimension in region (smooth lengths)
-  blue::Vector{Union{Nothing,RBluestein{T}}}     # per dimension: Bluestein, or nothing
+  rs::Vector{Union{Nothing,RResample{T}}}        # per dimension: resampling, or nothing
   four::Union{Nothing,RFourStep{T}}              # one long contiguous line on several threads
   work1::Vector{Complex{T}}
   work2::Vector{Complex{T}}
   nthreads::Int
   tbuf::Vector{Vector{Complex{T}}}               # two work buffers per thread
   pinv::AbstractFFTs.Plan{Complex{T}}
-  RPlan{T}(sz, region, σ, chains, blue, four, w1, w2, nt, tbuf) where {T} =
-    new{T}(sz, region, σ, chains, blue, four, w1, w2, nt, tbuf)
+  RPlan{T}(sz, region, σ, chains, rs, four, w1, w2, nt, tbuf) where {T} =
+    new{T}(sz, region, σ, chains, rs, four, w1, w2, nt, tbuf)
 end
 
 function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Integer}, σ::Integer;
@@ -38,7 +38,7 @@ function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Intege
   reg = normregion(region, N)
   nt = check_plan(dims, σ, threads)
   chains = RChain{T}[]
-  blue = Union{Nothing,RBluestein{T}}[]
+  rs = Union{Nothing,RResample{T}}[]
   # one long line (the other transformed dimensions have length 1): the four-step algorithm
   long = filter(d -> dims[d] > 1, reg)
   four = length(long) == 1 && fourstep_dim(dims, long[1], nt) ? FourStep{T}(dims[long[1]], Int(σ), nt, RChain) : nothing
@@ -47,14 +47,14 @@ function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Intege
     S, _ = dim_extent(dims, d)
     if smooth(n)
       push!(chains, RChain{T}(n, Int(σ), radices(n, S; esize = sizeof(Complex{T}))))
-      push!(blue, nothing)
+      push!(rs, nothing)
     else
       push!(chains, RChain{T}(1, Int(σ), Int[]))
-      push!(blue, Bluestein{T}(n, Int(σ), RChain))
+      push!(rs, Resample{T}(n, Int(σ), RChain))
     end
   end
   nwork, ntwork = work_sizes(dims, reg, nt)
-  RPlan{T}(dims, reg, Int(σ), chains, blue, four, Vector{Complex{T}}(undef, nwork), Vector{Complex{T}}(undef, nwork),
+  RPlan{T}(dims, reg, Int(σ), chains, rs, four, Vector{Complex{T}}(undef, nwork), Vector{Complex{T}}(undef, nwork),
            nt, thread_buffers(T, ntwork, 2nt))
 end
 
@@ -78,7 +78,7 @@ function execute!(p::RPlan{T}, py::Ptr{Complex{T}}, px::Ptr{Complex{T}}) where {
     return nothing
   end
   i0 = 1
-  if length(p.region) >= 2 && p.region[1] == 1 && p.region[2] == 2 && p.blue[1] === nothing && p.blue[2] === nothing
+  if length(p.region) >= 2 && p.region[1] == 1 && p.region[2] == 2 && p.rs[1] === nothing && p.rs[2] === nothing
     n1 = p.sz[1]; n2 = p.sz[2]
     outer = dim_extent(p.sz, 2)[2]
     if fuse_planes(n1, n2, outer, p.nthreads)
@@ -97,7 +97,7 @@ function execute!(p::RPlan{T}, py::Ptr{Complex{T}}, px::Ptr{Complex{T}}) where {
       outer *= p.sz[j]
     end
     src = i == 1 ? rx : ry
-    b = p.blue[i]
+    b = p.rs[i]
     if b === nothing
       run_dim!(ry, src, p, p.chains[i], S, p.sz[d], outer)
     else

@@ -227,13 +227,14 @@ end
 
 function fourstep_twiddles(::Type{T}, n::Int, σ::Int, n1::Int) where {T}
   n2 = n ÷ n1
-  W = unit_roots(σ, n)
   # measured on the M1; on Zen 3 a threshold at its 32 MB L3 instead measures the same within noise (0.93–1.07)
   if n * sizeof(Complex{T}) > TUNING[].factor_twiddles
+    # n1 + n2 roots, each computed alone (no table of all n roots, which is twice the data in Float64)
     t = Vector{Complex{T}}(undef, n1 + n2)
-    for a in 0:n1-1; t[a+1] = Complex{T}(W[a*n2+1]); end
-    for b in 0:n2-1; t[n1+b+1] = Complex{T}(W[b+1]); end
+    for a in 0:n1-1; t[a+1] = Complex{T}(unit_root(σ, n, a * n2)); end
+    for b in 0:n2-1; t[n1+b+1] = Complex{T}(unit_root(σ, n, b)); end
   else
+    W = unit_roots(σ, n)
     t = Vector{Complex{T}}(undef, n)
     for j1 in 0:n1-1, k2 in 0:n2-1
       t[j1*n2+k2+1] = Complex{T}(W[(j1*k2)%n+1])
@@ -244,7 +245,7 @@ end
 
 const ROW_PAD = 4
 
-# One line on the calling thread (the convolution transforms of a large Bluestein kernel).
+# One line on the calling thread (the grid transform of a large resampling kernel).
 function run!(py::Ptr{T}, px::Ptr{T}, ::Ptr{T}, ::Ptr{T}, P::FourStep{T}, S::Int) where {T}
   S == 1 || throw(ArgumentError("a four-step kernel transforms one line"))
   run_fourstep!(py, px, P, 1)
@@ -287,46 +288,57 @@ function run_fourstep!(py::Ptr{T}, px::Ptr{T}, P::FourStep{T}, nt::Int) where {T
 end
 
 """
-    BluesteinMT{T}
+    ResampleMT{T}
 
-Bluestein's algorithm for one long contiguous line of a length with a prime factor above
-`MAX_RADIX_PRIME`, on several threads: the two convolution transforms of length M run as
-four-step transforms and the three element-wise passes (chirp product with zero padding,
-filter product, chirp product) are split over the threads.
+A resampled DFT (see `Resample`) for one long contiguous line of a length with a prime factor
+above `MAX_RADIX_PRIME`, on several threads: the transform of length m runs as a four-step
+transform, the deconvolution and the interpolation (ranges of outputs) are split over the threads.
 """
-struct BluesteinMT{T,F1,F2} <: Kernel{T}
+struct ResampleMT{T,F,WS} <: Kernel{T}
   n::Int
-  chirp::Vector{Complex{T}}       # c_j, j = 0…n-1
-  kernel::Vector{Complex{T}}      # DFT of the convolution kernel, scaled by 1/M
-  fwd::F1
-  bwd::F2
-  buf::Vector{Complex{T}}         # length M
+  corr::Vector{T}
+  ws::WS
+  fwd::F
+  buf::Vector{Complex{T}}         # the grid between two margins (resample_grid)
 end
 
-# Smallest 5-smooth M ≥ 2n - 1 that the four-step algorithm can split.
-function bluestein_mt_length(::Type{T}, n::Int) where {T}
-  m = bluestein_length(T, 2n - 1)
+function ResampleMT{T}(n::Int, σ::Int, nt::Int) where {T}
+  m = grid_length(T, 2n)
   while fourstep_split(m) == 0
-    m = bluestein_length(T, m + 1)
+    m = grid_length(T, m + 1)
   end
-  m
+  _, _, corr, ws = resample_parts(T, n, m)
+  fwd = FourStep{T}(m, σ, nt)
+  ResampleMT{T,typeof(fwd),typeof(ws)}(n, corr, ws, fwd, resample_grid(T, m))
 end
 
-function BluesteinMT{T}(n::Int, σ::Int, nt::Int) where {T}
-  M = bluestein_mt_length(T, n)
-  ser = RChain{T}(M, -1)
-  w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
-  chirp, b = cached(() -> bluestein_tables(T, n, σ, ser, w1, w2), CacheKey(:bluestein, T, n, σ, Int[])
-                   )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
-  fwd = FourStep{T}(M, -1, nt); bwd = FourStep{T}(M, 1, nt)
-  BluesteinMT{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, Vector{Complex{T}}(undef, M))
+function run_resample_mt!(py::Ptr{T}, px::Ptr{T}, P::ResampleMT{T}, nt::Int) where {T}
+  n = P.n; m = length(P.buf) - 2 * resample_pad(T); hp = cld(n, 2)
+  GC.@preserve P begin
+    cx = Ptr{Complex{T}}(px); cy = Ptr{Complex{T}}(py)
+    pg = grid_ptr(P.buf)
+    pb = Ptr{Complex{T}}(pg); pc = pointer(P.corr)
+    chunked(m, nt) do j
+      jj = j < hp ? j : j - (m - n)  # input index of grid point j (or a padding zero)
+      v = j < hp || jj >= hp ? unsafe_load(cx, jj + 1) * unsafe_load(pc, jj + 1) : zero(Complex{T})
+      unsafe_store!(pb, v, j + 1)
+    end
+    run_fourstep!(pg, pg, P.fwd, nt)
+    wrap_grid!(P.buf, m)
+    nch = min(BLOCKS_PER_THREAD * nt, cld(n, 1 << 12))
+    parallel_items(nch, nt) do _, it
+      r = chunk_range(it + 1, nch, n)
+      isempty(r) || resample_interp!(cy, 1, 1, pg, P.ws, n, m, Val(resample_width(T)), first(r), last(r) + 1)
+    end
+  end
+  nothing
 end
 
 """
     CompositeMT{T}
 
-The composite kernel (first stage of length s, Bluestein of length q) for one long contiguous
-line on several threads: the first stage in lane blocks over the tasks, then the s Bluestein
+The composite kernel (first stage of length s, resampled DFT of length q) for one long contiguous
+line on several threads: the first stage in lane blocks over the tasks, then the s resampled
 transforms spread over the tasks. Kernels with buffers of their own exist once per task. The
 blocks and the arithmetic are those of the serial kernel, so the results agree bitwise.
 """
@@ -335,7 +347,7 @@ struct CompositeMT{T,C,B} <: Kernel{T}
   s::Int
   q::Int
   chains::Vector{C}                 # first stage, one per task
-  blues::Vector{B}                  # one per task
+  rss::Vector{B}                    # leftover kernel (RsBatch, or Resample for few lanes), one per task
   tw::Vector{Complex{T}}            # w_n^m, m = 0…n-1
   z::Vector{Complex{T}}             # output of the first stage
   tbuf::Vector{Vector{Complex{T}}}  # two per task, one lane block of the first stage each
@@ -345,16 +357,16 @@ function CompositeMT{T}(n::Int, σ::Int, nt::Int) where {T}
   s, q = composite_split(T, n)
   c1 = first_kernel(T, s, σ, q, 1)
   chains = [c1; [c1 isa RChain ? c1 : first_kernel(T, s, σ, q, 1) for _ in 2:nt]]
-  b1 = Bluestein{T}(q, σ)
-  blues = [b1; [Bluestein{T}(q, σ) for _ in 2:nt]]
+  r1 = leftover_kernel(T, q, σ, s)
+  rss = [r1; [leftover_kernel(T, q, σ, s) for _ in 2:nt]]
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
-  CompositeMT{T,typeof(c1),typeof(b1)}(n, s, q, chains, blues, tw, Vector{Complex{T}}(undef, n),
+  CompositeMT{T,typeof(c1),typeof(r1)}(n, s, q, chains, rss, tw, Vector{Complex{T}}(undef, n),
                                         thread_buffers(T, composite_block(q, s) * s, 2nt))
 end
 
-# A long line n = s·q (see composite_split) with at least one Bluestein transform per thread.
+# A long line n = s·q (see composite_split) with at least one leftover lane per thread.
 function use_composite_mt(::Type{T}, n, nt) where {T}
-  (nt > 1 && n >= TUNING[].bluestein_mt_min) || return false
+  (nt > 1 && n >= TUNING[].resample_mt_min) || return false
   s, q = composite_split(T, n)
   q > 1 && s >= nt
 end
@@ -366,7 +378,8 @@ function run_composite_mt!(py::Ptr{T}, px::Ptr{T}, P::CompositeMT{T}, nt::Int) w
   CT = 2 * sizeof(T)
   Bb = composite_block(q, s)
   nb = cld(q, Bb)
-  ntasks = min(nt, length(P.blues))
+  ntasks = min(nt, length(P.rss))
+  Cm = leftover_chunk(P.rss[1], s, ntasks)
   GC.@preserve P begin
     pz = cptr(P.z)
     parallel_phases(ntasks,
@@ -374,7 +387,7 @@ function run_composite_mt!(py::Ptr{T}, px::Ptr{T}, P::CompositeMT{T}, nt::Int) w
         local a = b * Bb
         run_lanes!(pz + a * CT, px + a * CT, cptr(P.tbuf[2c-1]), cptr(P.tbuf[2c]), P.chains[c], q, q, min(Bb, q - a))
       end,
-      s, (c, k1) -> twiddled_bluestein!(py, pz, P.tw, P.blues[c], n, s, 1, 0, k1, 1))
+      cld(s, Cm), (c, b) -> leftover_item!(py, pz, P.tw, P.rss[c], n, s, Cm, b))
   end
   nothing
 end
@@ -383,7 +396,7 @@ end
     LinesMT{T}
 
 Many lines of a length with a prime factor above `MAX_RADIX_PRIME` on several threads: the kernels
-(Bluestein or composite) hold buffers of their own, so each task has one, and the tasks take blocks
+(resampling or composite) hold buffers of their own, so each task has one, and the tasks take blocks
 of lanes of every slice from a shared counter.
 """
 struct LinesMT{T,K} <: Kernel{T}
@@ -403,11 +416,11 @@ end
 lines_mt_dim(sz, d::Int, nt::Int) =
   !smooth(sz[d]) && (so = dim_extent(sz, d); so[1] * so[2] > 1 && threaded(so[1], sz[d], so[2], nt))
 
-# From this length on, a Bluestein line runs on several threads.
+# From this length on, a resampled line runs on several threads.
 
-use_bluestein_mt(n, nt) = nt > 1 && n >= TUNING[].bluestein_mt_min && !smooth(n)
+use_resample_mt(n, nt) = nt > 1 && n >= TUNING[].resample_mt_min && !smooth(n)
 
-bluestein_mt_dim(sz, d::Int, nt::Int) = (so = dim_extent(sz, d); so[1] == 1 && so[2] == 1 && use_bluestein_mt(sz[d], nt))
+resample_mt_dim(sz, d::Int, nt::Int) = (so = dim_extent(sz, d); so[1] == 1 && so[2] == 1 && use_resample_mt(sz[d], nt))
 
 # f(i) for i in chunk `it` of `nchunks` chunks of 0…N-1, the chunks over nt tasks.
 @inline function chunked(f::F, N, nt) where {F}
@@ -417,27 +430,6 @@ bluestein_mt_dim(sz, d::Int, nt::Int) = (so = dim_extent(sz, d); so[1] == 1 && s
       f(i)
     end
   end
-end
-
-function run_bluestein_mt!(py::Ptr{T}, px::Ptr{T}, P::BluesteinMT{T}, nt::Int) where {T}
-  n = P.n; M = length(P.buf)
-  GC.@preserve P begin
-    cx = Ptr{Complex{T}}(px); cy = Ptr{Complex{T}}(py)
-    pb = Ptr{Complex{T}}(cptr(P.buf))
-    pc = Ptr{Complex{T}}(cptr(P.chirp)); pk = Ptr{Complex{T}}(cptr(P.kernel))
-    chunked(M, nt) do j
-      unsafe_store!(pb, j < n ? unsafe_load(cx, j + 1) * unsafe_load(pc, j + 1) : zero(Complex{T}), j + 1)
-    end
-    run_fourstep!(cptr(P.buf), cptr(P.buf), P.fwd, nt)
-    chunked(M, nt) do j
-      unsafe_store!(pb, unsafe_load(pb, j + 1) * unsafe_load(pk, j + 1), j + 1)
-    end
-    run_fourstep!(cptr(P.buf), cptr(P.buf), P.bwd, nt)
-    chunked(n, nt) do k
-      unsafe_store!(cy, unsafe_load(pb, k + 1) * unsafe_load(pc, k + 1), k + 1)
-    end
-  end
-  nothing
 end
 
 # A[k2 + (n2 + ROW_PAD)·(i0 + i)] = w[i + Bc·k2] · tw[k2 + n2·(i0 + i)] for i < Bc, k2 < n2:
@@ -513,8 +505,8 @@ end
 run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::FourStep{T}, S::Int, n::Int, outer::Int) where {T} =
   run_fourstep!(py, px, k, p.nthreads)
 
-run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::BluesteinMT{T}, S::Int, n::Int, outer::Int) where {T} =
-  run_bluestein_mt!(py, px, k, p.nthreads)
+run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::ResampleMT{T}, S::Int, n::Int, outer::Int) where {T} =
+  run_resample_mt!(py, px, k, p.nthreads)
 
 run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::CompositeMT{T}, S::Int, n::Int, outer::Int) where {T} =
   run_composite_mt!(py, px, k, p.nthreads)
@@ -562,7 +554,7 @@ function run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::RChain{T}, S::Int, n::Int
   nothing
 end
 
-# Other kernels (Bluestein) and chains that are not threaded: one slice after the other.
+# Other kernels (resampling, composite) and chains that are not threaded: one slice after the other.
 run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Kernel{T}, S::Int, n::Int, outer::Int) where {T} =
   run_serial_dim!(py, px, p, k, S, n, outer)
 

@@ -19,8 +19,8 @@ The radices are chosen by a fixed rule (`src/factor.jl`). The rule is the result
 searches over the decompositions of many lengths on the development machines, not of a runtime
 search. It prefers radix 4 and radix 8 for powers of two. On aarch64 it merges a factor 3 with a 4
 into a 12; the x86 rules differ and are in the same file. Every other prime up to 73 is a radix of
-its own. Larger primes are not radices; the part of the length they make up goes to Bluestein's
-algorithm (below).
+its own. Larger primes are not radices; the part of the length they make up is resampled onto a
+smooth grid (below).
 
 ## Codelets
 
@@ -44,26 +44,37 @@ code for such a radix has about ``r^2/2`` statements with as many different cons
 fit in registers; the loop computes up to eight output pairs in one pass over the inputs, so that the
 inputs are loaded once for all of them.
 
-## Bluestein's algorithm
+## Lengths with large prime factors: resampling
 
-Lengths with a prime factor above 73 go through Bluestein's identity. With ``jk = (j^2 + k^2 - (k-j)^2)/2``,
+Lengths with a prime factor above 73 are transformed by oversampled interpolation onto a smooth
+grid (a type-2 nonuniform FFT evaluated at the points ``k\,m/n``; `src/resample.jl`):
 
-```math
-X_k = c_k \sum_{j} (x_j c_j)\, \overline{c_{k-j}}, \qquad c_j = e^{\sigma \pi i j^2/n}.
-```
+1. the input, divided by the Fourier transform of an interpolation kernel ``\psi``, is
+   zero-padded to a smooth length ``m \ge 2n``,
+2. one transform of length ``m``,
+3. output ``k`` is the sum of the ``w`` grid values around ``k\,m/n``, weighted by
+   ``\psi(z) = e^{\beta(\sqrt{1 - z^2} - 1)}`` (the exponential of a semicircle).
 
-The sum is a cyclic convolution with a kernel that depends only on ``n``. Its length ``M``
-is a smooth number with ``M \ge 2n - 1``, so the convolution is two transforms of smooth lengths
-and one pointwise product. The kernel's transform is computed once when the plan is made.
+The result is not exact: its error is about ``e^{-\pi w \sqrt{1 - n/m}}`` relative to ``\lVert x \rVert``.
+FFTL takes the narrowest ``w`` (a multiple of 4) for an error of ``10\,\varepsilon``: 16 taps in
+`Float64`, 8 in `Float32`. The weights of every output are tabulated up to a table size (1 MiB
+in `Float64`, 4 MiB in `Float32`, where the two measured about even), above it they are
+evaluated from piecewise polynomials. Generic number types (`BigFloat` and others,
+`src/generic.jl`) keep Bluestein's algorithm, which is exact: there the width grows with the
+precision and the interpolation would cost more than the transform it saves.
 
-Per line, Bluestein costs two transforms of length ``M`` and a pointwise product, so it is used
-only for the part of a length that the smooth codelets cannot cover. On aarch64 the convolution
-length is the smallest 5-smooth number with ``M \ge 2n - 1``. On x86 a cost model fitted to
-measured chains picks the fastest 7-smooth length in ``[2n - 1,\, 1.4\,(2n - 1)]``: a length with
-many radix 9, 5 or 3 stages transforms several times slower than a power of two a few percent
-larger (`src/plan.jl`).
+Compared with Bluestein's algorithm, which needs two transforms of a length ``\ge 2n - 1``, one
+transform is saved for ``n\,w`` multiply-adds. Measured against it on a Tiger Lake core (one
+thread, before Bluestein was removed), the time ratio was 0.51–0.82 for primes from 1009 to
+100003, at an error of 2–5·10⁻¹⁵ in `Float64` (Bluestein about 5·10⁻¹⁶) and 1–2·10⁻⁷ in
+`Float32` (Bluestein about 2.5·10⁻⁷).
 
-On x86 a convolution of 8 MiB or more (``M \ge 2^{19}`` in `Float64`) runs as a
+The grid length is a smooth number. On aarch64 it is the smallest 5-smooth ``m \ge 2n``. On x86
+a cost model fitted to measured chains picks the fastest 7-smooth length in ``[2n,\, 2.8\,n]``: a
+length with many radix 9, 5 or 3 stages transforms several times slower than a power of two a
+few percent larger (`grid_length` in `src/plan.jl`).
+
+On x86 a grid of 8 MiB or more (``m \ge 2^{19}`` in `Float64`) is transformed by a
 [four-step](@ref "Long one-dimensional transforms: four-step") transform on the calling thread
 instead of a chain. A chain of that length no longer fits in cache and makes one pass over
 memory per stage; the four-step makes two. On a Zen 2 core this is 1.06× faster at ``2^{19}``
@@ -73,7 +84,7 @@ and 1.3× from ``2^{20}`` on. On the M1 the chain is faster at every length meas
 ### Lengths with a smooth part
 
 A length ``n = s\,q`` whose large prime factors make up ``q`` and whose small ones make up
-``s > 1`` does not need a convolution of length ``2n``. Since ``s`` and ``q`` are coprime, one
+``s > 1`` does not need a grid of length ``2n``. Since ``s`` and ``q`` are coprime, one
 Cooley–Tukey step with ``j = j_2 + q\,j_1`` and ``k = k_1 + s\,k_2`` splits the transform:
 
 ```math
@@ -82,26 +93,30 @@ X_{k_1 + s k_2} = \sum_{j_2=0}^{q-1} e^{\sigma 2\pi i\, j_2 k_2/q}\;
 ```
 
 1. A chain of length ``s`` over the ``q`` interleaved lines ``j_2`` (the inner sum),
-2. multiplication by the twiddle factors ``e^{\sigma 2\pi i\, j_2 k_1/n}``, folded into the first
-   chirp product of the next step,
-3. ``s`` Bluestein transforms of length ``q`` (the outer sum), each written with stride ``s``.
+2. multiplication by the twiddle factors ``e^{\sigma 2\pi i\, j_2 k_1/n}``, folded into the
+   deconvolution of the next step,
+3. ``s`` resampled transforms of length ``q`` (the outer sum), each written with stride ``s``.
 
-The arithmetic is about the same as one Bluestein transform of length ``n``: ``s`` convolutions
-of length about ``2q`` are again about ``2n`` points. The gain is where the data lives. A
-convolution of length ``2q`` fits in cache, one of length ``2n`` often does not. On a Zen 2 core
-(one thread, `Float64`) ``262145 = 65 \cdot 4033`` takes 6.6 ms instead of 16.8 ms, and
-``1048577 = 17 \cdot 61681`` takes 43 ms instead of 89 ms.
+From 32 lanes on, the ``s`` transforms of the last step run as one batched pass (as in FFTJ):
+the grid holds rows of lanes, lane fastest, so the transform of length ``m`` is one chain over
+the lanes and every output row is ``w`` multiply-adds of whole grid rows. Lanes go in chunks
+whose grid stays in cache. A grid of length about ``2q`` fits in cache where one of length
+``2n`` often does not.
+
+With fewer than 32 lanes each lane is one resampled transform of its own, vectorised along the
+line. A batched pass vectorises across the lanes, so few lanes, or a lane count that is not a
+multiple of the vector width, leave most of the vector unused: on an EPYC 9354 (AVX-512, one
+thread, ``q`` = 37, 1009, 10007) the batched pass took 1.7–3.8 times as long as the lanes one by
+one at ``s = 2`` in `Float64` (2.1–7.3 in `Float32`), 1.1–1.6 (1.6–2.9) at ``s = 7``, 0.73–1.04
+(0.84–1.31) at ``s = 16`` and 0.56–1.04 (0.87–0.96) at ``s = 32`` (`RS_BATCH_LANES` in
+`src/resample.jl`). The rule depends on the length only, not on the number of threads, so a
+threaded plan computes the same values as a serial one.
 
 When ``q`` itself is large it is split again: ``q`` becomes the full power of its largest prime,
-and the first step of length ``s = n/q`` is again a split transform (or a Bluestein transform
-when ``s`` has no smooth part). ``3660001 = 73 \cdot 181 \cdot 277`` runs as Bluestein transforms of
-length 13213 and 277. Each split costs one more pass over memory, so a leftover ``q`` stays one
-Bluestein transform as long as its convolution takes at most 4 MiB. Below that, splitting
-measured 1.15–1.5× slower; above it, 1.02–1.4× faster (`composite_split` in `src/plan.jl`).
-
-Rader's algorithm, which turns a prime length ``p`` into a cyclic convolution of length
-``p - 1``, would halve the convolution where ``p - 1`` is smooth. Of 45 random lengths with a
-large prime factor between ``2^{10}`` and ``2^{22}``, five qualify; FFTL does not implement it.
+and the first step of length ``s = n/q`` is again a split transform (or a resampled transform
+when ``s`` has no smooth part). Each split costs one more pass over memory, so a leftover ``q``
+stays one resampled transform as long as its grid takes at most 4 MiB (`composite_split` in
+`src/plan.jl`; the threshold was measured with Bluestein's algorithm in place of resampling).
 
 ## Multidimensional transforms without transposition
 

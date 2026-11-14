@@ -1,5 +1,5 @@
 # Run-time plans of the real transforms (r2c, c2r, r2r) for arrays of any number of dimensions:
-# sizes, region and kernels are data (RChain, Bluestein over RChain), only the element type is
+# sizes, region and kernels are data (RChain, resampling over RChain), only the element type is
 # a type parameter. They run the line kernels of real.jl and r2r.jl and are the real-data
 # counterpart of RPlan for code compiled ahead of time (libfftl).
 

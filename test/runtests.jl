@@ -1,13 +1,32 @@
 using FFTL, Test, LinearAlgebra
+import AbstractFFTs
 
-# Reference DFT in Float64 (BigFloat would be exact but slow; the tolerances below allow for it).
-function dft(x, σ = -1)
-  n = length(x)
-  [sum(x[j+1] * cispi(2σ * mod(j * k, n) / n) for j in 0:n-1) for k in 0:n-1]
+# The AbstractFFTs generics with FFTL as the only backend: before FFTW.jl is loaded (below).
+fftw_loaded() = any(m -> nameof(m) === :FFTW, values(Base.loaded_modules))
+
+@testset "AbstractFFTs without FFTW" begin
+  if fftw_loaded()
+    @test_skip "FFTW already loaded"
+  else
+    x = randn(ComplexF64, 12, 10)
+    @test AbstractFFTs.plan_fft(x) isa FFTL.FFTLPlan
+    @test AbstractFFTs.fft(x) ≈ FFTL.fft(x)
+    @test AbstractFFTs.fft(real(x)) ≈ FFTL.fft(real(x))
+    @test AbstractFFTs.ifft(AbstractFFTs.fft(x)) ≈ x
+    r = randn(Float32, 9, 4)
+    @test AbstractFFTs.irfft(AbstractFFTs.rfft(r), 9) ≈ r
+    @test AbstractFFTs.plan_rfft(r) isa FFTL.RFFTLPlan
+    y = copy(x); AbstractFFTs.fft!(y)
+    @test y ≈ FFTL.fft(x)
+  end
 end
 
-# The DFT at a few frequencies only, each in O(n): the full reference is O(n²), too slow for lengths
-# of 10⁵ and more. The frequencies cover both ends, the middle and a spread in between.
+# Reference DFTs in Float64 from FFTW.jl: an independent implementation, O(n log n) at every size.
+import FFTW
+dft(x, σ = -1) = σ == -1 ? FFTW.fft(ComplexF64.(x)) : FFTW.bfft(ComplexF64.(x))
+
+# The DFT at a few frequencies only, each in O(n), by direct summation. The frequencies cover both
+# ends, the middle and a spread in between.
 function dft_at(x, σ = -1)
   n = length(x)
   ks = unique([0, 1, n ÷ 3, n ÷ 2, n - 2, n - 1, (7n) ÷ 11])
@@ -15,11 +34,11 @@ function dft_at(x, σ = -1)
   ks, ref
 end
 
-# Direct DFT along the dimensions in `region`, one after the other.
+# Along the dimensions in `region`, one after the other.
 function dftn(x, region, σ = -1)
   y = ComplexF64.(x)
   for d in region
-    y = mapslices(v -> dft(v, σ), y; dims = d)
+    y = σ == -1 ? FFTW.fft(y, d) : FFTW.bfft(y, d)
   end
   y
 end
@@ -80,7 +99,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
-  @testset "Bluestein, $T" for T in (Float64, Float32)
+  @testset "prime factors above MAX_RADIX_PRIME (resampling), $T" for T in (Float64, Float32)
     for n in pick([79, 83, 158, 101, 79^2, 1009], [79, 158, 1009])
       x = randn(Complex{T}, n)
       @test relerr(FFTL.fft(x), dft(ComplexF64.(x))) < 10tol(T)
@@ -88,8 +107,48 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "deconvolution factors of resampling, $T" for T in (Float64, Float32)
+    # against the same quadrature rule in 256-bit arithmetic: odd and even n, within one block of
+    # resample_corr and across several, both ends of the index range
+    setprecision(BigFloat, 256) do
+      for n in pick([2, 5, 64, 65, 1009, 2018], [5, 64, 2018])
+        m = FFTL.grid_length(T, 2n); w = FFTL.resample_width(T)
+        c = FFTL.resample_corr(T, n, m, w)
+        β = big(FFTL.resample_beta(n, m, w)); zq, wq = FFTL.gauss_legendre(2w + 20)
+        worst = 0.0
+        for j in unique([0:min(n - 1, 70); max(0, n - 70):n-1])
+          ν = big(j < cld(n, 2) ? j : j - n) / m
+          ref = 1 / (w * sum(big(wq[q]) * FFTL.es_kernel(big(zq[q]), β) * cospi(ν * w * big(zq[q]))
+                             for q in eachindex(zq) if zq[q] > 0))
+          worst = max(worst, Float64(abs(c[j+1] - ref) / abs(ref)))
+        end
+        @test worst < 16eps(T)
+      end
+    end
+  end
+
+  @testset "single unit roots" begin
+    # bitwise the entries of the table, so that tables built from single roots equal the table's
+    for σ in (-1, 1), n in (1, 2, 3, 4, 6, 8, 12, 16, 100, 1000, 1024, 3 * 2^10, 10007)
+      W = FFTL.unit_roots(σ, n)
+      @test all(j -> FFTL.unit_root(σ, n, j) === W[j+1], 0:n-1)
+    end
+    # the factor tables of a four-step (forced with a threshold of 0 bytes) hold the table's roots
+    old = FFTL.TUNING[]
+    try
+      FFTL.TUNING[] = FFTL.Tuning(ntuple(i -> fieldname(FFTL.Tuning, i) === :factor_twiddles ? 0 : getfield(old, i),
+                                         fieldcount(FFTL.Tuning))...)
+      for T in (Float64, Float32), σ in (-1, 1), n in (2^14, 3 * 2^12)
+        n1 = FFTL.fourstep_split(n); n2 = n ÷ n1; W = FFTL.unit_roots(σ, n)
+        @test FFTL.fourstep_twiddles(T, n, σ, n1) == Complex{T}[W[(0:n1-1) .* n2 .+ 1]; W[1:n2]]
+      end
+    finally
+      FFTL.TUNING[] = old
+    end
+  end
+
   @testset "smooth part times leftover, $T" for T in (Float64, Float32)
-    # n = s·q: a chain of length s, Bluestein on the leftover q (prime or composite)
+    # n = s·q: a chain of length s, a resampled DFT of the leftover q (prime or composite)
     for n in pick([2 * 79, 3 * 83, 16 * 89, 29 * 79, 64 * 79, 2 * 79^2, 5 * 13 * 79, 2 * 79 * 83, 6 * 1009,
                    17 * 79 * 83, 6 * 79^2],
                   [2 * 79, 29 * 79, 2 * 79 * 83, 6 * 1009])
@@ -99,7 +158,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       @test relerr(FFTL.bfft(x), dft(ComplexF64.(x), 1)) < 10tol(T)
     end
     # a leftover split into prime powers (the planner does this for large leftovers only): first
-    # stages that are composite and Bluestein kernels themselves
+    # stages that are composite and resampling kernels themselves
     for (n, s, q) in pick([(2 * 79 * 83 * 89, 2 * 79 * 83, 89), (79 * 83, 79, 83), (6 * 79^2 * 83, 6 * 79^2, 83)],
                           [(2 * 79 * 83 * 89, 2 * 79 * 83, 89), (79 * 83, 79, 83)])
       x = randn(Complex{T}, n)
@@ -219,7 +278,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
         @test all(==(7), parent(w)[mask])
         @test relerr(mul!(v, p, v), ref) < 10tol(T)
       end
-      # LinesMT owns separate Bluestein/composite kernels per task. Exercise first-axis
+      # LinesMT owns separate resampling/composite kernels per task. Exercise first-axis
       # slices, interior-axis lane blocks (including a partial block), and multiple passes.
       # The three-lane case has gather workspace with two planned tasks, but none with three.
       for (sz, region) in (((1009, 64), (1,)), ((65, 1009), (2,)), ((2018, 33), (1,)),
@@ -270,24 +329,24 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
-  @testset "Bluestein on several threads, $T" for T in (Float64, Float32)
-    # one long line with a prime factor above MAX_RADIX_PRIME: threaded convolution transforms
+  @testset "resampling on several threads, $T" for T in (Float64, Float32)
+    # one long line with a prime factor above MAX_RADIX_PRIME: threaded grid transform
     for n in pick((16411, 20011, 100003), (20011,))
       x = randn(Complex{T}, n)
       for (mk, σ) in ((FFTL.plan_fft, -1), (FFTL.plan_bfft, 1))
         ref = mk(x; threads = 1) * x
         for nt in pick((2, 3, 4), (3,))
           p = mk(x; threads = nt)
-          @test p.kernels[1] isa FFTL.BluesteinMT
+          @test p.kernels[1] isa FFTL.ResampleMT
           @test relerr(p * x, ref) < tol(T)
           z = copy(x); mul!(z, p, z)
           @test relerr(z, ref) < tol(T)
         end
       end
     end
-    # below the threshold the serial Bluestein kernel stays
+    # below the threshold the serial resampling kernel stays
     x = randn(Complex{T}, 4099)
-    @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Bluestein
+    @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Resample
     # smooth part times leftover: the composite kernel on threads, bitwise equal to the serial one
     # 3·193·1021: the leftover is split, the first stage is a composite kernel on each task
     for n in pick((65 * 4033, 7 * 11777, 1500 * 1013, 3 * 193 * 1021), (3 * 193 * 1021,))
@@ -304,7 +363,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       end
     end
     # many lines with a prime factor above MAX_RADIX_PRIME: slices and lane blocks over the tasks,
-    # Bluestein kernels (127, 1009, 79) and composite kernels (237 = 3·79, 2018 = 2·1009)
+    # resampling kernels (127, 1009, 79) and composite kernels (237 = 3·79, 2018 = 2·1009)
     for (sz, region) in pick([((256, 127, 16), 1:3), ((16, 256, 127), (3,)), ((1009, 64), (1,)), ((64, 1009), (2,)),
                               ((79, 79, 79), 1:3), ((237, 300), 1:2), ((300, 237), 1:2), ((2018, 32), (1,)), ((32, 2018), (2,))],
                              [((256, 127, 16), 1:3), ((64, 1009), (2,)), ((1009, 64), (1,)), ((300, 237), 1:2)])
@@ -528,7 +587,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       mask = trues(size(G)); mask[b...] .= false
       @test G[mask] == G0[mask]
     end
-    # out of place, Bluestein length along d, 2D
+    # out of place, a length with a large prime factor along d, 2D
     H0 = randn(Complex{T}, 45, 41); H1 = similar(H0)
     for d in 1:2
       v = view(H0, 2:44, 3:39); w = view(H1, 2:44, 3:39)
@@ -556,7 +615,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       p = FFTL.plan_pass_runtime(randn(Complex{T}, sz), d)
       @test p isa FFTL.PassPlan{T,2,FFTL.RPassKern{T}}
     end
-    # against the length-specialised plan, every kernel kind: smooth, Bluestein, composite, four-step
+    # against the length-specialised plan, every kernel kind: smooth, resampling, composite, four-step
     for (n, sz_other, nt) in ((64, 5, 1), (100, 7, 1), (1000, 3, 2), (1009, 4, 1), (2 * 79 * 83, 2, 1),
                               (2^17, 1, 3))
       x = randn(Complex{T}, n, sz_other)
@@ -584,7 +643,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     # real passes: run-time plans have one type for all lengths; the results agree with the specialised ones
     for (sz, d) in (((100, 3), 1), ((1009, 3), 1), ((30, 2), 1))
       x = randn(T, sz)
-      @test FFTL.plan_r2c_pass_runtime(x, d) isa FFTL.RealPassPlan{T,2,FFTL.RealLine{T,Union{FFTL.RChain{T},FFTL.Bluestein{T,FFTL.RChain{T},FFTL.RChain{T}}}}}
+      @test FFTL.plan_r2c_pass_runtime(x, d) isa FFTL.RealPassPlan{T,2,FFTL.RealLine{T,FFTL.RKern{T}}}
       ref = FFTL.plan_r2c_pass(x, d); rt = FFTL.plan_r2c_pass_runtime(x, d)
       ya = zeros(Complex{T}, ref.sz_out); yb = similar(ya)
       mul!(ya, ref, x); mul!(yb, rt, x)
@@ -903,7 +962,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     for (T, n) in ((Float64, 80896), (Float64, 92935), (Float64, 2 * 1009 * 79), (Float32, 33490), (Float32, 92935), (Float32, 100003))
       x = randn(T, n)
       p = FFTL.plan_rfft(x; threads = 3)
-      @test p.four isa Union{FFTL.CompositeMT,FFTL.BluesteinMT}
+      @test p.four isa Union{FFTL.CompositeMT,FFTL.ResampleMT}
       X = p * x
       @test relerr(X, FFTL.plan_rfft(x; threads = 1) * x) < 10tol(T)
       @test relerr(FFTL.plan_brfft(X, n; threads = 3) * X, n .* x) < 10tol(T)
@@ -914,7 +973,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
   end
 
   @testset "argument checks and fixed bugs" begin
-    # Bluestein lines in threaded real and r2r plans (the kernel's own buffers, one task at a time)
+    # resampled lines in threaded real and r2r plans (the kernel's own buffers, one task at a time)
     x = rand(1031, 40)
     @test FFTL.plan_rfft(x; threads = 4) * x == FFTL.plan_rfft(x; threads = 1) * x
     @test FFTL.plan_r2r(x, FFTL.REDFT10, 1; threads = 4) * x == FFTL.plan_r2r(x, FFTL.REDFT10, 1; threads = 1) * x

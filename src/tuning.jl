@@ -12,9 +12,10 @@ Size thresholds of FFTL (see `TUNING`):
   `clamp(prevpow2(L2 ÷ 32), 2^12, block_budget)`)
 - `fourstep_min`: length from which a single line uses the four-step algorithm on several threads
 - `factor_twiddles`: bytes above which the four-step uses factor twiddle tables
-- `bluestein_mt_min`: length from which Bluestein's algorithm runs on several threads
+- `resample_mt_min`: length from which a length with a large prime factor (resampling) runs on
+  several threads
 - `real_fourstep_bytes`: bytes of a real line from which it runs as a four-step on several threads
-- `real_bluestein_bytes`: bytes of a real line from which a non-smooth one runs on several threads
+- `real_resample_bytes`: bytes of a real line from which a non-smooth one runs on several threads
 - `plane_budget`: complex values of a plane (dimensions 1 and 2) that may be fused
 """
 struct Tuning
@@ -22,9 +23,9 @@ struct Tuning
   block_budget::Int
   fourstep_min::Int
   factor_twiddles::Int
-  bluestein_mt_min::Int
+  resample_mt_min::Int
   real_fourstep_bytes::Int
-  real_bluestein_bytes::Int
+  real_resample_bytes::Int
   plane_budget::Int
 end
 

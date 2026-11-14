@@ -72,7 +72,8 @@ The [Performance](@ref "Performance") page describes the protocol.
 | `src/codegen.jl` | the symbolic generator of the straight-line codelets |
 | `src/kernels.jl`, `src/complexvec.jl` | codelets on SIMD vectors, the complex arithmetic |
 | `src/factor.jl` | the radix sequence chosen for a length |
-| `src/plan.jl`, `src/rchain.jl` | Stockham chains and Bluestein's algorithm; `rchain.jl` is the form that libfftl compiles |
+| `src/plan.jl`, `src/rchain.jl` | Stockham chains and the composite kernel; `rchain.jl` is the form that libfftl compiles |
+| `src/resample.jl` | lengths with prime factors above 73: resampling onto a smooth grid |
 | `src/kernel_methods.jl` | the stage kernels and short chains of the fixed codelet set as plain methods (see [Package size and load time](@ref "Package size and load time")) |
 | `src/threads.jl` | threads, lane blocks, the four-step algorithm |
 | `src/interface.jl` | the complex plans and the public functions |
