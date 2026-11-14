@@ -16,6 +16,9 @@ Size thresholds of FFTL (see `TUNING`):
 - `real_fourstep_bytes`: bytes of a real line from which it runs as a four-step on several threads
 - `real_bluestein_bytes`: bytes of a real line from which a non-smooth one runs on several threads
 - `plane_budget`: complex values of a plane (dimensions 1 and 2) that may be fused
+- `fourstep_nt_bytes`: bytes of a four-step from which phase 2 writes its output rows from a buffer
+  with non-temporal stores (below: the last stage writes y)
+- `fourstep_row_bytes`: least bytes per row of a lane block of a threaded four-step
 """
 struct Tuning
   thread_min_work::Int
@@ -26,11 +29,14 @@ struct Tuning
   real_fourstep_bytes::Int
   real_bluestein_bytes::Int
   plane_budget::Int
+  fourstep_nt_bytes::Int
+  fourstep_row_bytes::Int
 end
 
-const DEFAULT_TUNING = Tuning(1 << 15, 1 << 16, 1 << 13, 1 << 23, 1 << 14, 1 << 18, 1 << 17, 1 << 17)
+const DEFAULT_TUNING = Tuning(1 << 15, 1 << 16, 1 << 13, 1 << 23, 1 << 14, 1 << 18, 1 << 17, 1 << 17,
+                              8 << 20, 128)
 
-# Read at plan construction, except thread_min_work, block_budget and plane_budget, which a pass
-# reads when it starts. Assigning `FFTL.TUNING[] = …` changes the settings for plans made afterwards
+# Read at plan construction, except thread_min_work, block_budget, plane_budget and the fourstep_*
+# fields of the run, which a pass reads when it starts. Assigning `FFTL.TUNING[] = …` changes the settings for plans made afterwards
 # and for passes started afterwards.
 const TUNING = Ref(DEFAULT_TUNING)

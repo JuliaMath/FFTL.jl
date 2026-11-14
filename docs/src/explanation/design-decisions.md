@@ -62,8 +62,8 @@ showed 100 `Float32` and 64 `Float64` lengths slower than 1.5×, the worst at 3.
 time of the decision 31): one Cooley–Tukey
 step, a chain of length s, twiddles, and s Bluestein transforms of length q (`Composite`). A leftover q
 stays one Bluestein while its convolution is at most 4 MiB; above that, q is split into its prime
-powers, recursively. Bluestein convolutions of 8 MiB and more run as a serial four-step algorithm on
-x86 (1.3× from 2²⁰ on, Zen 2) but not on aarch64, where the chain is faster up to 2²² (M1 Max). With
+powers, recursively. Bluestein convolutions run as a serial four-step algorithm where a line of their
+length on one thread would (see "Long lines: the four-step's rows go through cache buffers"). With
 threads, `CompositeMT` is used when s is at least the number of threads and is bitwise equal to the
 serial kernel; otherwise the whole length is one `BluesteinMT`.
 
@@ -211,6 +211,72 @@ the single kernel. A larger limit for lengths that are not a prime alone. aarch6
 image file is 66 MB instead of 59 MB on this machine (68.5 MB before the decision on the chain form).
 The C library contains every kernel in either case and shrinks: `libfftl.so` (x86-64-v3, `--trim=safe`)
 is 26.8 MB instead of 49.5 MB, its code 8.8 MB instead of 18.6 MB.
+
+## Long lines: the four-step's rows go through cache buffers
+
+**Decision (2026-11-14).** The four-step (`FourStep`, `src/threads.jl`) works on blocks of columns
+that pass through a buffer in cache:
+
+- Step 1 copies a block's rows into the buffer and transforms them there; no butterfly stage reads the
+  input with its row stride n1.
+- The twiddle multiplication and the transposition into the intermediate array A are done in
+  registers, C × C complex values at a time (`ctranspose`, C values per vector), and A is written
+  with non-temporal stores where each store is a whole aligned line (64-byte vectors; the rows of A
+  are padded by 64 bytes).
+- Step 2 writes its output through the buffer with non-temporal stores from
+  `TUNING[].fourstep_nt_bytes` (8 MiB) of output, below that its last stage writes the output.
+- A block's rows are at least 128 bytes on several threads (`TUNING[].fourstep_row_bytes`; `Float32`
+  takes 16 columns, `Float64` 8) and 256 bytes on one thread.
+- On one thread a single line takes the four-step from 16 times the last-level cache of a core,
+  in `Float32` for powers of two only (`serial_fourstep`); the convolution grids of Bluestein's
+  algorithm follow the same rule.
+
+**Why.** AMD EPYC 9354 (32 MiB L3 per four cores), measurements in one process with the variants
+alternating unless noted:
+
+- A large power of two was the slow case: 2²⁶ `Float64` took 1.6–1.8 times as long per element as
+  10⁸ (16 threads and one thread), in both steps, while its chains in cache cost about the same. The chains' first stage read the
+  input with a stride of 2¹³ values. Without the copy, 2²⁶ took 1.41 times as long (16 threads).
+- Writing A cost about as much as the chains (35–48 % of step 1 on one thread), one complex value
+  per instruction. In registers: 1.7–2.2 times faster (`Float64`), 3–3.6 (`Float32`) alone. In the
+  whole transform with ordinary stores it was slower for `Float32` at 2²² and 3·2²⁰ (16 threads,
+  step 1 0.36 → 0.50 ns per element): step 2 reads A on other threads, so the lines of A are still
+  held by other cores when step 1 writes them, and every store first takes ownership. With the
+  lines read by other threads first, the vectorised writes took 7 times as long as on untouched
+  lines. Non-temporal whole-line stores need no ownership: time with them over the time without,
+  16 threads, `Float32` 2¹³ 0.90, 2¹⁶ 0.83, 2²² 0.67, 6¹⁰ 0.89; `Float64` 2¹⁶ 0.81, 10⁶ 0.54,
+  2²² 0.73, 2²⁶ 0.96; 4 threads 0.56–0.85.
+- Step 2 without non-temporal output: 1.05–1.32 times as long in `Float64` from 16 MB, 1.01–1.14 in
+  `Float32` from 8 MiB; with a threshold of 4 MiB instead of 8, `Float64` 2¹⁸ took 0.87 of the time
+  (not adopted: the output then leaves the cache, which a benchmark of the transform alone does
+  not charge). Writing the output through the buffer with ordinary stores was never better
+  than the last stage writing it.
+- Rows of 128 bytes for `Float32` on 16 threads: 0.86–0.88 at 2²⁴ and 6¹⁰, 0.99–1.04 elsewhere.
+  256-byte rows: 1.06–1.19 times as long for `Float64` at 2²⁶ and 6¹⁰. On one thread 256-byte rows
+  took 2²⁶ `Float64` from 14.1 to 11.5 ns per element.
+- Copying the rows below 16 MiB costs 1–5 % (`Float32` 10⁶ 0.95 without it, `Float64` 2¹⁶ and 2¹⁸
+  0.96), within the noise of transforms of a millisecond; the copy is unconditional.
+- One thread, four-step time over chain time: `Float64` 2¹⁹ 1.88, 2²² 1.08, 2²⁴ 0.96, 3·2²³ 0.81,
+  2²⁵ 0.80, 2²⁶ 0.64, 6¹⁰ 0.98, 10⁸ 0.95, three lengths near 2²⁵ with power-of-two parts 2¹¹–2¹⁷
+  0.88–0.97; `Float32` 2²⁰ 1.61, 2²⁵ 1.09, 2²⁶ 0.94, 2²⁷ 0.76, 10⁸ 1.17, three lengths near 2²⁶ with
+  power-of-two parts 2¹²–2¹⁸ 1.11–1.16. Beyond the cache a chain makes one pass over memory per
+  stage (10–13 at these lengths) at 34 GB/s on one core, 22 GB/s for 2²⁶ (strides); the four-step's
+  work in cache costs about as much as 13 such passes. From 512 MiB the rule takes no measured case
+  where the four-step is slower; `Float64` lengths of 384–506 MiB (0.81–0.97) stay on the chain.
+- Against `main` (2026-11-14, `plan_fft` and `mul!`, one process per variant and thread count with
+  as many threads in Julia's pool, 2 rounds in rotating order, A/A within 2.9 % at 4 threads and
+  0.8 % at 16): 22 cases each (2¹⁶–2²⁶, 10⁶, 6¹⁰, 3·2²⁰, the prime 1000003, `rfft` 2²², both
+  precisions), none slower; time ratio 0.46–0.81 at 4 threads (2²⁶ 0.55–0.57), 0.58–0.85 at 16
+  (2²⁶ 0.58–0.59); geometric mean of the ratio normalised by FFTW in the same process 0.62 and 0.69.
+
+**Not done / not checked.** The radix sequence inside the four-step: radix 8 or 16 for the chains of
+a block (the rule given the block's stride, or the single-line rule) was not consistently faster,
+mostly 1.00–1.24 times the current time; chains of 2048 with radix 8 took 0.89–0.90 (8 threads).
+The lane-block kernels themselves are slower than single lines of the same length (1.1–1.9 times
+per element in cache for powers of two), which is the larger gain left. A three-factor (nested) four-step for lengths whose blocks outgrow L2. The
+multiple of the cache for the one-thread rule and every threshold here are measured on this machine
+only; aarch64 and 32-byte vectors are not measured (there A is written with ordinary stores). 32
+threads could not be measured on the shared machine (one thread of the pool waits for a core).
 
 ## Run-time pass plans for trimmed programs
 

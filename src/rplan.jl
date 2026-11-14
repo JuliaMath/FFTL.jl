@@ -41,7 +41,7 @@ function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Intege
   blue = Union{Nothing,RBluestein{T}}[]
   # one long line (the other transformed dimensions have length 1): the four-step algorithm
   long = filter(d -> dims[d] > 1, reg)
-  four = length(long) == 1 && fourstep_dim(dims, long[1], nt) ? FourStep{T}(dims[long[1]], Int(σ), nt, RChain) : nothing
+  four = length(long) == 1 && fourstep_dim(T, dims, long[1], nt) ? FourStep{T}(dims[long[1]], Int(σ), nt, RChain) : nothing
   for d in reg
     n = dims[d]
     S, _ = dim_extent(dims, d)
