@@ -383,7 +383,8 @@ function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N
   even = iseven(n) && n > 2
   # odd n: two real lines per complex line, buffer (n, P) or (P, n) (ka_r2co_pre!)
   L = prod(sz) ÷ n; P = cld(L, 2); S1 = prod(sz[1:d1-1]; init = 1) == 1
-  lsz = even ? setdim(sz, d1, n ÷ 2) : S1 ? (n, P) : (P, n)
+  # a single line keeps a 1-D buffer, so that the 1-D pass rules apply (plan_gmax)
+  lsz = even ? setdim(sz, d1, n ÷ 2) : L == 1 ? (n,) : S1 ? (n, P) : (P, n)
   w = todevice(backend, [Complex{T}((σ < 0 ? complex(0, -0.5) : complex(0, 1)) * cispi(2σ * k / n)) for k in 0:h-1])
   fuse = even && d1 == 1 && FFTL.factorize(n ÷ 2, KA_MAX_PRIME)[2] == 1
   # odd n with a fused line plan (Rader or one-pass Bluestein): packing in its loads and stores
@@ -655,7 +656,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
     end
     if k in (FFTL.REDFT10, FFTL.RODFT10) && isodd(n) && n >= 3
       L = prod(sz) ÷ n; P = cld(L, 2); S1 = prod(sz[1:d-1]; init = 1) == 1
-      zsz = S1 ? (n, P) : (P, n)
+      zsz = L == 1 ? (n,) : S1 ? (n, P) : (P, n)   # a single line: 1-D, as in KARealPlan
       tw = todevice(backend, [Complex{T}(cispi(-j / (2n))) for j in 0:n-1])
       rp = (k == FFTL.RODFT10 ? :dst2 : :dct2, prod(sz[1:d-1]; init = 1), n, L, N)
       push!(dims, (:dct2o, Int(k), KAPlan(backend, T, zsz, -1; region = S1 ? 1 : 2, rpack = rp), tw,

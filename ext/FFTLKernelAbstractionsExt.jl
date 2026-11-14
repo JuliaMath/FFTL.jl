@@ -978,7 +978,9 @@ end
 # Lines per workgroup of a one-pass strided dimension with ragged lanes (as pass_G_cap without
 # the divisibility; 128 and 224 along E = 101 on the M1: G = 1 runs at a third of the bandwidth).
 # Only below G = 4: with a good divisor ragged lanes are mixed (whole transforms, interleaved:
-# 125³ G 5 → 16 0.88×, 243² G 9 → 16 1.12×, 99³, 105³, 135²×64 1.00–1.03×).
+# 125³ G 5 → 16 0.88×, 243² G 9 → 16 1.12×, 99³, 105³, 135²×64 1.00–1.03×). Apple GPUs only:
+# on an RTX A6000 the second dimension of rfft 256² (129 lines of 256, G 3 → 16) took 1.8× as long
+# in Float64 (1.08× in Float32).
 ragged_G(R, E, B, gmax, lim) = max(1, min(lim.nstat ÷ R, gmax, 16, (lim.wmax * maximum(local_radices(R))) ÷ R, E * B))
 
 # Rader along a dimension of prime length p whose p - 1 is smooth and fits one pass: with a
@@ -1221,7 +1223,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
   for (i, sp) in enumerate(specs)
     G = haskey(sp, :G) ? sp.G : pass_G(sp.R, sp.s, sp.m, sp.E, sp.B, gmax, 4 <= get(sp, :rh, 0) <= 7 ? hook_limits(lim, backend) : lim)
     # one pass along a strided dimension whose line count has no good divisor: ragged lanes
-    if !haskey(sp, :G) && sp.s == 1 && sp.m == 1 && sp.E > 1 && sp.Nx == 0 && sp.Ny == 0 && get(sp, :rh, 0) == 0 &&
+    if prof === :apple && !haskey(sp, :G) && sp.s == 1 && sp.m == 1 && sp.E > 1 && sp.Nx == 0 && sp.Ny == 0 && get(sp, :rh, 0) == 0 &&
        !(i > 1 && padded[i-1]) && !padded[i] && G < 4 && ragged_G(sp.R, sp.E, sp.B, gmax, lim) > G
       G = ragged_G(sp.R, sp.E, sp.B, gmax, lim)
       sp = merge(sp, (ragged = true,))
