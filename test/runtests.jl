@@ -120,8 +120,75 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "four-step on one thread, $T" for T in (Float64, Float32)
+    # serial_fourstep reads the last-level cache size when a plan is made: with 32 KiB the threshold
+    # is 512 KiB, so test-sized lines take the one-thread four-step (Float32: powers of two only)
+    try
+      FFTL.set_cpu_caches!(llc = 32 << 10)
+      for n in pick([2^16, 2^17, 3^10, 3 * 2^15], [2^16, 3^10])
+        x = randn(Complex{T}, n)
+        p = FFTL.plan_fft(x; threads = 1)
+        expect = n * sizeof(Complex{T}) >= 512 << 10 && (T == Float64 || ispow2(n))
+        @test (p.kernels[1] isa FFTL.FourStep) == expect
+        ref = FFTL.RChain{T}(n, -1)
+        r = similar(x); w1 = similar(x); w2 = similar(x)
+        GC.@preserve x r w1 w2 FFTL.run!(Ptr{T}(pointer(r)), Ptr{T}(pointer(x)), Ptr{T}(pointer(w1)), Ptr{T}(pointer(w2)), ref, 1)
+        @test relerr(p * x, r) < 10tol(T)
+        @test relerr(FFTL.plan_bfft(x; threads = 1) * (p * x) / n, x) < 10tol(T)
+      end
+      # a Bluestein length whose convolution grid takes the four-step on one thread
+      n = 30011
+      x = randn(Complex{T}, n)
+      p = FFTL.plan_fft(x; threads = 1)
+      T == Float64 && @test p.kernels[1].fwd isa FFTL.FourStep
+      y = p * x
+      @test relerr(FFTL.plan_bfft(x; threads = 1) * y / n, x) < 10tol(T)
+      @test sum(abs2, y) / n ≈ sum(abs2, x) rtol = 10tol(T)
+    finally
+      FFTL.set_cpu_caches!()
+    end
+  end
+
+  @testset "four-step twiddle-transpose and register transpose, $T" for T in (Float64, Float32)
+    C = Complex{T}; CT = sizeof(C)
+    # vectorised against the loop over single values: full table (bitwise) and factor tables,
+    # whole and ragged lane blocks, lengths that are and are not multiples of the vector width
+    for (n1, n2, nt) in ((64, 256, 4), (96, 60, 4), (1024, 1024, 16))
+      n = n1 * n2
+      P = FFTL.FourStep{T}(n, -1, nt)
+      n1, n2 = P.n1, P.n2
+      W = FFTL.unit_roots(-1, n)
+      for full in (true, false), Bc in (8, 7)
+        tw = full ? Complex{T}.([W[(j1 * k2) % n + 1] for k2 in 0:n2-1, j1 in 0:n1-1][:]) :
+                    Complex{T}[W[(0:n1-1) .* n2 .+ 1]; W[1:n2]]
+        w = randn(C, Bc * n2); i0 = n1 ÷ 2
+        a1 = zeros(C, n1 * (n2 + FFTL.row_pad(T))); a2 = zeros(C, n1 * (n2 + FFTL.row_pad(T)))
+        GC.@preserve w tw a1 a2 begin
+          pw, ptw, p1, p2 = pointer(w), pointer(tw), pointer(a1), pointer(a2)
+          if full
+            FFTL.twiddle_transpose!(p1, pw, ptw, i0, Bc, n2)
+            FFTL.tt_full_single!(p2, pw, ptw, i0, Bc, n2, 0, Bc, 0)
+            @test a1 == a2
+          else
+            FFTL.twiddle_transpose!(p1, pw, ptw, i0, Bc, n1, n2)
+            FFTL.tt_factor_single!(p2, pw, ptw, i0, Bc, n1, n2, 0, Bc, 0)
+            @test relerr(a1, a2) < 10eps(T)
+          end
+        end
+      end
+    end
+    # C×C register transpose for every vector type of the kernels
+    for N in (2, 4, 8, 16)
+      N * sizeof(T) <= 64 || continue
+      K = N ÷ 2
+      M = [C(r, c) for r in 0:K-1, c in 0:K-1]
+      out = FFTL.ctranspose(ntuple(r -> FFTL.Vec{N,T}(Tuple(reinterpret(T, M[r, :]))), K))
+      @test all(reinterpret(C, collect(Tuple(out[c]))) == M[:, c] for c in 1:K)
+    end
+  end
+
   @testset "large lengths: inverse and Parseval, $T" for T in (Float64, Float32)
-    # 262147 (prime) and 2·262147: convolution length beyond 2^19, a four-step on x86
+    # 262147 (prime) and 2·262147: convolution length beyond 2^19
     for n in pick([4096, 3^8, 10^5, 2^18, 2 * 10007, 262147, 2 * 262147], [3^8, 2^18, 2 * 10007])
       x = randn(Complex{T}, n)
       y = FFTL.fft(x)

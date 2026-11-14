@@ -70,7 +70,7 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Thre
   # transform on several threads uses the four-step algorithm
   cache = Dict{Tuple{Int,Int},Kernel{T}}()
   function dim_kernel(d)
-    fourstep_dim(sz, d, nt) && return FourStep{T}(sz[d], σ, nt)
+    fourstep_dim(T, sz, d, nt) && return FourStep{T}(sz[d], σ, nt)
     composite_mt_dim(T, sz, d, nt) && return CompositeMT{T}(sz[d], σ, nt)
     bluestein_mt_dim(sz, d, nt) && return BluesteinMT{T}(sz[d], σ, nt)
     S, _ = dim_extent(sz, d)

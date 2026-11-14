@@ -15,6 +15,8 @@ y8 ≈ fft(x)
 
 The threaded result agrees with the single-threaded one up to rounding. Long one-dimensional
 transforms use a different algorithm on several threads (four-step), so their last bits can differ.
+Very long lines (16 times the last-level cache of a core and more) take the four-step on one
+thread as well.
 
 ## When threads are used
 

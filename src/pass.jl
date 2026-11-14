@@ -110,7 +110,7 @@ function plan_pass(v::StridedArray{Complex{T},N}, d::Integer; sign::Integer = -1
   sz = size(v); st = strides(v); n = sz[d]; nt = max(1, Int(threads)); σ = Int(sign)
   lanes, Sd, offs = pass_layout(sz, st, Int(d))
   # a single long line on several threads: four-step
-  k = d == 1 && length(offs) == 1 && use_fourstep(n, nt) ? FourStep{T}(n, σ, nt) :
+  k = d == 1 && length(offs) == 1 && use_fourstep(T, n, nt) ? FourStep{T}(n, σ, nt) :
       d == 1 ? kernel(T, n, σ) : kernel(T, n, σ, Sd)
   pass_build(typeof(k), v, Int(d), σ, nt, k, lanes, Sd, offs)
 end
@@ -128,7 +128,7 @@ function plan_pass_runtime(v::StridedArray{Complex{T},N}, d::Integer; sign::Inte
   pass_checks(v, d, sign)
   sz = size(v); st = strides(v); n = sz[d]; nt = max(1, Int(threads)); σ = Int(sign)
   lanes, Sd, offs = pass_layout(sz, st, Int(d))
-  k::RPassKern{T} = d == 1 && length(offs) == 1 && use_fourstep(n, nt) ? FourStep{T}(n, σ, nt, RChain) :
+  k::RPassKern{T} = d == 1 && length(offs) == 1 && use_fourstep(T, n, nt) ? FourStep{T}(n, σ, nt, RChain) :
       runtime_kernel(T, n, σ, d == 1 ? 1 : Sd)
   pass_build(RPassKern{T}, v, Int(d), σ, nt, k, lanes, Sd, offs)
 end

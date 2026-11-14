@@ -243,7 +243,7 @@ sortregion(region, N) = Tuple(normregion(region, N))
 # gain of the threaded over the serial line: Float32 smooth 0.7 at 128 KB, 1.5 at 256 KB; non-smooth
 # 1.05 at 120-130 KB, 1.8 at 147 KB; Float64 non-smooth 1.5 at 240 KB).
 use_real_threads(::Type{T}, n, nt) where {T} =
-  (use_fourstep(inner_length(n), nt) && n * sizeof(T) >= TUNING[].real_fourstep_bytes) ||
+  (use_fourstep(T, inner_length(n), nt) && n * sizeof(T) >= TUNING[].real_fourstep_bytes) ||
   ((use_composite_mt(T, inner_length(n), nt) || use_bluestein_mt(inner_length(n), nt)) &&
    n * sizeof(T) >= TUNING[].real_bluestein_bytes)
 
@@ -283,7 +283,7 @@ inner_length(n) = iseven(n) ? n ÷ 2 : n
 
 # The threaded kernel of the DFT of length h (σ = -1 forward, +1 backward), or nothing.
 function half_threads(::Type{T}, h, σ, nt) where {T}
-  use_fourstep(h, nt) && return FourStep{T}(h, σ, nt)
+  use_fourstep(T, h, nt) && return FourStep{T}(h, σ, nt)
   use_composite_mt(T, h, nt) && return CompositeMT{T}(h, σ, nt)
   use_bluestein_mt(h, nt) && return BluesteinMT{T}(h, σ, nt)
   nothing
