@@ -391,7 +391,7 @@ function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N
   line = fuse ? KAPlan(backend, T, lsz, σ; region = d1:d1, rhook = σ, rtab = w) :
          even ? KAPlan(backend, T, lsz, σ; region = d1:d1) :
          KAPlan(backend, T, lsz, σ; region = S1 ? (1:1) : (2:2),
-                rpack = (σ < 0 ? :r2c : :c2r, prod(sz[1:d1-1]; init = 1), n, L))
+                rpack = (σ < 0 ? :r2c : :c2r, prod(sz[1:d1-1]; init = 1), n, L, N))
   rest = length(reg) > 1 ? KAPlan(backend, T, hsz, σ; region = reg[2:end]) : nothing
   bufs = Any[devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, lsz), devzeros(backend, Complex{T}, hsz)]
   KARealPlan{T,N,typeof(backend)}(sz, reg, σ, line, rest, w, bufs, backend)
@@ -657,7 +657,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       L = prod(sz) ÷ n; P = cld(L, 2); S1 = prod(sz[1:d-1]; init = 1) == 1
       zsz = S1 ? (n, P) : (P, n)
       tw = todevice(backend, [Complex{T}(cispi(-j / (2n))) for j in 0:n-1])
-      rp = (k == FFTL.RODFT10 ? :dst2 : :dct2, prod(sz[1:d-1]; init = 1), n, L)
+      rp = (k == FFTL.RODFT10 ? :dst2 : :dct2, prod(sz[1:d-1]; init = 1), n, L, N)
       push!(dims, (:dct2o, Int(k), KAPlan(backend, T, zsz, -1; region = S1 ? 1 : 2, rpack = rp), tw,
                    devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
       continue

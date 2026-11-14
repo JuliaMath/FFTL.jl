@@ -276,7 +276,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     rbase(l) = quote
       rbl = $(lane(l)); rol = rbl ÷ $(Int32(E)); rol * $(Int32(E * Nx)) + rbl - rol * $(Int32(E))
     end
-    # rpack = (mode, S, n, L) (fused kernels only, see ka_real.jl): the NL complex lines are pairs
+    # rpack = (mode, S, n, L, ndims of the user's arrays) (fused kernels only, see ka_real.jl): the NL complex lines are pairs
     # of the L real lines of length n, S apart in memory; complex line l holds real lines l and
     # l + NL as real and imaginary parts. mode :r2c and :c2r (half spectra of n ÷ 2 + 1), :dct2
     # and :dst2 (the permuted line of Makhoul's DCT-II). The loads build element e of the complex
@@ -1246,6 +1246,11 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
       # DCT hooks read and write the real lines
       rD = cu.CuArray{T,D}(undef, ntuple(zero, D))
       pkm = get(sp, :rpack, nothing) === nothing ? nothing : sp.rpack[1]
+      if pkm !== nothing
+        # packed real lines: the call passes the user's arrays, of their own ndims
+        nd = sp.rpack[5]
+        rD = cu.CuArray{T,nd}(undef, ntuple(zero, nd)); dD = cu.CuArray{Complex{T},nd}(undef, ntuple(zero, nd))
+      end
       ya = sp.dst === :y ? ((get(sp, :post, false) && get(sp, :rh, 0) >= 2) || pkm in (:dct2, :dst2, :c2r) ? rD : dD) : d1
       xa = sp.src === :x ? ((get(sp, :pre, false) && get(sp, :rh, 0) >= 2) || get(sp, :xreal, false) || pkm in (:r2c, :dct2, :dst2) ? rD : dD) : d1
       kk = Base.invokelatest(dcc, k, ya, xa, tw, tw, tw, bytes, bytes > 0 ? 0 : W)
