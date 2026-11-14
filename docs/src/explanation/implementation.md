@@ -141,3 +141,15 @@ slower, and its purpose is accuracy and generality.
 `ext/FFTLKernelAbstractionsExt.jl` holds the KernelAbstractions extension. Its kernels compute one
 pass of a transform in workgroup memory. The pass sizes follow the workgroup memory the device
 offers; the rules were measured on an Apple M1 Max, and the CUDA path on an RTX A6000.
+
+A workgroup holds `G` lines (lanes) of a pass. Normally `G` divides the number of lines; a pass
+over all of a dimension (one pass) may instead take the lines in memory order with any `G`
+(ragged lanes: the lanes past the last line repeat it and store nothing new), which keeps the
+workgroups full when the line count is prime. Lengths with a prime factor above 31 use a fused
+kernel when the convolution fits one pass: Bluestein's (forward DFT of the chirped line, product
+with the transformed chirp, backward DFT) or Rader's (the same with permuted loads and stores, for a
+prime whose ``p - 1`` is 13-smooth), both in workgroup memory. These kernels split their length into
+few, even radices (`local_radices(n, true)`), since a thread per butterfly of the largest radix
+makes a small radix next to 16 take many rounds. With `rpack` the fused kernel also reads two real
+lines as one complex line and writes the real transform (odd r2c, c2r, DCT-II, DST-II), see
+`ext/ka_real.jl`.

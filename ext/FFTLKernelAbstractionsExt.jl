@@ -986,7 +986,8 @@ ragged_G(R, E, B, gmax, lim) = max(1, min(lim.nstat ÷ R, gmax, 16, (lim.wmax * 
 #   X_(g^-k) = x_0 + (a ⊛ b)_k,  X_0 = x_0 + Σ_q a_q,
 # the cyclic convolution of length p - 1 by FFT, product with b̂ = FFT(b)/(p - 1), backward FFT,
 # all in one kernel as the fused Bluestein convolution (half the length of Bluestein's, no
-# padding). The permutations g^q and g^-q (mod p) are the real and imaginary parts of the cin
+# padding). Rader inside the radix kernels and the limit 13 follow the VkFFT paper (Tolmachev,
+# IEEE Access 11, 2023, §IV.A; no VkFFT code was read). The permutations g^q and g^-q (mod p) are the real and imaginary parts of the cin
 # table (exact integers), followed by the inverse of the second (cin[p - 1 + m] = k with
 # g^-k = m, for rpack); b̂ is the cout table.
 # p - 1 with prime factors up to 13 only: a radix-23 stage makes the fused kernel slower than
