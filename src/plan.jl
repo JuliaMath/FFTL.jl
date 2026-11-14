@@ -150,6 +150,31 @@ function unit_roots(σ::Int, n::Int)
   W
 end
 
+"""
+    unit_root(σ, n, j)
+
+`unit_roots(σ, n)[j+1]` without the table: the same symmetries, applied to the one index, so the
+value is bitwise the table's at one `cispi`. For the few roots that a large table would be built
+for (the factor tables of a long four-step).
+"""
+function unit_root(σ::Int, n::Int, j::Int)
+  if n % 4 != 0
+    j <= n ÷ 2 && return cispi(2σ * j / n)
+    return conj(unit_root(σ, n, n - j))
+  end
+  q = n ÷ 4
+  j > 2q && return -unit_root(σ, n, j - 2q)
+  if j > q
+    c = unit_root(σ, n, j - q)
+    return σ > 0 ? complex(-imag(c), real(c)) : complex(imag(c), -real(c))
+  end
+  if n % 8 == 0 && j > n ÷ 8
+    c = unit_root(σ, n, q - j)
+    return σ > 0 ? complex(imag(c), real(c)) : complex(-imag(c), -real(c))
+  end
+  cispi(2σ * j / n)
+end
+
 # w_L^(k p) = W_n^(k p n/L) at (r-1) p + k for k < r, p < L/r. A function of its own: a
 # comprehension inside the loop above would capture the reassigned L in a box.
 function stage_twiddles(::Type{T}, W::Vector{ComplexF64}, r::Int, L::Int) where {T}

@@ -28,8 +28,9 @@
 
 Largest prime factor that is a radix of a chain; lengths with larger prime factors are resampled
 onto a smooth grid (see `Resample`). The primes from `LOOPED_RADIX_MIN` on share one kernel
-(primestage.jl); the limit is where that kernel stopped being faster than Bluestein's algorithm
-for a line of prime length, measured before resampling replaced Bluestein's algorithm.
+(primestage.jl). Up to 73 that kernel is 2.3–4.3× faster than resampling as a factor of a longer
+length, and faster for a `Float64` line of the prime alone; a `Float32` line of a prime from 47 on
+is up to 2× faster resampled (EPYC 9354, see the design decisions).
 """
 const MAX_RADIX_PRIME = 73
 

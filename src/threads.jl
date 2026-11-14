@@ -227,13 +227,14 @@ end
 
 function fourstep_twiddles(::Type{T}, n::Int, σ::Int, n1::Int) where {T}
   n2 = n ÷ n1
-  W = unit_roots(σ, n)
   # measured on the M1; on Zen 3 a threshold at its 32 MB L3 instead measures the same within noise (0.93–1.07)
   if n * sizeof(Complex{T}) > TUNING[].factor_twiddles
+    # n1 + n2 roots, each computed alone (no table of all n roots, which is twice the data in Float64)
     t = Vector{Complex{T}}(undef, n1 + n2)
-    for a in 0:n1-1; t[a+1] = Complex{T}(W[a*n2+1]); end
-    for b in 0:n2-1; t[n1+b+1] = Complex{T}(W[b+1]); end
+    for a in 0:n1-1; t[a+1] = Complex{T}(unit_root(σ, n, a * n2)); end
+    for b in 0:n2-1; t[n1+b+1] = Complex{T}(unit_root(σ, n, b)); end
   else
+    W = unit_roots(σ, n)
     t = Vector{Complex{T}}(undef, n)
     for j1 in 0:n1-1, k2 in 0:n2-1
       t[j1*n2+k2+1] = Complex{T}(W[(j1*k2)%n+1])

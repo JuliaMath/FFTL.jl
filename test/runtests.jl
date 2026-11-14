@@ -107,6 +107,46 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "deconvolution factors of resampling, $T" for T in (Float64, Float32)
+    # against the same quadrature rule in 256-bit arithmetic: odd and even n, within one block of
+    # resample_corr and across several, both ends of the index range
+    setprecision(BigFloat, 256) do
+      for n in pick([2, 5, 64, 65, 1009, 2018], [5, 64, 2018])
+        m = FFTL.grid_length(T, 2n); w = FFTL.resample_width(T)
+        c = FFTL.resample_corr(T, n, m, w)
+        β = big(FFTL.resample_beta(n, m, w)); zq, wq = FFTL.gauss_legendre(2w + 20)
+        worst = 0.0
+        for j in unique([0:min(n - 1, 70); max(0, n - 70):n-1])
+          ν = big(j < cld(n, 2) ? j : j - n) / m
+          ref = 1 / (w * sum(big(wq[q]) * FFTL.es_kernel(big(zq[q]), β) * cospi(ν * w * big(zq[q]))
+                             for q in eachindex(zq) if zq[q] > 0))
+          worst = max(worst, Float64(abs(c[j+1] - ref) / abs(ref)))
+        end
+        @test worst < 16eps(T)
+      end
+    end
+  end
+
+  @testset "single unit roots" begin
+    # bitwise the entries of the table, so that tables built from single roots equal the table's
+    for σ in (-1, 1), n in (1, 2, 3, 4, 6, 8, 12, 16, 100, 1000, 1024, 3 * 2^10, 10007)
+      W = FFTL.unit_roots(σ, n)
+      @test all(j -> FFTL.unit_root(σ, n, j) === W[j+1], 0:n-1)
+    end
+    # the factor tables of a four-step (forced with a threshold of 0 bytes) hold the table's roots
+    old = FFTL.TUNING[]
+    try
+      FFTL.TUNING[] = FFTL.Tuning(ntuple(i -> fieldname(FFTL.Tuning, i) === :factor_twiddles ? 0 : getfield(old, i),
+                                         fieldcount(FFTL.Tuning))...)
+      for T in (Float64, Float32), σ in (-1, 1), n in (2^14, 3 * 2^12)
+        n1 = FFTL.fourstep_split(n); n2 = n ÷ n1; W = FFTL.unit_roots(σ, n)
+        @test FFTL.fourstep_twiddles(T, n, σ, n1) == Complex{T}[W[(0:n1-1) .* n2 .+ 1]; W[1:n2]]
+      end
+    finally
+      FFTL.TUNING[] = old
+    end
+  end
+
   @testset "smooth part times leftover, $T" for T in (Float64, Float32)
     # n = s·q: a chain of length s, a resampled DFT of the leftover q (prime or composite)
     for n in pick([2 * 79, 3 * 83, 16 * 89, 29 * 79, 64 * 79, 2 * 79^2, 5 * 13 * 79, 2 * 79 * 83, 6 * 1009,

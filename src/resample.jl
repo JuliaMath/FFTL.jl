@@ -141,19 +141,50 @@ function gauss_legendre(nq::Int)
   z, wq
 end
 
-# Φ̂(ν) = w·∫₀¹ψ(z)cos(πνwz)dz by the positive half of a symmetric Gauss-Legendre rule
+# Indices per block of the deconvolution factors (resample_corr): the table of the offsets in a
+# block holds 2·CORR_BLOCK values per quadrature node and stays in L1.
+const CORR_BLOCK = 64
+
+# 1/Φ̂(ν) for input j, ν = j/m (j < n/2) or (j - n)/m, with Φ̂(ν) = w·∫₀¹ψ(z)cos(πνwz)dz by the
+# positive half of a symmetric Gauss-Legendre rule: Φ̂(ν) = Σ_q a_q cos(π f_q ν), a_q = w_q ψ(z_q),
+# f_q = w z_q. Φ̂ is even, so it is evaluated at t = |j| = 0 … n÷2 only. The t are consecutive
+# integers: with t = t0 + k (t0 a multiple of the block, k < CORR_BLOCK),
+#   cos(π f_q (t0 + k)/m) = cos(π f_q t0/m) cos(π f_q k/m) - sin(π f_q t0/m) sin(π f_q k/m),
+# one sincospi per node and block and a table over k shared by all blocks. Each term is a product of
+# correctly rounded values, so the error does not grow along the block (as it would with a
+# rotation recurrence); against 256-bit arithmetic it matches one cospi per term (2.5 ulp median).
+# The loop over k is innermost, so it vectorises without reordering the sum over the nodes.
 function resample_corr(::Type{T}, n::Int, m::Int, w::Int) where {T}
   β = resample_beta(n, m, w)
   zq, wq = gauss_legendre(2w + 20)
+  pos = findall(>(0), zq)
+  a = Float64[wq[q] * es_kernel(zq[q], β) for q in pos]
+  f = Float64[w * zq[q] for q in pos]
+  N = n ÷ 2
+  B = min(CORR_BLOCK, N + 1)
+  Kc = Matrix{Float64}(undef, B, length(pos)); Ks = similar(Kc)
+  for q in eachindex(pos), k in 0:B-1
+    Ks[k+1, q], Kc[k+1, q] = sincospi(k / m * f[q])
+  end
+  Φ = Vector{Float64}(undef, B)
   hp = cld(n, 2)
   corr = Vector{T}(undef, n)
-  for j in 0:n-1
-    ν = (j < hp ? j : j - n) / m
-    Φ = 0.0
-    for q in eachindex(zq)
-      zq[q] > 0 && (Φ += wq[q] * es_kernel(zq[q], β) * cospi(ν * w * zq[q]))
+  for t0 in 0:B:N
+    nk = min(B, N - t0 + 1)
+    fill!(Φ, 0.0)
+    for q in eachindex(pos)
+      s0, c0 = sincospi(t0 / m * f[q])
+      ca = a[q] * c0; sa = a[q] * s0
+      @inbounds for k in 1:nk
+        Φ[k] += ca * Kc[k, q] - sa * Ks[k, q]
+      end
     end
-    corr[j+1] = T(1 / (w * Φ))
+    @inbounds for k in 1:nk
+      t = t0 + k - 1
+      v = T(1 / (w * Φ[k]))
+      t < hp && (corr[t+1] = v)              # j = t
+      t > 0 && n - t >= hp && (corr[n-t+1] = v)   # j = n - t
+    end
   end
   corr
 end
