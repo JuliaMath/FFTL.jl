@@ -1327,16 +1327,21 @@ function RawLaunch(kern, W, groups, bytes, args, cu)
             fast ? lib.cuLaunchKernel : nothing, cu.stream)
 end
 
+# A real array where the pass reads or writes complex values (r2c and c2r lines of even length
+# along dimension 1): reinterpreted here, on the device array in the fast path, which costs far
+# less than reinterpreting the CuArray (about 1 µs, as much as half a small transform).
+ascomplex(a, ::Type{D}) where {D} = eltype(a) <: Real && eltype(D) <: Complex ? reinterpret(eltype(D), a) : a
+
 function launch_raw!(r::RawLaunch{K,F,A,B}, y, x, tw, cin, cout) where {K,F,A,B}
   if r.fast
-    a = r.conv(y); b = r.conv(x)
+    a = ascomplex(r.conv(y), A); b = ascomplex(r.conv(x), B)
     if a isa A && b isa B
       r.ry[] = a; r.rx[] = b
       GC.@preserve r y x r.launch(r.fun, r.groups, 1, 1, r.W, 1, 1, r.bytes, r.stream(), r.ptrs, C_NULL)
       return
     end
   end
-  r.kern(y, x, tw, cin, cout; threads = r.W, blocks = r.groups, shmem = r.bytes)
+  r.kern(ascomplex(y, A), ascomplex(x, B), tw, cin, cout; threads = r.W, blocks = r.groups, shmem = r.bytes)
   return
 end
 
