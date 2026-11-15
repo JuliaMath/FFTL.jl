@@ -103,7 +103,25 @@ Adding a machine means adding a profile; no script changes.
 | `max_load` | start refused when the 1-minute load is higher (`--force` overrides) |
 | `pin` | `[pin]` table: thread count → CPU list for `taskset` (Linux); GPU profiles use the key `"0"`, a core on the GPU's NUMA node |
 | `device` | `"metal"` or `"cuda"` for GPU profiles, `libs` lists the libraries |
+| `fftw_lib`, `fftwf_lib` | the native FFTW build of the machine (double, single); written into the project's `LocalPreferences.toml` as FFTW_jll's library paths before FFTW loads |
+| `fftw` | `"jll"` to measure FFTW_jll's library on purpose; without it a CPU profile needs `fftw_lib` |
 | `host`, `remote_root`, `julia` | only for remote profiles |
+
+## FFTW: which library ran
+
+FFTW.jl loads FFTW_jll, whose library paths are preferences; they apply only when FFTW_jll is a
+direct dependency of the environment (it is in `bench/Project.toml`; add it to a machine's own
+environment too). `measure.jl` writes the profile's `fftw_lib`/`fftwf_lib` into the environment's
+`LocalPreferences.toml` (not versioned) before it loads FFTW, and the `.meta` records for both
+precisions whether the loaded library is native or the JLL artifact, its version string and its
+compiler flags (`fftw_cc`). A CPU run stops when the profile names a native library and another one
+is loaded, or names none (unless `fftw = "jll"`).
+
+## ducc0
+
+1-D c2c, r2c and c2r: per case the faster of a plan made once (`ducc_plan1d_setup`) and the free
+call; small lengths gain most from the plan, long `Float32` lines run faster through the free call.
+N-D transforms and the DHT use the array API, which has no plan object.
 
 ## GPU (`gpu.jl`)
 

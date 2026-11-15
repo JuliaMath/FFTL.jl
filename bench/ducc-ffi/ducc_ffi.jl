@@ -45,30 +45,36 @@ function ducc_c2r_setup(x::Array{ComplexF32}, y::Array{Float32}, nt)
                x, y, sh, nd, 1.0f0, nt)), 0.0
 end
 
-# --- 1-D plans (plan made once, buffer made once; each call copies its input first) ----------
-# Returns (closure, planning seconds) or nothing. The copy of the input is inside the closure: the
-# plan works in place. Real transforms convert between halfcomplex and complex in the library.
+# --- 1-D plans (plan made once, buffer made once) ------------------------------------------------
+# Returns (closure, planning seconds) or nothing. The plans work in place: c2c copies the input to
+# y and transforms y (and copies the result back when it ends in the work buffer), r2c copies the input to a work array (the library overwrites it); both copies
+# are part of the time, as an out-of-place call of the library would need them. c2r reads the half
+# spectrum without changing it. Real transforms convert between halfcomplex and complex in the
+# library.
 function ducc_plan1d_setup(kind::Symbol, x, y, nt)
   kind in (:c2c, :r2c, :c2r) || return nothing
   n = kind === :c2r ? length(y) : length(x)
   ducc_plan1d_setup(Val(kind), x, y, n, nt)
 end
 
+# pocketfft_c::exec leaves the result in its input or in the work buffer, depending on the passes
+d1_result!(y, r::Ptr{Cvoid}) = (r == pointer(y) || unsafe_copyto!(pointer(y), Ptr{eltype(y)}(r), length(y)); nothing)
+
 function ducc_plan1d_setup(::Val{:c2c}, x::Array{ComplexF64}, y::Array{ComplexF64}, n, nt)
   t = @elapsed p = ccall((:d1_plan_f64, LIB), Ptr{Cvoid}, (Csize_t,), n)
   buf = Vector{ComplexF64}(undef, Int(ccall((:d1_bufsize_f64, LIB), Csize_t, (Ptr{Cvoid},), p)))
-  xw = similar(x); h = Ref(p)
+  h = Ref(p)
   finalizer(r -> ccall((:d1_free_f64, LIB), Cvoid, (Ptr{Cvoid},), r[]), h)
-  (() -> (copyto!(xw, x); ccall((:d1_exec_f64, LIB), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cdouble, Cint, Csize_t),
-                                 h[], xw, buf, 1.0, Cint(1), Csize_t(nt)))), t
+  (() -> (copyto!(y, x); d1_result!(y, ccall((:d1_exec_f64, LIB), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cdouble, Cint, Csize_t),
+                                                h[], y, buf, 1.0, Cint(1), Csize_t(nt))))), t
 end
 function ducc_plan1d_setup(::Val{:c2c}, x::Array{ComplexF32}, y::Array{ComplexF32}, n, nt)
   t = @elapsed p = ccall((:d1_plan_f32, LIB), Ptr{Cvoid}, (Csize_t,), n)
   buf = Vector{ComplexF32}(undef, Int(ccall((:d1_bufsize_f32, LIB), Csize_t, (Ptr{Cvoid},), p)))
-  xw = similar(x); h = Ref(p)
+  h = Ref(p)
   finalizer(r -> ccall((:d1_free_f32, LIB), Cvoid, (Ptr{Cvoid},), r[]), h)
-  (() -> (copyto!(xw, x); ccall((:d1_exec_f32, LIB), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cfloat, Cint, Csize_t),
-                                 h[], xw, buf, 1.0f0, Cint(1), Csize_t(nt)))), t
+  (() -> (copyto!(y, x); d1_result!(y, ccall((:d1_exec_f32, LIB), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cfloat, Cint, Csize_t),
+                                                h[], y, buf, 1.0f0, Cint(1), Csize_t(nt))))), t
 end
 
 function ducc_plan1d_setup(::Val{:r2c}, x::Array{Float64}, y::Array{ComplexF64}, n, nt)
