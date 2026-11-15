@@ -136,7 +136,9 @@ idle wait (for the previous library's process) ran up to 1.8 µs per launch slow
 7763 host, and the timings of the in-process library depended on the round. On CUDA the Julia side waits
 with a blocking `cuStreamSynchronize`, as the C++ harnesses do: CUDA.jl's default wait sleeps after
 a short poll, which cost a library that queues faster than the GPU runs up to 100 µs per transform.
-The `.meta` records the pin and the warm-up. Not included: vkfft_batch. DHT is not run on the GPU.
+With `aa = true` in the tier, a second FFTL plan on its own arrays runs as `fftl_aa`, interleaved with the
+other libraries as on the CPU, so that the aggregation gives an A/A band for GPU panels too. The `.meta` records the pin, the
+warm-up, and whether the package code equals the latest release tag (a run may use a newer harness on released code). Not included: vkfft_batch. DHT is not run on the GPU.
 
 GPU profiles use their own environment, `bench/envs/metal` for Metal (Metal.jl, KernelAbstractions,
 FFTL dev'd from the checkout). The CPU environment `bench/Project.toml` does not list them. Instantiate
