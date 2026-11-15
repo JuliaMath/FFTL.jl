@@ -65,10 +65,20 @@ forget_wisdom() = KEEP_WISDOM || FFTW.forget_wisdom()
 fftw_prep(nt) = (FFTW.set_num_threads(nt); forget_wisdom())
 function c2c_fftl(x, y, nt); t = @elapsed p = FFTL.plan_fft(x; threads = nt); (() -> mul!(y, p, x)), t; end
 function c2c_fftw(x, y, nt); fftw_prep(nt); t = @elapsed p = FFTW.plan_fft(copy(x); flags = FFTW.MEASURE); (() -> mul!(y, p, x)), t; end
-c2c_ducc(x, y, nt) = ducc_c2c_setup(x, y, nt)
+# ducc0 at its best in 1-D: a plan made once or the free call, whichever is faster for the case
+# (Apple M1 Max: c2c Float64 n = 16 0.034 µs with the plan, 0.21 µs free; c2c Float32 n = 4096
+# 15.0 µs with the plan, 7.9 µs free). N-D through the array API, which has no plan object.
+function ducc_1d_best(kind, x, y, nt, free)
+  planned = ducc_plan1d_setup(kind, x, y, nt)
+  planned === nothing && return free()
+  freecall = free()
+  t(f) = (f(); minimum((t0 = time_ns(); for _ in 1:20; f(); end; time_ns() - t0) for _ in 1:5))
+  t(planned[1]) <= t(freecall[1]) ? planned : freecall
+end
+c2c_ducc(x, y, nt) = ndims(x) == 1 ? ducc_1d_best(:c2c, x, y, nt, () -> ducc_c2c_setup(x, y, nt)) : ducc_c2c_setup(x, y, nt)
 function r2c_fftl(x, y, nt); t = @elapsed p = FFTL.plan_rfft(x; threads = nt); (() -> mul!(y, p, x)), t; end
 function r2c_fftw(x, y, nt); fftw_prep(nt); t = @elapsed p = FFTW.plan_rfft(copy(x); flags = FFTW.MEASURE); (() -> mul!(y, p, x)), t; end
-r2c_ducc(x, y, nt) = ducc_r2c_setup(x, y, nt)
+r2c_ducc(x, y, nt) = ndims(x) == 1 ? ducc_1d_best(:r2c, x, y, nt, () -> ducc_r2c_setup(x, y, nt)) : ducc_r2c_setup(x, y, nt)
 function c2r_fftl(x, y, nt); t = @elapsed p = FFTL.plan_brfft(x, size(y, 1); threads = nt); (() -> mul!(y, p, x)), t; end
 # FFTW's c2r overwrites its input: each call gets a fresh copy (the copy is part of the time)
 function c2r_fftw(x, y, nt)
@@ -76,7 +86,7 @@ function c2r_fftw(x, y, nt)
   t = @elapsed p = FFTW.plan_brfft(copy(x), size(y, 1); flags = FFTW.MEASURE)
   (() -> (copyto!(xc, x); mul!(y, p, xc))), t
 end
-c2r_ducc(x, y, nt) = ducc_c2r_setup(x, y, nt)
+c2r_ducc(x, y, nt) = ndims(x) == 1 ? ducc_1d_best(:c2r, x, y, nt, () -> ducc_c2r_setup(x, y, nt)) : ducc_c2r_setup(x, y, nt)
 function r2r_fftl(x, y, nt, k); t = @elapsed p = FFTL.plan_r2r(x, getfield(FFTL, k); threads = nt); (() -> mul!(y, p, x)), t; end
 function r2r_fftw(x, y, nt, k); fftw_prep(nt); t = @elapsed p = FFTW.plan_r2r(copy(x), getfield(FFTW, k); flags = FFTW.MEASURE); (() -> mul!(y, p, x)), t; end
 dht_ducc(x, y, nt) = ducc_r2r_setup(x, y, nt, 2)
