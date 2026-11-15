@@ -8,16 +8,18 @@
 # NTHREADS threads (-t). The library setups, references and shape lists come from overview/run_kinds.jl,
 # which is only included here (it runs its main part only as a script).
 
-include(joinpath(@__DIR__, "..", "overview", "run_kinds.jl"))
-include(joinpath(@__DIR__, "catalog.jl"))
-include(joinpath(@__DIR__, "fftw_threads.jl"))   # FFTW with its own threads (see the file)
-
 using TOML, Dates
 include(joinpath(@__DIR__, "profiles.jl"))
+include(joinpath(@__DIR__, "fftw_lib.jl"))
 
 const TIER_NAME, MACHINE, NT, OUT = ARGS[1], ARGS[2], parse(Int, ARGS[3]), ARGS[4]
 const TIER = TOML.parsefile(joinpath(@__DIR__, "tiers", TIER_NAME * ".toml"))
 const PROFILE = TOML.parsefile(profile_path(MACHINE))
+use_native_fftw!(PROFILE)   # before FFTW is loaded
+
+include(joinpath(@__DIR__, "..", "overview", "run_kinds.jl"))
+include(joinpath(@__DIR__, "catalog.jl"))
+include(joinpath(@__DIR__, "fftw_threads.jl"))   # FFTW with its own threads (see the file)
 const DEVICE = get(PROFILE, "device", "cpu")   # "cpu", "metal" or "cuda" (gpu.jl)
 DEVICE == "cpu" || include(joinpath(@__DIR__, "gpu.jl"))
 
@@ -65,6 +67,7 @@ function gpu_main()
     println(io, "threads: 0 (GPU); pin: ", get(ENV, "HARNESS_PIN", "none"))
     println(io, "warm-up: ", round(Int, 1000WARMUP), " ms of the same transform before each round, all libraries")
     println(io, "FFTL ", fftl_version(), "; julia ", VERSION)
+    foreach(l -> println(io, l, " (reference only)"), fftw_provenance(PROFILE, FFTW; required = false))
     println(io, "libraries: ", join(libs, ","))
     println(io, "cases: ", length(cases), " (kind, shape, family)")
     println(io, "start: ", start, "; load: ", load_start)
@@ -84,6 +87,7 @@ function main()
     error("start Julia with at least $NT threads (-t $NT)")
   :fftw_measure in libnames && fftw_pthreads!()   # before the first FFTW plan
   cases = catalog(TIER)
+  fftw_lines = fftw_provenance(PROFILE, FFTW; required = :fftw_measure in libs)
   meta = replace(OUT, r"\.csv$" => ".meta")
   start, load_start = timestamp(), load_average()
   open(meta, "w") do io
@@ -91,6 +95,7 @@ function main()
     println(io, "tier: ", TIER_NAME, "; rounds ", TIER["rounds"], "; budget ", TIER["budget"], " s; stride ", TIER["stride"], "; A/A ", TIER["aa"])
     println(io, "threads: ", NT, "; pin: ", get(ENV, "HARNESS_PIN", "none"))
     println(io, "FFTL ", fftl_version(), "; julia ", VERSION)
+    foreach(l -> println(io, l), fftw_lines)
     println(io, "libraries: ", join(libs, ","), TIER["aa"] ? ",fftl_aa (A/A)" : "")
     println(io, "cases: ", length(cases), " (kind, shape, family), each in both precisions")
     println(io, "start: ", start, "; load: ", load_start)

@@ -3,3 +3,4 @@ vkfft/vkfft_bench
 cufft/cufft_bench
 ducc-ffi/libducc_ffi.*
 ducc-ffi/build.log
+LocalPreferences.toml
