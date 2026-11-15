@@ -36,7 +36,7 @@ available.
 
 | | version |
 |:--|:--|
-| the package | Julia 1.10 and newer (weekly CI on 1.10) |
+| the package | Julia 1.11 and newer (weekly CI on 1.11; the kernels use LLVM's opaque pointers, which Julia 1.10 does not have) |
 | the libfftl build | Julia 1.12 and newer with `juliac` |
 
 ## Limits
