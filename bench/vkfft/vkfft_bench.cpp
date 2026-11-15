@@ -202,6 +202,16 @@ int main(int argc, char** argv) {
   D.get(hout.data(), dst, out_bytes);
   f = fopen(fout, "wb"); fwrite(hout.data(), 1, out_bytes, f); fclose(f);
 
+  // Warm-up: back-to-back executions for BENCH_WARMUP_MS milliseconds (default 0) before the timed
+  // samples, so that the host core runs at its working clock (see bench/harness/gpu.jl).
+  if (const char* w = getenv("BENCH_WARMUP_MS")) {
+    double wms = atof(w);
+    t0 = clk::now();
+    while (ms_since(t0) < wms) {
+      for (int r = 0; r < reps; r++) run();
+      D.sync();
+    }
+  }
   std::vector<double> ts;
   for (int s = 0; s < samples; s++) {
     if (c2r) { D.put(src, hin.data(), in_bytes); D.sync(); }

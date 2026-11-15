@@ -9,7 +9,12 @@
 #
 # Timing. Julia-side libraries: a round is the median over seven samples of `reps` transforms back to
 # back with one synchronisation, per transform. The separate-process libraries report their own
-# timings: one call of their harness is one round, and that harness takes its best of seven samples.
+# timings: one call of their harness is one round, and that harness takes the median of seven
+# samples in the same way. Every library runs the same transform for WARMUP seconds before its
+# timed samples (the separate-process harnesses through BENCH_WARMUP_MS): small transforms are bound
+# by the host's launch rate, and a host core that idled (waiting for the previous library's process)
+# runs below its clock for the first milliseconds, up to 1.8 µs per launch on a shared EPYC host.
+# The machine profile's `pin` puts the measuring process and its child processes on one core.
 # plan_seconds is the first plan, with kernel generation and run-time compilation.
 #
 # Not here: vkfft_batch (Metal; all transforms of a sample in one command buffer), which is not a
@@ -30,7 +35,12 @@ if DEVICE == "metal"
   const FLOATS = (Float32,)
 else
   @eval using KernelAbstractions, CUDA
-  const AT = CUDA.CuArray; const SYNC = CUDA.synchronize
+  const AT = CUDA.CuArray
+  # Blocking wait (cuStreamSynchronize), as cudaDeviceSynchronize in the cuFFT and VkFFT harnesses.
+  # CUDA.jl's default wait polls for a while and then sleeps; when the host queues transforms
+  # faster than the GPU runs them, the backlog outlasts the polling and the sleep adds up to
+  # 100 µs per transform (a 10 µs one-block kernel, A6000 on a shared EPYC host).
+  const SYNC = () -> CUDA.synchronize(blocking = true)
   const FLOATS = (Float32, Float64)
 end
 
@@ -59,9 +69,20 @@ function julia_plan(lib, kind, xd, n1)
   (time_ns() - t0) / 1e9, p
 end
 
-# Median over seven samples of `reps` back-to-back transforms, per transform.
+const WARMUP = 0.05
+ENV["BENCH_WARMUP_MS"] = string(round(Int, 1000WARMUP))
+
+# Median over seven samples of `reps` back-to-back transforms, per transform, after WARMUP seconds
+# of the same transform.
 function per_transform(f, reps)
   f(); SYNC()
+  t0 = time_ns()
+  while time_ns() - t0 < WARMUP * 1e9
+    for _ in 1:reps
+      f()
+    end
+    SYNC()
+  end
   ts = Float64[]
   for _ in 1:7
     t = time_ns()

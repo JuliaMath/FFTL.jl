@@ -58,9 +58,9 @@ function main(args)
   julia = joinpath(Sys.BINDIR, "julia")
   project = project_path(profile["project"])
   for nt in threads
-    pin = get(profile["pin"], string(nt), nothing)
+    pin = get(get(profile, "pin", Dict()), string(nt), nothing)
     out = joinpath(dir, "t$nt.csv")
-    cmd = `$julia --startup-file=no --project=$project -t $nt $(joinpath(HERE, "measure.jl")) $tier $machine $nt $out`
+    cmd = `$julia --startup-file=no --project=$project -t $(max(nt, 1)) $(joinpath(HERE, "measure.jl")) $tier $machine $nt $out`
     if pin !== nothing && Sys.islinux()
       cmd = `taskset -c $pin $cmd`
     end

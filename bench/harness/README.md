@@ -101,7 +101,7 @@ Adding a machine means adding a profile; no script changes.
 | `project` | Julia environment (relative to `bench/`, or absolute on the machine) |
 | `threads` | default thread counts |
 | `max_load` | start refused when the 1-minute load is higher (`--force` overrides) |
-| `pin` | `[pin]` table: thread count → CPU list for `taskset` (Linux) |
+| `pin` | `[pin]` table: thread count → CPU list for `taskset` (Linux); GPU profiles use the key `"0"`, a core on the GPU's NUMA node |
 | `device` | `"metal"` or `"cuda"` for GPU profiles, `libs` lists the libraries |
 | `host`, `remote_root`, `julia` | only for remote profiles |
 
@@ -110,9 +110,15 @@ Adding a machine means adding a profile; no script changes.
 A profile with `device = "metal"` or `"cuda"` runs the catalog on the GPU, with the same raw format
 (threads = 0). Julia-side libraries: `fftl` (KernelAbstractions extension) and, on Metal, `mpsgraph`
 (Apple's FFT through Metal.jl, Float32 only). Separate-process libraries: `vkfft` and `cufft`
-(wrappers in `../vkfft` and `../cufft`). Julia-side timing: median over seven samples of `reps`
-back-to-back transforms, per transform; separate-process libraries report their own times. Not
-included: vkfft_batch. DHT is not run on the GPU.
+(wrappers in `../vkfft` and `../cufft`). Timing, the same for every library: 50 ms of the same
+transform as warm-up, then the median over seven samples of `reps` back-to-back transforms, per
+transform; the separate-process libraries do this in their own harness (`BENCH_WARMUP_MS`). Small
+GPU transforms are bound by the host's launch rate: without the warm-up, a round that follows an
+idle wait (for the previous library's process) ran up to 1.8 µs per launch slower on an AMD EPYC
+7763 host, and the timings of the in-process library depended on the round. On CUDA the Julia side waits
+with a blocking `cuStreamSynchronize`, as the C++ harnesses do: CUDA.jl's default wait sleeps after
+a short poll, which cost a library that queues faster than the GPU runs up to 100 µs per transform.
+The `.meta` records the pin and the warm-up. Not included: vkfft_batch. DHT is not run on the GPU.
 
 GPU profiles use their own environment, `bench/envs/metal` for Metal (Metal.jl, KernelAbstractions,
 FFTL dev'd from the checkout). The CPU environment `bench/Project.toml` does not list them. Instantiate
