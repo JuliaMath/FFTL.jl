@@ -387,7 +387,7 @@ function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N
   lsz = even ? setdim(sz, d1, n ÷ 2) : L == 1 ? (n,) : S1 ? (n, P) : (P, n)
   w = todevice(backend, [Complex{T}((σ < 0 ? complex(0, -0.5) : complex(0, 1)) * cispi(2σ * k / n)) for k in 0:h-1])
   fuse = even && d1 == 1 && FFTL.factorize(n ÷ 2, KA_MAX_PRIME)[2] == 1
-  # odd n with a fused line plan (Rader or one-pass Bluestein): packing in its loads and stores
+  # odd n with a one-step line plan (one pass along dimension 1, Rader, one-pass Bluestein): packing in its loads and stores
   # (rpack, line.rhook == 9), else the kernels ka_r2co_pre!/post! around it
   line = fuse ? KAPlan(backend, T, lsz, σ; region = d1:d1, rhook = σ, rtab = w) :
          even ? KAPlan(backend, T, lsz, σ; region = d1:d1) :

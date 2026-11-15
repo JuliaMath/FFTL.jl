@@ -276,14 +276,17 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     rbase(l) = quote
       rbl = $(lane(l)); rol = rbl ÷ $(Int32(E)); rol * $(Int32(E * Nx)) + rbl - rol * $(Int32(E))
     end
-    # rpack = (mode, S, n, L, ndims of the user's arrays) (fused kernels only, see ka_real.jl): the NL complex lines are pairs
+    # rpack = (mode, S, n, L, ndims of the user's arrays) (fused kernels and plain one-pass kernels
+    # of contiguous lines, see ka_real.jl): the NL complex lines are pairs
     # of the L real lines of length n, S apart in memory; complex line l holds real lines l and
     # l + NL as real and imaginary parts. mode :r2c and :c2r (half spectra of n ÷ 2 + 1), :dct2
     # and :dst2 (the permuted line of Makhoul's DCT-II). The loads build element e of the complex
     # line from the real input; the result stays in workgroup memory and a post loop writes the
     # real transform: r2c and DCT-II/DST-II from the pairs Z_k, Z_(n-k), c2r Re and Im of Z_m.
     pk = rpack === nothing ? nothing : rpack[1]
-    @assert pk === nothing || (blue2 && ragged && Nx == Ny)
+    @assert pk === nothing || (blue2 && ragged && Nx == Ny) || (!blue2 && !ragged && Nx == Ny == 0 && s == 1 && m == 1 && E == 1)
+    # complex line of local lane l (ob = 0 with batch lanes and ragged lanes; ob = line, b0 = 0 for G = 1)
+    pline(l) = blue2 ? lane(l) : :(ob + b0 + $l)
     PS, Pn, PL = rpack === nothing ? (1, 1, 1) : rpack[2:4]
     Ph = Pn ÷ 2 + 1
     paddr(l, j, len) = :(($l) % $(Int32(PS)) + $(Int32(PS * len)) * (($l) ÷ $(Int32(PS))) + $(Int32(PS)) * ($j) + one(Int32))
@@ -523,7 +526,8 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         idx = tid
         while idx < $(I(nel))
           j = idx % $(I(R)); l = idx ÷ $(I(R))
-          $(rader ? :($(lb(:(l + $(I(G)) * j))) = $(pload(lane(:l), rpin(:j)))) :
+          $(!blue2 ? :($(lb(:(l + $(I(G)) * j))) = $(pload(pline(:l), :j))) :
+            rader ? :($(lb(:(l + $(I(G)) * j))) = $(pload(lane(:l), rpin(:j)))) :
             :($(lb(:(l + $(I(G)) * j))) = j < $(I(Nx)) ? ccmul($(pload(lane(:l), :j)), @inbounds(cin[j + one(Int32)])) : zero(VT)))
           idx += $(I(W))
         end
@@ -592,6 +596,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
                 rpre ? xload(:ob, :(b0 + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))))) :
                 ppost && s > 1 && E > 1 ? :(x[padmap(obase + $(rlaneE(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
                 ppost && s > 1 ? :(x[padmap(obase + $(rlane(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
+                pk !== nothing && Nx == 0 ? pload(pline(qc), :($pc + $(I((j - 1) * mm)))) :
                 Nx == 0 && ragged ? quote
                   bl = $(lane(qc)); ol = bl ÷ $(I(E)); el = bl - ol * $(I(E))
                   x[ol * $(I(E * N)) + el + $(I(E)) * ($pc + $(I((j - 1) * mm))) + one(Int32)]
@@ -650,7 +655,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     if pk !== nothing
       # element m of complex line l: l + G m times the chirp (Bluestein); Rader: chain index k at l + G k holds
       # X_(g^-k) - x_0, k from the inverse table in cin[R + m]; X_0 and x_0 behind the chain
-      zat(l, mexp) = rader ? quote
+      zat(l, mexp) = !blue2 ? lb(:($l + $(I(G)) * $mexp)) : rader ? quote
           zmi = $mexp
           zmi == zero(Int32) ? $(lb(:($l + $(I(G * R))))) :
             $(lb(:($l + $(I(G)) * Base.unsafe_trunc(Int32, real(@inbounds cin[$(I(R)) + zmi]))))) + $(lb(:($l + $(I(G * R + G)))))
@@ -664,7 +669,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
           while idx < $(I(cnt))
             # neighbouring threads: neighbouring elements of a line (S = 1) or neighbouring lines
             $(PS == 1 ? :((k, l) = (idx % $(I(K)), idx ÷ $(I(K)))) : :((l, k) = (idx % $(I(G)), idx ÷ $(I(G)))))
-            pa = b0 + l; pb = pa + $(I(NL))
+            pa = $(blue2 ? :(b0 + l) : pline(:l)); pb = pa + $(I(NL))
             # only the lane's own pair: with src === dst (r2r dimensions after the first) a
             # repeated last line must not be stored twice
             pa < $(I(NL)) && $(pk === :c2r ? quote
@@ -1149,8 +1154,11 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
         Nx = blue && pi == 1 ? (ci == 1 ? N : M) : 0
         Ny = blue && ci == 2 && pi == length(rsc) ? N : 0
         dst = !blue || Ny > 0 ? arr_next(cur) : scr_next(cur)
-        push!(specs, (R = R, s = s, m = m, M = M, E = E, B = B, σ = σc, Nx = Nx, Ny = Ny,
-                      cin = Nx == N ? cin : Nx > 0 ? bhat : dummy, cout = Ny > 0 ? cin : dummy, src = cur, dst = dst))
+        sp = (R = R, s = s, m = m, M = M, E = E, B = B, σ = σc, Nx = Nx, Ny = Ny,
+              cin = Nx == N ? cin : Nx > 0 ? bhat : dummy, cout = Ny > 0 ? cin : dummy, src = cur, dst = dst)
+        # one pass over contiguous lines: the real lines are packed in its loads and stores
+        rpack !== nothing && !blue && length(rsc) == 1 && E == 1 && (sp = merge(sp, (rpack = rpack,)))
+        push!(specs, sp)
         cur = dst; s *= R
       end
     end
@@ -1195,7 +1203,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
       rhook = 0
     end
   end
-  # rpack (ka_real.jl's odd real transforms): only a single fused step packs; else the caller
+  # rpack (ka_real.jl's odd real transforms): only a single step packs (fused or one plain pass); else the caller
   # runs its own kernels around the complex plan
   if rpack !== nothing
     @assert length(region) == 1
