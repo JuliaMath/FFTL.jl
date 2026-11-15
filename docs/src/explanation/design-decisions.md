@@ -322,6 +322,46 @@ measurement before the paper was read.
 fastest library on the M1 and 2.3× slower than it on the A6000), and for a ``p - 1`` beyond one pass. The
 radix split of ordinary passes on many lines. The length rule for Bluestein on CUDA (224 kept there).
 
+## GPU: small real transforms in one launch
+
+**Decision (2026-11-15).** A real transform along the first dimension (r2c, c2r, DCT-II, DST-II)
+runs in a single kernel launch wherever its complex DFT is a single kernel:
+
+- **Odd lengths:** a plain one-pass kernel packs two real lines into one complex line, as the fused
+  kernels already did.
+- **Even lengths whose half is a Rader or one-pass Bluestein length:** that fused kernel reads the
+  real line as a complex line of half the length (Makhoul's permutation for DCT-II and DST-II) and
+  separates the result in its last loop.
+- **Less host work per call:** no tuple slices and a function barrier in the r2r `mul!`, and
+  user arrays reinterpreted on the device instead of on the host.
+
+**Why.** Small GPU transforms are bound by the host's launch rate. On an NVIDIA RTX A6000 with an
+AMD EPYC 7763 host, a raw CUDA launch costs about 2.3 µs of host time and a KernelAbstractions launch
+about 3.8 µs, while the kernels of these transforms run for 1.5–3 µs. FFTL ran a pack kernel, the
+DFT and a post kernel, three launches where cuFFT and VkFFT use one: c2r 21 `Float32` took 14 µs
+against 2.3 µs.
+
+Measurements on the NVIDIA RTX A6000, µs. Interleaved, pinned to one core, 50 ms warm-up, blocking
+wait, median of 7 samples of 100 back-to-back transforms; "before" is the previous `main`:
+
+| case | before | after |
+|---|---|---|
+| r2c 27 `Float32` | 14.5 | 3.48 |
+| c2r 225 `Float32` | 14.7 | 3.41 |
+| REDFT10 21 `Float32` | 17.8 | 3.60 |
+| REDFT10 74 `Float32` | 19.7 | 5.65 |
+| r2c 32 `Float32` | 4.69 | 3.62 |
+| REDFT10 21 `Float64` | 17.9 | 4.75 |
+| controls: c2c 16, 128; REDFT10 64; r2c 37 | | 0.97–1.01 × before |
+
+On the Apple M1 Max GPU, 25 cases: geometric mean 0.79 of the previous time (c2r 21 21.0 → 8.1 µs),
+controls 0.97–1.00.
+
+**Not done.** About 1 µs per call above cuFFT and VkFFT remains on the single launch. Real
+transforms along other dimensions, and multi-pass lines, keep their pack and post kernels.
+Multi-dimensional small cases are bound by the device, not by launches: REDFT10 37×37 runs two Rader
+passes, 11.7 µs against 7.0 µs.
+
 ## Scope
 
 **Decision (2026-11-01).** Real transforms (r2c, c2r, all real-to-real kinds including halfcomplex), a
