@@ -104,7 +104,8 @@ end
 
 # Measures the cases of the catalog on the GPU. `cases` are (kind, shape, family); rows go to `out`
 # in the CPU raw format with threads = 0. Progress lines go to stdout for monitor.jl.
-function gpu_measure(out, cases, libs, rounds, machine_label, tier_name)
+# aa: a second FFTL plan on its own arrays (fftl_aa), measured like another library: the A/A band.
+function gpu_measure(out, cases, libs, rounds, machine_label, tier_name; aa = false)
   total = length(cases) * length(FLOATS)
   done = 0
   for (kind, shape, family) in cases, T in FLOATS
@@ -122,15 +123,17 @@ function gpu_measure(out, cases, libs, rounds, machine_label, tier_name)
     OT = kind in ("c2c", "r2c") ? Complex{T} : T
     yshape = kind == "r2c" ? (n1 ÷ 2 + 1, shape[2:end]...) : shape
     libs_here = filter(l -> available(l, kind), libs)
+    aa && "fftl" in libs_here && push!(libs_here, "fftl_aa")
     # Julia-side plans are made and checked once per case; the separate-process libraries have none.
     plans = Dict{String,Any}()
     for lib in libs_here
-      if lib in ("fftl", "mpsgraph")
-        tp, p = julia_plan(lib, kind, xd, n1)
+      if lib in ("fftl", "fftl_aa", "mpsgraph")
+        xl = lib == "fftl_aa" ? copy(xd) : xd
+        tp, p = julia_plan(lib == "fftl_aa" ? "fftl" : lib, kind, xl, n1)
         y = AT(Array{OT}(undef, yshape))
-        mul!(y, p, xd); SYNC()
+        mul!(y, p, xl); SYNC()
         err = maximum(abs.(ComplexF64.(Array(y)) .- ref)) / refmax
-        plans[lib] = (tp = tp, p = p, y = y, err = err)
+        plans[lib] = (tp = tp, p = p, x = xl, y = y, err = err)
       end
     end
     isempty(libs_here) && continue
@@ -139,7 +142,7 @@ function gpu_measure(out, cases, libs, rounds, machine_label, tier_name)
       for lib in order
         if haskey(plans, lib)
           pl = plans[lib]
-          sec = per_transform(() -> mul!(pl.y, pl.p, xd), reps)
+          sec = per_transform(() -> mul!(pl.y, pl.p, pl.x), reps)
           plan, err = pl.tp, pl.err
         else
           # separate-process libraries: the harness takes its own times
