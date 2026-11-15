@@ -115,8 +115,10 @@ transform as warm-up, then the median over seven samples of `reps` back-to-back 
 transform; the separate-process libraries do this in their own harness (`BENCH_WARMUP_MS`). Small
 GPU transforms are bound by the host's launch rate: without the warm-up, a round that follows an
 idle wait (for the previous library's process) ran up to 1.8 µs per launch slower on an AMD EPYC
-7763 host, and the timings of the in-process library depended on the round. The `.meta` records
-the pin and the warm-up. Not included: vkfft_batch. DHT is not run on the GPU.
+7763 host, and the timings of the in-process library depended on the round. On CUDA the Julia side waits
+with a blocking `cuStreamSynchronize`, as the C++ harnesses do: CUDA.jl's default wait sleeps after
+a short poll, which cost a library that queues faster than the GPU runs up to 100 µs per transform.
+The `.meta` records the pin and the warm-up. Not included: vkfft_batch. DHT is not run on the GPU.
 
 GPU profiles use their own environment, `bench/envs/metal` for Metal (Metal.jl, KernelAbstractions,
 FFTL dev'd from the checkout). The CPU environment `bench/Project.toml` does not list them. Instantiate

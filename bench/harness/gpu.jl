@@ -35,7 +35,12 @@ if DEVICE == "metal"
   const FLOATS = (Float32,)
 else
   @eval using KernelAbstractions, CUDA
-  const AT = CUDA.CuArray; const SYNC = CUDA.synchronize
+  const AT = CUDA.CuArray
+  # Blocking wait (cuStreamSynchronize), as cudaDeviceSynchronize in the cuFFT and VkFFT harnesses.
+  # CUDA.jl's default wait polls for a while and then sleeps; when the host queues transforms
+  # faster than the GPU runs them, the backlog outlasts the polling and the sleep adds up to
+  # 100 µs per transform (a 10 µs one-block kernel, A6000 on a shared EPYC host).
+  const SYNC = () -> CUDA.synchronize(blocking = true)
   const FLOATS = (Float32, Float64)
 end
 
