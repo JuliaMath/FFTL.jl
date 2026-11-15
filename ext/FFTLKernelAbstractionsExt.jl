@@ -283,16 +283,40 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     # and :dst2 (the permuted line of Makhoul's DCT-II). The loads build element e of the complex
     # line from the real input; the result stays in workgroup memory and a post loop writes the
     # real transform: r2c and DCT-II/DST-II from the pairs Z_k, Z_(n-k), c2r Re and Im of Z_m.
+    # Even modes :r2ce, :c2re, :dct2e, :dst2e (real lines of even length n along dimension 1, one
+    # complex line of M = n/2 per real line, NL = L): the steps of ka_pack!/ka_r2c_post!,
+    # ka_c2r_pre!/ka_unpack! and ka_dct2_pre!/ka_dct2_post! in the loads and the post loop, with
+    # their tables behind the pass twiddles (u_k, k = 0…M; for DCT-II w_k, then t_k).
     pk = rpack === nothing ? nothing : rpack[1]
     @assert pk === nothing || (blue2 && ragged && Nx == Ny) || (!blue2 && !ragged && Nx == Ny == 0 && s == 1 && m == 1 && E == 1)
     # complex line of local lane l (ob = 0 with batch lanes and ragged lanes; ob = line, b0 = 0 for G = 1)
     pline(l) = blue2 ? lane(l) : :(ob + b0 + $l)
     PS, Pn, PL = rpack === nothing ? (1, 1, 1) : rpack[2:4]
     Ph = Pn ÷ 2 + 1
+    pev = pk in (:r2ce, :c2re, :dct2e, :dst2e)
+    PM = Pn ÷ 2
+    ptab(i) = :(@inbounds tw[$(Int32(offw + (1 << ebits) * TWLEV + 1)) + $i])   # offw, ebits: below
     paddr(l, j, len) = :(($l) % $(Int32(PS)) + $(Int32(PS * len)) * (($l) ÷ $(Int32(PS))) + $(Int32(PS)) * ($j) + one(Int32))
     pload(pl, e) = quote
       pe = $e; pa = $pl; pb = pa + $(Int32(NL))
-      $(pk === :r2c ? quote
+      $(pk === :r2ce ? quote
+          complex(@inbounds(x[$(paddr(:pa, :(Int32(2) * pe), Pn))]), @inbounds(x[$(paddr(:pa, :(Int32(2) * pe + one(Int32)), Pn))]))
+        end : pk in (:dct2e, :dst2e) ? quote
+          pja = Int32(2) * pe; pjb = pja + one(Int32)
+          pra = pja < $(Int32(PM)) ? Int32(2) * pja : Int32(2) * ($(Int32(Pn - 1)) - pja) + one(Int32)
+          prb = pjb < $(Int32(PM)) ? Int32(2) * pjb : Int32(2) * ($(Int32(Pn - 1)) - pjb) + one(Int32)
+          pva = @inbounds x[$(paddr(:pa, :pra, Pn))]; pvb = @inbounds x[$(paddr(:pa, :prb, Pn))]
+          $(pk === :dst2e ? :(complex(pja < $(Int32(PM)) ? pva : -pva, pjb < $(Int32(PM)) ? pvb : -pvb)) : :(complex(pva, pvb)))
+        end : pk === :c2re ? quote
+          # Z_e = (X_e + conj X_(M-e)) + u_e (X_e - conj X_(M-e)); Z_0 from the real parts of X_0, X_M
+          if pe == zero(Int32)
+            px0 = real(@inbounds x[$(paddr(:pa, :(zero(Int32)), PM + 1))]); pxM = real(@inbounds x[$(paddr(:pa, Int32(PM), PM + 1))])
+            complex(px0 + pxM, px0 - pxM)
+          else
+            pxk = @inbounds x[$(paddr(:pa, :pe, PM + 1))]; pxm = conj(@inbounds x[$(paddr(:pa, :($(Int32(PM)) - pe), PM + 1))])
+            (pxk + pxm) + ccmul($(ptab(:pe)), pxk - pxm)
+          end
+        end : pk === :r2c ? quote
           complex(@inbounds(x[$(paddr(:pa, :pe, Pn))]), pb < $(Int32(PL)) ? @inbounds(x[$(paddr(:pb, :pe, Pn))]) : zero($T))
         end : pk in (:dct2, :dst2) ? quote
           pj = pe < $(Int32((Pn + 1) ÷ 2)) ? Int32(2) * pe : Int32(2) * ($(Int32(Pn - 1)) - pe) + one(Int32)
@@ -660,7 +684,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
           zmi == zero(Int32) ? $(lb(:($l + $(I(G * R))))) :
             $(lb(:($l + $(I(G)) * Base.unsafe_trunc(Int32, real(@inbounds cin[$(I(R)) + zmi]))))) + $(lb(:($l + $(I(G * R + G)))))
         end : :(ccmul($(lb(:($l + $(I(G)) * $mexp))), @inbounds(cin[$mexp + one(Int32)])))   # Bluestein: times the chirp
-      K = pk === :r2c ? Ph : Pn
+      K = pk === :r2c ? Ph : pk === :r2ce ? PM ÷ 2 + 1 : pk === :c2re ? PM : pev ? PM + 1 : Pn
       cnt = G * K
       # a loop in the kernel, not unrolled: long lines (1009) would repeat the body 13 times
       begin
@@ -672,7 +696,34 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
             pa = $(blue2 ? :(b0 + l) : pline(:l)); pb = pa + $(I(NL))
             # only the lane's own pair: with src === dst (r2r dimensions after the first) a
             # repeated last line must not be stored twice
-            pa < $(I(NL)) && $(pk === :c2r ? quote
+            pa < $(I(NL)) && $(pk === :r2ce ? quote
+                # X_k = h + d, X_(M-k) = conj(h - d), h = (Z_k + conj Z_(M-k))/2, d = u_k (Z_k - conj Z_(M-k))
+                if k == zero(Int32)
+                  z0 = $(zat(:l, :(zero(Int32))))
+                  @inbounds y[$(paddr(:pa, :(zero(Int32)), PM + 1))] = complex(real(z0) + imag(z0), zero($T))
+                  @inbounds y[$(paddr(:pa, I(PM), PM + 1))] = complex(real(z0) - imag(z0), zero($T))
+                else
+                  zk = $(zat(:l, :k)); zm = conj($(zat(:l, :($(I(PM)) - k))))
+                  ph = (zk + zm) * $(T(0.5)); pd = ccmul($(ptab(:k)), zk - zm)
+                  @inbounds y[$(paddr(:pa, :k, PM + 1))] = ph + pd
+                  @inbounds y[$(paddr(:pa, :($(I(PM)) - k), PM + 1))] = conj(ph - pd)
+                end
+              end : pk === :c2re ? quote
+                zv = $(zat(:l, :k))
+                @inbounds y[$(paddr(:pa, :(Int32(2) * k), Pn))] = real(zv)
+                @inbounds y[$(paddr(:pa, :(Int32(2) * k + one(Int32)), Pn))] = imag(zv)
+              end : pev ? quote
+                # u = t_k ((C_k + conj C_(M-k))/2 - i/2 w_k (C_k - conj C_(M-k))), C_M = C_0
+                c1 = $(zat(:l, :(k == $(I(PM)) ? zero(Int32) : k)))
+                c2 = conj($(zat(:l, :(k == zero(Int32) ? zero(Int32) : $(I(PM)) - k))))
+                pu = ccmul($(ptab(:(k + $(I(PM + 1))))), (c1 + c2) * $(T(0.5)) + ccmul(complex(zero($T), $(T(-0.5))), ccmul($(ptab(:k)), c1 - c2)))
+                ka = $(pk === :dst2e ? :($(I(Pn - 1)) - k) : :k)
+                @inbounds y[$(paddr(:pa, :ka, Pn))] = 2real(pu)
+                if zero(Int32) < k < $(I(PM))
+                  kb = $(pk === :dst2e ? :(k - one(Int32)) : :($(I(Pn)) - k))
+                  @inbounds y[$(paddr(:pa, :kb, Pn))] = -2imag(pu)
+                end
+              end : pk === :c2r ? quote
                 zv = $(zat(:l, :k))
                 @inbounds y[$(paddr(:pa, :k, Pn))] = real(zv)
                 pb < $(I(PL)) && @inbounds(y[$(paddr(:pb, :k, Pn))] = imag(zv))
@@ -1243,8 +1294,12 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
                                       blue2 = get(sp, :blue2, false), ragged = get(sp, :ragged, false), rader = get(sp, :rader, false), rpack = get(sp, :rpack, nothing), raw)
     t = pass_twiddles(T, sp.R, sp.σ, sp.M, get(sp, :blue2, false))
     # packed DCT-II/DST-II: the post twiddles exp(-iπk/(2n)) behind the pass twiddles
-    if get(sp, :rpack, nothing) !== nothing && sp.rpack[1] in (:dct2, :dst2)
-      append!(t, [Complex{T}(cispi(-k / (2sp.rpack[3]))) for k in 0:sp.rpack[3]-1])
+    if get(sp, :rpack, nothing) !== nothing
+      pm, pn = sp.rpack[1], sp.rpack[3]; M2 = pn ÷ 2
+      pm in (:dct2, :dst2) && append!(t, [Complex{T}(cispi(-k / (2pn))) for k in 0:pn-1])
+      pm === :r2ce && append!(t, [Complex{T}(complex(0, -0.5) * cispi(-2k / pn)) for k in 0:M2])
+      pm === :c2re && append!(t, [Complex{T}(complex(0, 1) * cispi(2k / pn)) for k in 0:M2])
+      pm in (:dct2e, :dst2e) && append!(t, [[Complex{T}(cispi(-2k / pn)) for k in 0:M2]; [Complex{T}(cispi(-k / (2pn))) for k in 0:M2]])
     end
     tw = KA.allocate(backend, Complex{T}, length(t)); copyto!(tw, t)
     if raw || bytes > 0
@@ -1262,8 +1317,8 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
         nd = sp.rpack[5]
         rD = cu.CuArray{T,nd}(undef, ntuple(zero, nd)); dD = cu.CuArray{Complex{T},nd}(undef, ntuple(zero, nd))
       end
-      ya = sp.dst === :y ? ((get(sp, :post, false) && get(sp, :rh, 0) >= 2) || pkm in (:dct2, :dst2, :c2r) ? rD : dD) : d1
-      xa = sp.src === :x ? ((get(sp, :pre, false) && get(sp, :rh, 0) >= 2) || get(sp, :xreal, false) || pkm in (:r2c, :dct2, :dst2) ? rD : dD) : d1
+      ya = sp.dst === :y ? ((get(sp, :post, false) && get(sp, :rh, 0) >= 2) || pkm in (:dct2, :dst2, :c2r, :c2re, :dct2e, :dst2e) ? rD : dD) : d1
+      xa = sp.src === :x ? ((get(sp, :pre, false) && get(sp, :rh, 0) >= 2) || get(sp, :xreal, false) || pkm in (:r2c, :dct2, :dst2, :r2ce, :dct2e, :dst2e) ? rD : dD) : d1
       kk = Base.invokelatest(dcc, k, ya, xa, tw, tw, tw, bytes, bytes > 0 ? 0 : W)
       push!(steps, (RawLaunch(kk, W, groups, bytes, (ya, xa, tw, sp.cin, sp.cout), cu), groups * W, tw, sp.cin, sp.cout, sp.src, sp.dst))
     else

@@ -398,8 +398,11 @@ function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N
   fuse = even && d1 == 1 && FFTL.factorize(n ÷ 2, KA_MAX_PRIME)[2] == 1
   # odd n with a one-step line plan (one pass along dimension 1, Rader, one-pass Bluestein): packing in its loads and stores
   # (rpack, line.rhook == 9), else the kernels ka_r2co_pre!/post! around it
+  # even n along dimension 1 whose half has no pass of its own (Rader, one-pass Bluestein): packing
+  # and pair separation in that kernel (rpack :r2ce / :c2re), else ka_pack!/ka_r2c_post! around it
   line = fuse ? KAPlan(backend, T, lsz, σ; region = d1:d1, rhook = σ, rtab = w) :
-         even ? KAPlan(backend, T, lsz, σ; region = d1:d1) :
+         even ? KAPlan(backend, T, lsz, σ; region = d1:d1,
+                       rpack = S1 ? (σ < 0 ? :r2ce : :c2re, 1, n, L, N) : nothing) :
          KAPlan(backend, T, lsz, σ; region = S1 ? (1:1) : (2:2),
                 rpack = (σ < 0 ? :r2c : :c2r, prod(sz[1:d1-1]; init = 1), n, L, N))
   rest = length(reg) > 1 ? KAPlan(backend, T, hsz, σ; region = reg[2:end]) : nothing
@@ -660,7 +663,15 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
           continue
         end
       end
-      push!(dims, (:half, Int(k), KAPlan(backend, T, hsz, σ; region = d:d), w, tw,
+      # DCT-II/DST-II along dimension 1 whose half has no pass of its own (Rader, one-pass
+      # Bluestein): the permutation and the post-processing in that kernel (rpack :dct2e / :dst2e)
+      rp = σ < 0 && prod(sz[1:d-1]; init = 1) == 1 ? (k == FFTL.REDFT10 ? :dct2e : :dst2e, 1, n, prod(sz) ÷ n, N) : nothing
+      P = KAPlan(backend, T, hsz, σ; region = d:d, rpack = rp)
+      if P.rhook == 9
+        push!(dims, (:fused, Int(k), P))
+        continue
+      end
+      push!(dims, (:half, Int(k), P, w, tw,
                    devzeros(backend, Complex{T}, hsz), devzeros(backend, Complex{T}, hsz)))
       continue
     end
