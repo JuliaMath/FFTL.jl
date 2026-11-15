@@ -1,10 +1,11 @@
 # Benchmarks
 
-!!! warning "Interim numbers"
-    The figures and numbers on this page are the development state: one round per case, measured
-    on the machines listed at the bottom under their normal load, at the commits given below.
-    The measurement campaign on quiet machines will replace them; the protocol below is already
-    the one the campaign follows.
+!!! note "Measurement campaign for v0.2.0"
+    The figures and numbers on this page come from the measurement campaign of FFTL v0.2.0
+    (November 2026): seven rounds per case and library, every library warmed up before each
+    round, an A/A pair of FFTL in every run. The EPYC and the A6000 share one host with other users;
+    their runs are pinned to cores (the CPU runs to one socket, the GPU run to one core on the
+    GPU's socket) and their A/A bands are part of the panel tables.
 
 The numbers in the text are read from the summaries that the figure scripts write
 (`bench/fig_speedup.jl`, `bench/fig_standing.jl`), so text and figures come from the same data.
@@ -59,16 +60,18 @@ Markdown.parse("""
 | platform | competitors | FFTL faster in | median speed-up | cases |
 |:--|:--|--:|--:|--:|
 | Apple M1 Max, 1 thread | FFTW, ducc0, vDSP $(q("m1t1"))
-| AMD EPYC 7702, 1 thread | FFTW, ducc0 $(q("epyct1"))
+| AMD EPYC 7763, 1 thread | FFTW, ducc0 $(q("epyct1"))
 | Apple M1 Max, 8 threads | FFTW, ducc0 $(q("m1t8"))
-| AMD EPYC 7702, 16 threads | FFTW, ducc0 $(q("epyct16"))
+| AMD EPYC 7763, 32 threads | FFTW, ducc0 $(q("epyct32"))
 | Apple M1 Max GPU | MPSGraph, VkFFT $(q("m1gpu"))
 | NVIDIA RTX A6000 | cuFFT, VkFFT $(q("a6000"))
 """)
 ```
 
-The data is the overview set in `bench/results`. Each data file has a `.meta` file with its
-provenance; the table lists the FFTL commit and the start of each run.
+The data are the panel tables in `bench/results`, aggregated from the campaign runs by
+`bench/harness/aggregate.jl`. Each table has a `.meta` file with the provenance of its runs (library
+builds, pinning, load, start and end); the table lists the commit of the checkout that ran the
+harness, whether the package code was that of the release, and the start of the first run.
 
 ```@eval
 using Markdown, FFTL
@@ -77,10 +80,11 @@ rows = String[]
 for f in sort(filter(endswith(".meta"), readdir(dir)))
   m = read(joinpath(dir, f), String)
   commit = match(r"FFTL (\w+)", m)
+  code = match(r"package code: .* identical to (\S+)", m)
   start = match(r"start: (\S+?)T", m)
-  push!(rows, "| `$(replace(f, ".meta" => ".csv"))` | `$(commit === nothing ? "?" : commit[1])` | $(start === nothing ? "?" : start[1]) |")
+  push!(rows, "| `$(replace(f, ".meta" => ".csv"))` | `$(commit === nothing ? "?" : commit[1])` | $(code === nothing ? "–" : code[1]) | $(start === nothing ? "?" : start[1]) |")
 end
-Markdown.parse(join(["| data | FFTL commit | measured |", "|:--|:--|:--|", rows...], "\n"))
+Markdown.parse(join(["| data | checkout | package code | measured |", "|:--|:--|:--|:--|", rows...], "\n"))
 ```
 
 ## Scope of the benchmark campaign
@@ -107,8 +111,8 @@ from the sizes used for tuning.
 | machine | role |
 |:--|:--|
 | Apple M1 Max | development machine, CPU and Metal GPU |
-| AMD EPYC 7702 (Zen 2, 2 sockets, AVX2) | x86-64 CPU of the figures above |
-| AMD EPYC 7763 (Zen 3, 2 sockets, AVX2) | x86-64 development machine; hosts the A6000 |
+| AMD EPYC 7763 (Zen 3, 2 sockets, AVX2) | x86-64 CPU of the figures above; hosts the A6000 |
+| AMD EPYC 7702 (Zen 2, 2 sockets, AVX2) | x86-64 development machine (thresholds, tests) |
 | NVIDIA RTX A6000 | CUDA GPU |
 
 Each result names the library, its version, the build flags and the thread count. Competitors
@@ -118,5 +122,6 @@ are built from their current releases with native CPU flags; FFTW is planned wit
 
 | part | status |
 |:--|:--|
-| harness, protocol and figures | prepared |
-| campaign (quiet machines, several rounds, held-out sizes) | planned |
+| harness, protocol and figures | done |
+| campaign: Apple M1 Max CPU and GPU, AMD EPYC 7763 (1, 16, 32 threads), NVIDIA RTX A6000 | done (v0.2.0) |
+| campaign: A6000 rerun with an A/A pair | running |
