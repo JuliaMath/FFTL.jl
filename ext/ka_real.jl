@@ -350,6 +350,15 @@ end
 todevice(backend, v::Vector) =(d = KA.allocate(backend, eltype(v), length(v)); copyto!(d, v); d)
 devzeros(backend, T, dims) = KA.zeros(backend, T, dims...)
 setdim(sz, d, v) = ntuple(i -> i == d ? v : sz[i], length(sz))
+# (S, outer): the products of the sizes before and after dimension d. A loop, not prod(sz[1:d-1]):
+# slicing a tuple by a run-time range allocates, about 1 µs per call of a small GPU transform.
+function strides_around(sz::NTuple{N,Int}, d) where {N}
+  S = 1; outer = 1
+  for i in 1:N
+    i < d && (S *= sz[i]); i > d && (outer *= sz[i])
+  end
+  S, outer
+end
 # Int arguments as Int32: 64-bit division and remainder per element are slow on GPUs (sizes stay
 # below 2^31 elements there)
 i32(a) = a isa Int ? Int32(a) : a
@@ -387,10 +396,13 @@ function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N
   lsz = even ? setdim(sz, d1, n ÷ 2) : L == 1 ? (n,) : S1 ? (n, P) : (P, n)
   w = todevice(backend, [Complex{T}((σ < 0 ? complex(0, -0.5) : complex(0, 1)) * cispi(2σ * k / n)) for k in 0:h-1])
   fuse = even && d1 == 1 && FFTL.factorize(n ÷ 2, KA_MAX_PRIME)[2] == 1
-  # odd n with a fused line plan (Rader or one-pass Bluestein): packing in its loads and stores
+  # odd n with a one-step line plan (one pass along dimension 1, Rader, one-pass Bluestein): packing in its loads and stores
   # (rpack, line.rhook == 9), else the kernels ka_r2co_pre!/post! around it
+  # even n along dimension 1 whose half has no pass of its own (Rader, one-pass Bluestein): packing
+  # and pair separation in that kernel (rpack :r2ce / :c2re), else ka_pack!/ka_r2c_post! around it
   line = fuse ? KAPlan(backend, T, lsz, σ; region = d1:d1, rhook = σ, rtab = w) :
-         even ? KAPlan(backend, T, lsz, σ; region = d1:d1) :
+         even ? KAPlan(backend, T, lsz, σ; region = d1:d1,
+                       rpack = S1 ? (σ < 0 ? :r2ce : :c2re, 1, n, L, N) : nothing) :
          KAPlan(backend, T, lsz, σ; region = S1 ? (1:1) : (2:2),
                 rpack = (σ < 0 ? :r2c : :c2r, prod(sz[1:d1-1]; init = 1), n, L, N))
   rest = length(reg) > 1 ? KAPlan(backend, T, hsz, σ; region = reg[2:end]) : nothing
@@ -407,17 +419,18 @@ Base.show(io::IO, p::KARealPlan{T}) where {T} =
 function LinearAlgebra.mul!(y::AbstractArray, p::KARealPlan{T}, x::AbstractArray) where {T}
   size(x) == size(p) && size(y) == AbstractFFTs.output_size(p) || throw(DimensionMismatch("plan for $(size(p)) → $(AbstractFFTs.output_size(p))"))
   be = p.backend; d1 = p.region[1]; n = p.sz[d1]; h = n ÷ 2 + 1
-  S = prod(p.sz[1:d1-1]; init = 1); outer = prod(p.sz[d1+1:end]; init = 1)
+  S, outer = strides_around(p.sz, d1)
   even = iseven(n) && n > 2; M = n ÷ 2
   z, Z, hb = p.bufs
-  # z as the real array itself (line plans with rhook)
-  asz(a) = eltype(a) === T && S == 1 ? reinterpret(Complex{T}, a) : nothing
+  # z as the real array itself (line plans with rhook); raw CUDA steps take the real array and
+  # reinterpret it themselves (ascomplex)
+  asz(a, step) = eltype(a) === T && S == 1 ? (step[1] isa RawLaunch ? a : reinterpret(Complex{T}, a)) : nothing
   if p.σ < 0
     out = p.rest === nothing ? y : hb
     if p.line.rhook == 9
       launch!(out, x, p.line)
     elseif p.line.rhook != 0
-      xz = asz(x)
+      xz = asz(x, first(p.line.steps))
       xz === nothing && (run!(ka_pack!, be, S * M * outer, z, x, S, M); xz = z)
       launch!(out, xz, p.line)
     elseif even
@@ -439,7 +452,7 @@ function LinearAlgebra.mul!(y::AbstractArray, p::KARealPlan{T}, x::AbstractArray
     if p.line.rhook == 9
       launch!(y, src, p.line)
     elseif p.line.rhook != 0
-      yz = asz(y)
+      yz = asz(y, last(p.line.steps))
       launch!(yz === nothing ? z : yz, src, p.line)
       yz === nothing && run!(ka_unpack!, be, S * M * outer, y, z, S, M)
     elseif even
@@ -650,7 +663,15 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
           continue
         end
       end
-      push!(dims, (:half, Int(k), KAPlan(backend, T, hsz, σ; region = d:d), w, tw,
+      # DCT-II/DST-II along dimension 1 whose half has no pass of its own (Rader, one-pass
+      # Bluestein): the permutation and the post-processing in that kernel (rpack :dct2e / :dst2e)
+      rp = σ < 0 && prod(sz[1:d-1]; init = 1) == 1 ? (k == FFTL.REDFT10 ? :dct2e : :dst2e, 1, n, prod(sz) ÷ n, N) : nothing
+      P = KAPlan(backend, T, hsz, σ; region = d:d, rpack = rp)
+      if P.rhook == 9
+        push!(dims, (:fused, Int(k), P))
+        continue
+      end
+      push!(dims, (:half, Int(k), P, w, tw,
                    devzeros(backend, Complex{T}, hsz), devzeros(backend, Complex{T}, hsz)))
       continue
     end
@@ -680,60 +701,66 @@ Base.show(io::IO, p::KAR2RPlan{T}) where {T} =
 function LinearAlgebra.mul!(y::AbstractArray{T}, p::KAR2RPlan{T}, x::AbstractArray{T}) where {T}
   size(x) == p.sz && size(y) == p.sz || throw(DimensionMismatch("r2r plan for size $(p.sz)"))
   isempty(p.region) && return copyto!(y, x)
-  be = p.backend; src = x
-  for (d, dim) in zip(p.region, p.dims)
-    n = p.sz[d]; S = prod(p.sz[1:d-1]; init = 1); outer = prod(p.sz[d+1:end]; init = 1)
-    if dim[1] === :fused
-      launch!(y, src, dim[3])
-    elseif dim[1] === :dct1 && dim[3] isa KAFourStep
-      _, _, P, u, z, _ = dim
-      run!(ka_dct1_pre!, be, S * (n - 1) * outer, z, src, S, n - 1)
-      run!(ka_dct1_post_fs!, be, (n - 1) ÷ 2 + 1, y, fs_raw!(z, P), u, P.S, P.P, n - 1)
-    elseif dim[1] === :dct1
-      _, xr, P, u, z, Z = dim
-      if xr
-        launch!(Z, src, P)
-      else
-        run!(ka_dct1_pre!, be, S * (n - 1) * outer, z, src, S, n - 1)
-        launch!(Z, z, P)
-      end
-      run!(ka_dct1_post!, be, S * ((n - 1) ÷ 2 + 1) * outer, y, Z, u, S, n - 1)
-    elseif dim[1] === :dst1
-      _, P, u, z, Z = dim
-      run!(ka_dst1_pre!, be, S * (n + 1) * outer, z, src, S, n + 1)
-      launch!(Z, z, P)
-      run!(ka_dst1_post!, be, S * ((n + 1) ÷ 2) * outer, y, Z, u, S, n + 1)
-    elseif dim[1] === :dct2o
-      _, kind, P, tw, z, Z = dim
-      L = S * outer; Pl = cld(L, 2); dst = Int(kind == Int(FFTL.RODFT10))
-      if P.rhook == 9
-        launch!(y, src, P)
-      else
-        run!(ka_dct2o_pre!, be, Pl * n, z, src, S, n, L, Pl, dst)
-        launch!(Z, z, P)
-        run!(ka_dct2o_post!, be, Pl * n, y, Z, tw, S, n, L, Pl, dst)
-      end
-    elseif dim[1] === :half
-      _, kind, P, w, tw, z, Z = dim
-      M = n ÷ 2; dst = Int(kind == Int(FFTL.RODFT10) || kind == Int(FFTL.RODFT01))
-      if kind == Int(FFTL.REDFT10) || kind == Int(FFTL.RODFT10)
-        run!(ka_dct2_pre!, be, S * M * outer, z, src, S, n, M, dst)
-        launch!(Z, z, P)
-        run!(ka_dct2_post!, be, S * (M + 1) * outer, y, Z, w, tw, S, n, M, dst)
-      else
-        run!(ka_dct3_pre!, be, S * M * outer, Z, src, w, tw, S, n, M, dst)
-        launch!(z, Z, P)
-        run!(ka_dct3_post!, be, S * n * outer, y, z, S, n, M, dst)
-      end
-    else
-      kind, L, P, pre, post, z, Z = dim
-      run!(ka_r2r_pre!, be, S * L * outer, z, src, pre, S, n, L, kind)
-      launch!(Z, z, P)
-      run!(ka_r2r_post!, be, S * n * outer, y, Z, post, S, n, L, kind)
-    end
+  src = x
+  for i in eachindex(p.region)
+    d = p.region[i]; S, outer = strides_around(p.sz, d)
+    r2r_dim!(y, src, p.dims[i], p.backend, p.sz[d], S, outer)
     src = y
   end
   y
+end
+
+# one dimension of a KAR2RPlan; a function barrier: `dim` is concrete here
+function r2r_dim!(y, src, dim::Tuple, be, n, S, outer)
+  if dim[1] === :fused
+    launch!(y, src, dim[3])
+  elseif dim[1] === :dct1 && dim[3] isa KAFourStep
+    _, _, P, u, z, _ = dim
+    run!(ka_dct1_pre!, be, S * (n - 1) * outer, z, src, S, n - 1)
+    run!(ka_dct1_post_fs!, be, (n - 1) ÷ 2 + 1, y, fs_raw!(z, P), u, P.S, P.P, n - 1)
+  elseif dim[1] === :dct1
+    _, xr, P, u, z, Z = dim
+    if xr
+      launch!(Z, src, P)
+    else
+      run!(ka_dct1_pre!, be, S * (n - 1) * outer, z, src, S, n - 1)
+      launch!(Z, z, P)
+    end
+    run!(ka_dct1_post!, be, S * ((n - 1) ÷ 2 + 1) * outer, y, Z, u, S, n - 1)
+  elseif dim[1] === :dst1
+    _, P, u, z, Z = dim
+    run!(ka_dst1_pre!, be, S * (n + 1) * outer, z, src, S, n + 1)
+    launch!(Z, z, P)
+    run!(ka_dst1_post!, be, S * ((n + 1) ÷ 2) * outer, y, Z, u, S, n + 1)
+  elseif dim[1] === :dct2o
+    _, kind, P, tw, z, Z = dim
+    L = S * outer; Pl = cld(L, 2); dst = Int(kind == Int(FFTL.RODFT10))
+    if P.rhook == 9
+      launch!(y, src, P)
+    else
+      run!(ka_dct2o_pre!, be, Pl * n, z, src, S, n, L, Pl, dst)
+      launch!(Z, z, P)
+      run!(ka_dct2o_post!, be, Pl * n, y, Z, tw, S, n, L, Pl, dst)
+    end
+  elseif dim[1] === :half
+    _, kind, P, w, tw, z, Z = dim
+    M = n ÷ 2; dst = Int(kind == Int(FFTL.RODFT10) || kind == Int(FFTL.RODFT01))
+    if kind == Int(FFTL.REDFT10) || kind == Int(FFTL.RODFT10)
+      run!(ka_dct2_pre!, be, S * M * outer, z, src, S, n, M, dst)
+      launch!(Z, z, P)
+      run!(ka_dct2_post!, be, S * (M + 1) * outer, y, Z, w, tw, S, n, M, dst)
+    else
+      run!(ka_dct3_pre!, be, S * M * outer, Z, src, w, tw, S, n, M, dst)
+      launch!(z, Z, P)
+      run!(ka_dct3_post!, be, S * n * outer, y, z, S, n, M, dst)
+    end
+  else
+    kind, L, P, pre, post, z, Z = dim
+    run!(ka_r2r_pre!, be, S * L * outer, z, src, pre, S, n, L, kind)
+    launch!(Z, z, P)
+    run!(ka_r2r_post!, be, S * n * outer, y, Z, post, S, n, L, kind)
+  end
+  nothing
 end
 
 Base.:*(p::KAR2RPlan{T}, x::AbstractArray{<:Real}) where {T} = mul!(similar(x, T, p.sz), p, x)

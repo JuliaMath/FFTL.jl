@@ -276,20 +276,47 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     rbase(l) = quote
       rbl = $(lane(l)); rol = rbl ÷ $(Int32(E)); rol * $(Int32(E * Nx)) + rbl - rol * $(Int32(E))
     end
-    # rpack = (mode, S, n, L, ndims of the user's arrays) (fused kernels only, see ka_real.jl): the NL complex lines are pairs
+    # rpack = (mode, S, n, L, ndims of the user's arrays) (fused kernels and plain one-pass kernels
+    # of contiguous lines, see ka_real.jl): the NL complex lines are pairs
     # of the L real lines of length n, S apart in memory; complex line l holds real lines l and
     # l + NL as real and imaginary parts. mode :r2c and :c2r (half spectra of n ÷ 2 + 1), :dct2
     # and :dst2 (the permuted line of Makhoul's DCT-II). The loads build element e of the complex
     # line from the real input; the result stays in workgroup memory and a post loop writes the
     # real transform: r2c and DCT-II/DST-II from the pairs Z_k, Z_(n-k), c2r Re and Im of Z_m.
+    # Even modes :r2ce, :c2re, :dct2e, :dst2e (real lines of even length n along dimension 1, one
+    # complex line of M = n/2 per real line, NL = L): the steps of ka_pack!/ka_r2c_post!,
+    # ka_c2r_pre!/ka_unpack! and ka_dct2_pre!/ka_dct2_post! in the loads and the post loop, with
+    # their tables behind the pass twiddles (u_k, k = 0…M; for DCT-II w_k, then t_k).
     pk = rpack === nothing ? nothing : rpack[1]
-    @assert pk === nothing || (blue2 && ragged && Nx == Ny)
+    @assert pk === nothing || (blue2 && ragged && Nx == Ny) || (!blue2 && !ragged && Nx == Ny == 0 && s == 1 && m == 1 && E == 1)
+    # complex line of local lane l (ob = 0 with batch lanes and ragged lanes; ob = line, b0 = 0 for G = 1)
+    pline(l) = blue2 ? lane(l) : :(ob + b0 + $l)
     PS, Pn, PL = rpack === nothing ? (1, 1, 1) : rpack[2:4]
     Ph = Pn ÷ 2 + 1
+    pev = pk in (:r2ce, :c2re, :dct2e, :dst2e)
+    PM = Pn ÷ 2
+    ptab(i) = :(@inbounds tw[$(Int32(offw + (1 << ebits) * TWLEV + 1)) + $i])   # offw, ebits: below
     paddr(l, j, len) = :(($l) % $(Int32(PS)) + $(Int32(PS * len)) * (($l) ÷ $(Int32(PS))) + $(Int32(PS)) * ($j) + one(Int32))
     pload(pl, e) = quote
       pe = $e; pa = $pl; pb = pa + $(Int32(NL))
-      $(pk === :r2c ? quote
+      $(pk === :r2ce ? quote
+          complex(@inbounds(x[$(paddr(:pa, :(Int32(2) * pe), Pn))]), @inbounds(x[$(paddr(:pa, :(Int32(2) * pe + one(Int32)), Pn))]))
+        end : pk in (:dct2e, :dst2e) ? quote
+          pja = Int32(2) * pe; pjb = pja + one(Int32)
+          pra = pja < $(Int32(PM)) ? Int32(2) * pja : Int32(2) * ($(Int32(Pn - 1)) - pja) + one(Int32)
+          prb = pjb < $(Int32(PM)) ? Int32(2) * pjb : Int32(2) * ($(Int32(Pn - 1)) - pjb) + one(Int32)
+          pva = @inbounds x[$(paddr(:pa, :pra, Pn))]; pvb = @inbounds x[$(paddr(:pa, :prb, Pn))]
+          $(pk === :dst2e ? :(complex(pja < $(Int32(PM)) ? pva : -pva, pjb < $(Int32(PM)) ? pvb : -pvb)) : :(complex(pva, pvb)))
+        end : pk === :c2re ? quote
+          # Z_e = (X_e + conj X_(M-e)) + u_e (X_e - conj X_(M-e)); Z_0 from the real parts of X_0, X_M
+          if pe == zero(Int32)
+            px0 = real(@inbounds x[$(paddr(:pa, :(zero(Int32)), PM + 1))]); pxM = real(@inbounds x[$(paddr(:pa, Int32(PM), PM + 1))])
+            complex(px0 + pxM, px0 - pxM)
+          else
+            pxk = @inbounds x[$(paddr(:pa, :pe, PM + 1))]; pxm = conj(@inbounds x[$(paddr(:pa, :($(Int32(PM)) - pe), PM + 1))])
+            (pxk + pxm) + ccmul($(ptab(:pe)), pxk - pxm)
+          end
+        end : pk === :r2c ? quote
           complex(@inbounds(x[$(paddr(:pa, :pe, Pn))]), pb < $(Int32(PL)) ? @inbounds(x[$(paddr(:pb, :pe, Pn))]) : zero($T))
         end : pk in (:dct2, :dst2) ? quote
           pj = pe < $(Int32((Pn + 1) ÷ 2)) ? Int32(2) * pe : Int32(2) * ($(Int32(Pn - 1)) - pe) + one(Int32)
@@ -523,7 +550,8 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
         idx = tid
         while idx < $(I(nel))
           j = idx % $(I(R)); l = idx ÷ $(I(R))
-          $(rader ? :($(lb(:(l + $(I(G)) * j))) = $(pload(lane(:l), rpin(:j)))) :
+          $(!blue2 ? :($(lb(:(l + $(I(G)) * j))) = $(pload(pline(:l), :j))) :
+            rader ? :($(lb(:(l + $(I(G)) * j))) = $(pload(lane(:l), rpin(:j)))) :
             :($(lb(:(l + $(I(G)) * j))) = j < $(I(Nx)) ? ccmul($(pload(lane(:l), :j)), @inbounds(cin[j + one(Int32)])) : zero(VT)))
           idx += $(I(W))
         end
@@ -592,6 +620,7 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
                 rpre ? xload(:ob, :(b0 + $qc + $(I(ies)) * ($pc + $(I((j - 1) * mm))))) :
                 ppost && s > 1 && E > 1 ? :(x[padmap(obase + $(rlaneE(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
                 ppost && s > 1 ? :(x[padmap(obase + $(rlane(qc)) + $(I(ies)) * ($pc + $(I((j - 1) * mm))), $(PX[1]), $(PX[2])) + one(Int32)]) :
+                pk !== nothing && Nx == 0 ? pload(pline(qc), :($pc + $(I((j - 1) * mm)))) :
                 Nx == 0 && ragged ? quote
                   bl = $(lane(qc)); ol = bl ÷ $(I(E)); el = bl - ol * $(I(E))
                   x[ol * $(I(E * N)) + el + $(I(E)) * ($pc + $(I((j - 1) * mm))) + one(Int32)]
@@ -650,12 +679,12 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
     if pk !== nothing
       # element m of complex line l: l + G m times the chirp (Bluestein); Rader: chain index k at l + G k holds
       # X_(g^-k) - x_0, k from the inverse table in cin[R + m]; X_0 and x_0 behind the chain
-      zat(l, mexp) = rader ? quote
+      zat(l, mexp) = !blue2 ? lb(:($l + $(I(G)) * $mexp)) : rader ? quote
           zmi = $mexp
           zmi == zero(Int32) ? $(lb(:($l + $(I(G * R))))) :
             $(lb(:($l + $(I(G)) * Base.unsafe_trunc(Int32, real(@inbounds cin[$(I(R)) + zmi]))))) + $(lb(:($l + $(I(G * R + G)))))
         end : :(ccmul($(lb(:($l + $(I(G)) * $mexp))), @inbounds(cin[$mexp + one(Int32)])))   # Bluestein: times the chirp
-      K = pk === :r2c ? Ph : Pn
+      K = pk === :r2c ? Ph : pk === :r2ce ? PM ÷ 2 + 1 : pk === :c2re ? PM : pev ? PM + 1 : Pn
       cnt = G * K
       # a loop in the kernel, not unrolled: long lines (1009) would repeat the body 13 times
       begin
@@ -664,10 +693,37 @@ function pass_kernel(R, G, σ, T, s, N, E = 1, B = 1; Nx = 0, Ny = 0, padx = (1,
           while idx < $(I(cnt))
             # neighbouring threads: neighbouring elements of a line (S = 1) or neighbouring lines
             $(PS == 1 ? :((k, l) = (idx % $(I(K)), idx ÷ $(I(K)))) : :((l, k) = (idx % $(I(G)), idx ÷ $(I(G)))))
-            pa = b0 + l; pb = pa + $(I(NL))
+            pa = $(blue2 ? :(b0 + l) : pline(:l)); pb = pa + $(I(NL))
             # only the lane's own pair: with src === dst (r2r dimensions after the first) a
             # repeated last line must not be stored twice
-            pa < $(I(NL)) && $(pk === :c2r ? quote
+            pa < $(I(NL)) && $(pk === :r2ce ? quote
+                # X_k = h + d, X_(M-k) = conj(h - d), h = (Z_k + conj Z_(M-k))/2, d = u_k (Z_k - conj Z_(M-k))
+                if k == zero(Int32)
+                  z0 = $(zat(:l, :(zero(Int32))))
+                  @inbounds y[$(paddr(:pa, :(zero(Int32)), PM + 1))] = complex(real(z0) + imag(z0), zero($T))
+                  @inbounds y[$(paddr(:pa, I(PM), PM + 1))] = complex(real(z0) - imag(z0), zero($T))
+                else
+                  zk = $(zat(:l, :k)); zm = conj($(zat(:l, :($(I(PM)) - k))))
+                  ph = (zk + zm) * $(T(0.5)); pd = ccmul($(ptab(:k)), zk - zm)
+                  @inbounds y[$(paddr(:pa, :k, PM + 1))] = ph + pd
+                  @inbounds y[$(paddr(:pa, :($(I(PM)) - k), PM + 1))] = conj(ph - pd)
+                end
+              end : pk === :c2re ? quote
+                zv = $(zat(:l, :k))
+                @inbounds y[$(paddr(:pa, :(Int32(2) * k), Pn))] = real(zv)
+                @inbounds y[$(paddr(:pa, :(Int32(2) * k + one(Int32)), Pn))] = imag(zv)
+              end : pev ? quote
+                # u = t_k ((C_k + conj C_(M-k))/2 - i/2 w_k (C_k - conj C_(M-k))), C_M = C_0
+                c1 = $(zat(:l, :(k == $(I(PM)) ? zero(Int32) : k)))
+                c2 = conj($(zat(:l, :(k == zero(Int32) ? zero(Int32) : $(I(PM)) - k))))
+                pu = ccmul($(ptab(:(k + $(I(PM + 1))))), (c1 + c2) * $(T(0.5)) + ccmul(complex(zero($T), $(T(-0.5))), ccmul($(ptab(:k)), c1 - c2)))
+                ka = $(pk === :dst2e ? :($(I(Pn - 1)) - k) : :k)
+                @inbounds y[$(paddr(:pa, :ka, Pn))] = 2real(pu)
+                if zero(Int32) < k < $(I(PM))
+                  kb = $(pk === :dst2e ? :(k - one(Int32)) : :($(I(Pn)) - k))
+                  @inbounds y[$(paddr(:pa, :kb, Pn))] = -2imag(pu)
+                end
+              end : pk === :c2r ? quote
                 zv = $(zat(:l, :k))
                 @inbounds y[$(paddr(:pa, :k, Pn))] = real(zv)
                 pb < $(I(PL)) && @inbounds(y[$(paddr(:pb, :k, Pn))] = imag(zv))
@@ -1149,8 +1205,11 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
         Nx = blue && pi == 1 ? (ci == 1 ? N : M) : 0
         Ny = blue && ci == 2 && pi == length(rsc) ? N : 0
         dst = !blue || Ny > 0 ? arr_next(cur) : scr_next(cur)
-        push!(specs, (R = R, s = s, m = m, M = M, E = E, B = B, σ = σc, Nx = Nx, Ny = Ny,
-                      cin = Nx == N ? cin : Nx > 0 ? bhat : dummy, cout = Ny > 0 ? cin : dummy, src = cur, dst = dst))
+        sp = (R = R, s = s, m = m, M = M, E = E, B = B, σ = σc, Nx = Nx, Ny = Ny,
+              cin = Nx == N ? cin : Nx > 0 ? bhat : dummy, cout = Ny > 0 ? cin : dummy, src = cur, dst = dst)
+        # one pass over contiguous lines: the real lines are packed in its loads and stores
+        rpack !== nothing && !blue && length(rsc) == 1 && E == 1 && (sp = merge(sp, (rpack = rpack,)))
+        push!(specs, sp)
         cur = dst; s *= R
       end
     end
@@ -1195,7 +1254,7 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
       rhook = 0
     end
   end
-  # rpack (ka_real.jl's odd real transforms): only a single fused step packs; else the caller
+  # rpack (ka_real.jl's odd real transforms): only a single step packs (fused or one plain pass); else the caller
   # runs its own kernels around the complex plan
   if rpack !== nothing
     @assert length(region) == 1
@@ -1235,8 +1294,12 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
                                       blue2 = get(sp, :blue2, false), ragged = get(sp, :ragged, false), rader = get(sp, :rader, false), rpack = get(sp, :rpack, nothing), raw)
     t = pass_twiddles(T, sp.R, sp.σ, sp.M, get(sp, :blue2, false))
     # packed DCT-II/DST-II: the post twiddles exp(-iπk/(2n)) behind the pass twiddles
-    if get(sp, :rpack, nothing) !== nothing && sp.rpack[1] in (:dct2, :dst2)
-      append!(t, [Complex{T}(cispi(-k / (2sp.rpack[3]))) for k in 0:sp.rpack[3]-1])
+    if get(sp, :rpack, nothing) !== nothing
+      pm, pn = sp.rpack[1], sp.rpack[3]; M2 = pn ÷ 2
+      pm in (:dct2, :dst2) && append!(t, [Complex{T}(cispi(-k / (2pn))) for k in 0:pn-1])
+      pm === :r2ce && append!(t, [Complex{T}(complex(0, -0.5) * cispi(-2k / pn)) for k in 0:M2])
+      pm === :c2re && append!(t, [Complex{T}(complex(0, 1) * cispi(2k / pn)) for k in 0:M2])
+      pm in (:dct2e, :dst2e) && append!(t, [[Complex{T}(cispi(-2k / pn)) for k in 0:M2]; [Complex{T}(cispi(-k / (2pn))) for k in 0:M2]])
     end
     tw = KA.allocate(backend, Complex{T}, length(t)); copyto!(tw, t)
     if raw || bytes > 0
@@ -1254,8 +1317,8 @@ function KAPlan(backend, ::Type{T}, dims::NTuple{D,Int}, σ; region = 1:D, radic
         nd = sp.rpack[5]
         rD = cu.CuArray{T,nd}(undef, ntuple(zero, nd)); dD = cu.CuArray{Complex{T},nd}(undef, ntuple(zero, nd))
       end
-      ya = sp.dst === :y ? ((get(sp, :post, false) && get(sp, :rh, 0) >= 2) || pkm in (:dct2, :dst2, :c2r) ? rD : dD) : d1
-      xa = sp.src === :x ? ((get(sp, :pre, false) && get(sp, :rh, 0) >= 2) || get(sp, :xreal, false) || pkm in (:r2c, :dct2, :dst2) ? rD : dD) : d1
+      ya = sp.dst === :y ? ((get(sp, :post, false) && get(sp, :rh, 0) >= 2) || pkm in (:dct2, :dst2, :c2r, :c2re, :dct2e, :dst2e) ? rD : dD) : d1
+      xa = sp.src === :x ? ((get(sp, :pre, false) && get(sp, :rh, 0) >= 2) || get(sp, :xreal, false) || pkm in (:r2c, :dct2, :dst2, :r2ce, :dct2e, :dst2e) ? rD : dD) : d1
       kk = Base.invokelatest(dcc, k, ya, xa, tw, tw, tw, bytes, bytes > 0 ? 0 : W)
       push!(steps, (RawLaunch(kk, W, groups, bytes, (ya, xa, tw, sp.cin, sp.cout), cu), groups * W, tw, sp.cin, sp.cout, sp.src, sp.dst))
     else
@@ -1319,16 +1382,21 @@ function RawLaunch(kern, W, groups, bytes, args, cu)
             fast ? lib.cuLaunchKernel : nothing, cu.stream)
 end
 
+# A real array where the pass reads or writes complex values (r2c and c2r lines of even length
+# along dimension 1): reinterpreted here, on the device array in the fast path, which costs far
+# less than reinterpreting the CuArray (about 1 µs, as much as half a small transform).
+ascomplex(a, ::Type{D}) where {D} = eltype(a) <: Real && eltype(D) <: Complex ? reinterpret(eltype(D), a) : a
+
 function launch_raw!(r::RawLaunch{K,F,A,B}, y, x, tw, cin, cout) where {K,F,A,B}
   if r.fast
-    a = r.conv(y); b = r.conv(x)
+    a = ascomplex(r.conv(y), A); b = ascomplex(r.conv(x), B)
     if a isa A && b isa B
       r.ry[] = a; r.rx[] = b
       GC.@preserve r y x r.launch(r.fun, r.groups, 1, 1, r.W, 1, 1, r.bytes, r.stream(), r.ptrs, C_NULL)
       return
     end
   end
-  r.kern(y, x, tw, cin, cout; threads = r.W, blocks = r.groups, shmem = r.bytes)
+  r.kern(ascomplex(y, A), ascomplex(x, B), tw, cin, cout; threads = r.W, blocks = r.groups, shmem = r.bytes)
   return
 end
 
