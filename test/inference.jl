@@ -48,12 +48,12 @@
   let G = randn(Complex{T}, 40, 36, 30), W = similar(G)
     v = view(G, 3:34, 2:33, 2:25)
     w = view(W, 3:34, 2:33, 2:25)
-    # Julia 1.10: apply! on a view allocates 64-80 bytes per call (mul! with a separate output
-    # does not); 1.11 and later are allocation-free.
+    # Julia 1.10 and 1.11: apply! on a view allocates 64-80 bytes per call (mul! with a separate
+    # output does not); 1.12 and later are allocation-free.
     p = FFTL.plan_pass(v, 2; sign = -1, threads = 1)
     FFTL.apply!(p, v)
     @test (@inferred FFTL.apply!(p, v)) === v
-    @test (@allocated FFTL.apply!(p, v)) == 0 broken = VERSION < v"1.11"
+    @test (@allocated FFTL.apply!(p, v)) == 0 broken = VERSION < v"1.12"
     mul!(w, p, v)
     @test (@inferred mul!(w, p, v)) === w
     @test (@allocated mul!(w, p, v)) == 0
