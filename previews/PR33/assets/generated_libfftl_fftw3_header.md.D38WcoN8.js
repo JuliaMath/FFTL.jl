@@ -34,7 +34,9 @@ import{_ as i,o as a,c as h,ao as k}from"./chunks/framework.Dkb1AhHj.js";const g
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * - Plans can be created, executed and destroyed from any thread; the same plan may execute</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> *   on several threads at once through the new-array execute functions, as in FFTW.</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * - Not provided: the variables fftw_version, fftw_cc and fftw_codelet_optim, and</span></span>
-<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> *   fftw_estimate_cost (not described in the manual).</span></span>
+<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> *   fftw_estimate_cost (exported by FFTW&#39;s library, not described in the manual).</span></span>
+<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> * - fftw_copy_plan (documented in the manual&#39;s &quot;Using Plans&quot;; FFTW 3.3.10 does not have it): a</span></span>
+<span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> *   second reference to the same plan, destroyed with fftw_destroy_plan like any plan.</span></span>
 <span class="line"><span style="--shiki-light:#6A737D;--shiki-dark:#6A737D;"> */</span></span>
 <span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">#ifndef</span><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0;"> FFTL_FFTW3_H</span></span>
 <span class="line"><span style="--shiki-light:#D73A49;--shiki-dark:#F97583;">#define</span><span style="--shiki-light:#6F42C1;--shiki-dark:#B392F0;"> FFTL_FFTW3_H</span></span>
