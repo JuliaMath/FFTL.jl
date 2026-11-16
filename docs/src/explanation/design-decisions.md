@@ -403,7 +403,9 @@ everywhere: on the M1 the transpose took `Float32` to 0.86–0.92 of the loop ov
 (`Float64`, one value per vector, 0.99–1.00), and row widths of 16–128 bytes were within 3 %. Against
 `main` before the four-step changes (M1 Max, 2 rounds in alternating processes, a second copy of
 `main` as A/A): one thread 0.94–1.04, 4 threads `Float64` within the A/A spread and `Float32`
-0.87–0.92 at 2²², 3·2²⁰, 2²⁴ and 10⁶. 32-byte vectors (AVX2) are not measured.
+0.87–0.92 at 2²², 3·2²⁰, 2²⁴ and 10⁶. AMD EPYC 7763 (AVX2, 32-byte vectors: only the register
+transpose and the row widths apply), one socket pinned, same protocol: one thread 0.96–1.03 (A/A
+0.94–1.08); 4 and 16 threads `Float64` 0.86–1.03, `Float32` 0.70–0.87 (A/A 0.85–1.10).
 
 ## Run-time pass plans for trimmed programs
 
