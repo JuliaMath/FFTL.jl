@@ -1,0 +1,12 @@
+label: Apple M1 Max
+tier: campaign; rounds 7; device metal
+threads: 0 (GPU); pin: none
+warm-up: 50 ms of the same transform before each round, all libraries
+FFTL 4ed260b; julia 1.13.3
+fftw: FFTW_jll artifact; fftw-3.3.11-neon; cc: cc -O3 -fomit-frame-pointer -fstrict-aliasing; libfftw3.3.dylib (reference only)
+fftwf: FFTW_jll artifact; fftw-3.3.11-neon; cc: cc -O3 -fomit-frame-pointer -fstrict-aliasing; libfftw3f.3.dylib (reference only)
+package code: src, ext, Project.toml identical to v0.2.0
+libraries: fftl,mpsgraph,vkfft,fftl_aa (A/A)
+cases: 341 (kind, shape, family)
+start: 2026-11-15T19:36:23; load: 2.48
+end: 2026-11-15T20:01:42; load: 17.86

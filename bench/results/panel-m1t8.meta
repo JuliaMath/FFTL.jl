@@ -1,0 +1,23 @@
+label: Apple M1 Max
+tier: campaign; rounds 7; budget 0.2 s; stride 1; A/A true
+threads: 1; pin: none
+FFTL 867bf40; julia 1.13.3
+package code: src, ext identical to v0.2.0 (Project.toml differs only in the julia compat bound)
+fftw: native; fftw-3.3.11-neon; cc: clang -O3 -march=native -ffast-math; libfftw3.dylib
+fftwf: native; fftw-3.3.11-neon; cc: clang -O3 -march=native -ffast-math; libfftw3f.dylib
+libraries: fftl,fftw_measure,ducc,vdsp,fftl_aa (A/A)
+cases: 341 (kind, shape, family), each in both precisions
+start: 2026-11-15T14:16:14; load: 7.35
+end: 2026-11-15T15:35:30; load: 2.63
+
+label: Apple M1 Max
+tier: campaign; rounds 7; budget 0.2 s; stride 1; A/A true
+threads: 8; pin: none
+FFTL 867bf40; julia 1.13.3
+package code: src, ext identical to v0.2.0 (Project.toml differs only in the julia compat bound)
+fftw: native; fftw-3.3.11-neon; cc: clang -O3 -march=native -ffast-math; libfftw3.dylib
+fftwf: native; fftw-3.3.11-neon; cc: clang -O3 -march=native -ffast-math; libfftw3f.dylib
+libraries: fftl,fftw_measure,ducc,vdsp,fftl_aa (A/A)
+cases: 341 (kind, shape, family), each in both precisions
+start: 2026-11-15T15:35:33; load: 3.22
+end: 2026-11-15T16:55:10; load: 7.55

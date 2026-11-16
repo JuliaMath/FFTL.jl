@@ -1,0 +1,10 @@
+label: AMD EPYC 7763
+tier: campaign; rounds 7; budget 0.2 s; stride 1; A/A true
+threads: 1; pin: 8
+FFTL 1efbaf1; julia 1.13.3
+fftw: native; fftw-3.3.11-sse2-avx-avx2-avx2_128; cc: gcc -O3 -march=native; libfftw3.so
+fftwf: native; fftw-3.3.11-sse2-avx-avx2-avx2_128; cc: gcc -O3 -march=native; libfftw3f.so
+libraries: fftl,fftw_measure,ducc,fftl_aa (A/A)
+cases: 341 (kind, shape, family), each in both precisions
+start: 2026-11-15T18:30:51; load: 16.85
+end: 2026-11-15T20:01:39; load: 17.83
