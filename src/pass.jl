@@ -9,13 +9,14 @@
 const RComposite{T} = Union{Composite{T,RChain{T},RsBatch{T,RChain{T},RTable{T}}},
                             Composite{T,RChain{T},RsBatch{T,RChain{T},RPoly{T}}},
                             Composite{T,RChain{T},Resample{T,RChain{T},RTable{T}}},
-                            Composite{T,RChain{T},Resample{T,RChain{T},RPoly{T}}}}
-const RPassKern{T} = Union{RChain{T},RResample{T},RComposite{T},RFourStep{T}}
+                            Composite{T,RChain{T},Resample{T,RChain{T},RPoly{T}}},
+                            Composite{T,RChain{T},RBluestein{T}}}
+const RPassKern{T} = Union{RChain{T},RResample{T},RBluestein{T},RComposite{T},RFourStep{T}}
 
 function runtime_kernel(::Type{T}, n::Int, σ::Int, S::Int) where {T}
   smooth(n) && return RChain{T}(n, σ, radices(n, S; esize = sizeof(Complex{T})))
   s, q = composite_split(T, n)
-  s == 1 && return Resample{T}(n, σ, RChain)
+  s == 1 && return bluestein_lines(T) ? Bluestein{T}(n, σ, RChain) : Resample{T}(n, σ, RChain)
   chain = RChain{T}(s, σ, radices(s, S * q; esize = sizeof(Complex{T})))
   rs = leftover_kernel(T, q, σ, s, RChain)
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}

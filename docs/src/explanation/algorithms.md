@@ -61,7 +61,9 @@ FFTL takes the narrowest ``w`` (a multiple of 4) for an error of ``10\,\varepsil
 in `Float64`, 4 MiB in `Float32`, where the two measured about even), above it they are
 evaluated from piecewise polynomials. Generic number types (`BigFloat` and others,
 `src/generic.jl`) keep Bluestein's algorithm, which is exact: there the width grows with the
-precision and the interpolation would cost more than the transform it saves.
+precision and the interpolation would cost more than the transform it saves. `Float64` on aarch64
+keeps it too for single lines (see the design decisions): with two values per NEON register the
+16-tap interpolation costs more than the second transform.
 
 Compared with Bluestein's algorithm, which needs two transforms of a length ``\ge 2n - 1``, one
 transform is saved for ``n\,w`` multiply-adds. Measured against it on a Tiger Lake core (one

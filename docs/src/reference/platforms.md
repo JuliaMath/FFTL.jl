@@ -17,7 +17,7 @@ available.
 | DHT, `R2HC`, `HC2R` | ✓ | ✓ | ◐ not tuned | ✓ |
 | batched 1D passes (`plan_pass`, `plan_r2r_pass`) | ✓ | – | – | – |
 | any rank and any subset of dimensions | ✓ | ✓ | ✓ | ✓ |
-| any length (prime factors above 73: resampling; 31 and Bluestein on the GPU and for generic floats) | ✓ resampling | ✓ Bluestein | ✓ Bluestein | ✓ resampling |
+| any length (prime factors above 73: resampling; 31 and Bluestein on the GPU and for generic floats) | ✓ resampling (`Float64` on aarch64: Bluestein for single lines) | ✓ Bluestein | ✓ Bluestein | ✓ resampling |
 
 ## Platforms
 

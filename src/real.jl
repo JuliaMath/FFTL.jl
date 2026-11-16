@@ -24,10 +24,11 @@ struct RealLine{T,K<:Kernel{T}}
   w::Vector{Complex{T}}        # u_k, k = 0…n÷2 (even n), see above
 end
 
-# Run-time kernels (RChain, or resampling over RChain) for the run-time plans (rreal.jl).
-const RKern{T} = Union{RChain{T},RResample{T}}
+# Run-time kernels (RChain, or resampling or Bluestein's algorithm over RChain) for the run-time plans
+# (rreal.jl).
+const RKern{T} = Union{RChain{T},RResample{T},RBluestein{T}}
 rkernel(::Type{T}, n::Int, σ::Int) where {T} =
-  (smooth(n) ? RChain{T}(n, σ, radices(n, 1; esize = sizeof(Complex{T}))) : Resample{T}(n, σ, RChain))::RKern{T}
+  (smooth(n) ? RChain{T}(n, σ, radices(n, 1; esize = sizeof(Complex{T}))) : bluestein_lines(T) ? Bluestein{T}(n, σ, RChain) : Resample{T}(n, σ, RChain))::RKern{T}
 ckernel(::Type{T}, n::Int, σ::Int, ::Type{TypedKernels}) where {T} = kernel(T, n, σ)
 ckernel(::Type{T}, n::Int, σ::Int, ::Type{RChain}) where {T} = rkernel(T, n, σ)
 
@@ -344,8 +345,8 @@ end
 
 # Whether a line kernel uses work buffers of its own (a resampling kernel holds them in the kernel,
 # not in the task's buffer set): such lines run on one task.
-own_buffers(k) = k isa Union{Resample,Composite}
-own_buffers(K::RealLine) = K.inner isa Union{Resample,Composite}
+own_buffers(k) = k isa Union{Resample,Bluestein,Composite}
+own_buffers(K::RealLine) = own_buffers(K.inner)
 line_tasks(K, nt) = own_buffers(K) ? 1 : nt
 
 # One line kernel per task. A kernel with buffers of its own (resampling, composite) cannot run on two

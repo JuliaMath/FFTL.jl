@@ -109,7 +109,7 @@ const RS_CHUNK_BYTES = 1 << 18
 
 function RsBatch{T}(q::Int, σ::Int, s::Int) where {T}
   m, _, corr, ws = resample_parts(T, q)
-  CU = ncomplex(first(vec_ladder(T)))
+  CU = ladder_ncomplex(T)[1]
   C = min(s, max(CU, CU * fld(RS_CHUNK_BYTES ÷ (m * sizeof(Complex{T})), CU)))
   fwd = RChain{T}(m, σ, radices(m, C; esize = sizeof(Complex{T})))
   RsBatch{T,typeof(fwd),typeof(ws)}(q, m, C, corr, ws, fwd, Vector{Complex{T}}(undef, m * C),
@@ -319,13 +319,14 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Resample{T}, S::Int) w
 # counts that are not a multiple of the vector's complex count lose most (their remainder runs narrow).
 const RS_BATCH_LANES = 32
 
-# The length-q DFTs of the s lanes of a composite kernel: batched, or lane by lane for few lanes.
-# C: TypedKernels, or RChain for the run-time plans (a lane's grid transform is then a chain).
+# The length-q DFTs of the s lanes of a composite kernel: batched, or lane by lane for few lanes
+# (Bluestein's algorithm where `bluestein_lines`). C: TypedKernels, or RChain for the run-time plans
+# (a lane's grid or convolution transform is then a chain).
 leftover_kernel(::Type{T}, q::Int, σ::Int, s::Int, ::Type{C} = TypedKernels) where {T,C} =
-  s >= RS_BATCH_LANES ? RsBatch{T}(q, σ, s) : Resample{T}(q, σ, C)
+  s >= RS_BATCH_LANES ? RsBatch{T}(q, σ, s) : bluestein_lines(T) ? Bluestein{T}(q, σ, C) : Resample{T}(q, σ, C)
 
 # Lane by lane (the batched pass, RsBatch, has its own method below).
-function leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, rs::Resample{T}, n::Int, s::Int, B::Int, Sy::Int) where {T}
+function leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, rs::Union{Resample{T},Bluestein{T}}, n::Int, s::Int, B::Int, Sy::Int) where {T}
   for i in 0:B-1, k1 in 0:s-1
     twiddled_leftover!(py, pz, tw, rs, n, s, B, i, k1, Sy)
   end
@@ -361,10 +362,10 @@ end
 # Items of the leftover pass of a threaded composite kernel (n = s·q, one slab lane) for ntasks tasks,
 # and item b on the task's kernel: lanes one by one, or chunks of the batched pass (one per task where
 # the lanes allow, multiples of the vector's complex count, see rs_chunk!).
-leftover_chunk(R::Resample, s::Int, ntasks::Int) = 1
+leftover_chunk(R::Union{Resample,Bluestein}, s::Int, ntasks::Int) = 1
 leftover_chunk(R::RsBatch{T}, s::Int, ntasks::Int) where {T} =
-  (CU = ncomplex(first(vec_ladder(T))); min(R.C, CU * cld(cld(s, ntasks), CU)))
-leftover_item!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::Resample{T}, n::Int, s::Int, Cm::Int, b::Int) where {T} =
+  (CU = ladder_ncomplex(T)[1]; min(R.C, CU * cld(cld(s, ntasks), CU)))
+leftover_item!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::Union{Resample{T},Bluestein{T}}, n::Int, s::Int, Cm::Int, b::Int) where {T} =
   twiddled_leftover!(py, pz, tw, R, n, s, 1, 0, b, 1)
 leftover_item!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::RsBatch{T}, n::Int, s::Int, Cm::Int, b::Int) where {T} =
   rs_chunk!(py, pz, tw, R, n, s, 1, 1, 0, b * Cm, min(Cm, s - b * Cm))
@@ -372,6 +373,7 @@ leftover_item!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::RsBatch{T}, n:
 # Grid length of the leftover kernel of a composite kernel.
 grid_size(R::RsBatch) = R.m
 grid_size(R::Resample{T}) where {T} = length(R.buf) - 2 * resample_pad(T)
+grid_size(R::Bluestein) = length(R.buf)
 
 # Tree reduction of U vectors of U complex values, each vector one output's partial sums, into one
 # vector of the U outputs: per level, pairs of vectors halve their segments (FFTJ's interleaved
@@ -481,7 +483,7 @@ end
 # (other chunk sizes, multiples of CU) agrees bitwise with the serial one.
 function rs_chunk!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, R::RsBatch{T}, n::Int, s::Int, B::Int,
                    Sy::Int, i::Int, c0::Int, L::Int) where {T}
-  r = L % ncomplex(first(vec_ladder(T)))
+  r = L % ladder_ncomplex(T)[1]
   L > r && rs_group!(py, pz, tw, R, n, s, B, Sy, i, c0, L - r)
   r > 0 && rs_group!(py, pz, tw, R, n, s, B, Sy, i, c0 + L - r, r)
   nothing
@@ -514,7 +516,7 @@ end
 # lane c; whole vectors of lanes when Sy = 1, the rest one lane at a time.
 @generated function rs_rows!(cy::Ptr{Complex{T}}, base::Int, Sy::Int, Ss::Int, pg::Ptr{T}, ws::WS, q::Int,
                              m::Int, L::Int, ::Val{w}) where {T,WS,w}
-  CU = ncomplex(first(vec_ladder(T)))
+  CU = ladder_ncomplex(T)[1]
   VT = Vec{2CU,T}
   CT = 2sizeof(T)
   o = [Symbol(:o, t) for t in 0:w-1]

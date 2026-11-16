@@ -346,7 +346,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
     # below the threshold the serial resampling kernel stays
     x = randn(Complex{T}, 4099)
-    @test FFTL.plan_fft(x; threads = 3).kernels[1] isa FFTL.Resample
+    @test FFTL.plan_fft(x; threads = 3).kernels[1] isa (FFTL.bluestein_lines(T) ? FFTL.Bluestein : FFTL.Resample)
     # smooth part times leftover: the composite kernel on threads, bitwise equal to the serial one
     # 3·193·1021: the leftover is split, the first stage is a composite kernel on each task
     for n in pick((65 * 4033, 7 * 11777, 1500 * 1013, 3 * 193 * 1021), (3 * 193 * 1021,))
@@ -362,8 +362,8 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
             @test z == ref
           else
             # fewer first-stage lines than threads (Float32 3·193·1021 splits as 3·197053):
-            # the whole line goes to the threaded Bluestein kernel
-            @test p.kernels[1] isa FFTL.BluesteinMT
+            # the whole line is resampled on threads
+            @test p.kernels[1] isa FFTL.ResampleMT
             @test relerr(p * x, ref) < tol(T)
           end
         end

@@ -104,6 +104,18 @@ with the same outputs written contiguously); the batched pass writes runs of con
 **Replaced.** Bluestein's algorithm on the leftover and `BluesteinMT` for a whole line on threads
 (2026-11-07). Generic number types and the GPU passes keep Bluestein's algorithm.
 
+**Exception (2026-11-16): `Float64` on aarch64 keeps Bluestein's algorithm for single lines**
+(`bluestein_lines`): a whole line of a non-smooth length, a composite leftover lane by lane (fewer
+than 32 lanes), and the run-time plans. With two `Float64` values per NEON register the 16-tap
+interpolation costs more than Bluestein's second transform. Apple M1 Max, one thread, resampled
+against Bluestein (`main` at 540d876): `Float64` 1.18–1.53 for 10007, `rfft` 20014, 100003, 101²
+and 127², `Float32` 0.60–0.84. The batched leftover pass (`RsBatch`, from 32 lanes) and the threaded
+kernels (`ResampleMT`, `CompositeMT` with the batched pass) resample in both precisions; they were
+faster in `Float64` as well (64·1009 one thread 0.80; 1000003 on 8 threads 0.72). With the exception,
+against `main` at 1ae621e (M1 Max, minimum over 5 blocks, 2 rounds in alternating processes, a
+loaded machine): `Float64` one thread 0.96–1.02 for the single lines above, 0.79 for 64·1009 and 0.85
+for 64·79; `Float32` one thread 0.57–0.81; smooth lengths 0.97–1.01. On x86 nothing changes.
+
 **Not done / not checked.** Rader's algorithm (5 of the 45 sweep lengths qualify). Both thresholds were
 measured on Zen 2 only, and the 4 MiB rule is checked on 12 lengths that also took part in its
 derivation. The 32-lane rule was measured on one AVX-512 machine only, not on AVX2 or aarch64, and the grid

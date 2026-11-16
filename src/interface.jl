@@ -100,14 +100,16 @@ function Base.show(io::IO, ::MIME"text/plain", p::FFTLPlan{T}) where {T}
     print(io, "\n  dim $d: ")
     k isa RChain && print(io, "radices ", radix_tuple(k))
     k isa Resample && print(io, "resampled, grid length ", k.fwd.n)
-    k isa Composite && print(io, "chain of length ", k.s, ", resampled DFT of length ", k.q, ", grid length ", grid_size(k.rs))
-    k isa CompositeMT && print(io, "chain of length ", k.s, ", resampled DFT of length ", k.q, " on threads, grid length ", grid_size(k.rss[1]))
+    k isa Bluestein && print(io, "Bluestein, convolution length ", length(k.buf))
+    k isa Composite && print(io, "chain of length ", k.s, ", ", leftover_name(k.rs), " of length ", k.q, ", grid length ", grid_size(k.rs))
+    k isa CompositeMT && print(io, "chain of length ", k.s, ", ", leftover_name(k.rss[1]), " of length ", k.q, " on threads, grid length ", grid_size(k.rss[1]))
     k isa LinesMT && print(io, "one kernel per thread, blocks of ", k.B, " lines")
     k isa ResampleMT && print(io, "resampled on threads, grid length ", k.fwd.n)
     k isa FourStep && print(io, "four-step $(k.n1) × $(k.n2), radices ", radix_tuple(k.k1), " and ", radix_tuple(k.k2))
   end
 end
 radix_tuple(k::RChain) = Tuple(k.rs)
+leftover_name(k) = k isa Bluestein ? "Bluestein DFT" : "resampled DFT"
 
 check_size(p, x) = size(x) == p.sz ||
   throw(DimensionMismatch("plan for size $(p.sz) applied to an array of size $(size(x))"))
