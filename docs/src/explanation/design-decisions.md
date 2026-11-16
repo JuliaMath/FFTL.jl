@@ -145,13 +145,33 @@ AMD EPYC 9354 it gained 6–8 % at 192 and 320 and nothing measurable at other l
 **Decision (2026-11-12).** In the stages vectorised over q, the twiddle multiply reads re(w) and im(w)
 from the table (`ccmul_at`; memory operands on x86), and the R input and R output streams are addressed
 as base + odd·stride·2^e from one base per 8 streams (`stream_addr`). The base pointer is hidden from
-LLVM's loop optimiser (`opaque_ptr`), which otherwise goes back to one pointer per stream.
+LLVM's loop optimiser (`opaque_ptr`), which otherwise goes back to one pointer per stream. The base is
+formed in the integer domain (`inttoptr` of the address), which scalar evolution does not analyse; the
+same stage kernels as with `llvm.launder.invariant.group` (inner loops identical up to register names
+and, in three `Float32` range kernels, instruction order; AMD EPYC 9354, Julia 1.13). The scaled
+addresses stay a typed `getelementptr` in `llvmcall`: Julia's pointer arithmetic is a byte GEP of a
+separate shift, which LLVM hoists and merges into an invalid x86 scale, and the middle stages of
+radix 8 and 16 then spill (radix 16, `Float64`: 196 → 224–232 instructions per inner loop). On Julia 1.10
+(LLVM 15, typed pointers, a `Ptr` passed to `llvmcall` as an integer) `scaled_ptr` is the same GEP
+written with typed pointers between `inttoptr` and `ptrtoint`; LLVM folds the conversions into the
+address of the load. The kernels compiled by 1.10 are not the same as those of 1.13 (some are
+unrolled, and some range and middle stages of radix 5, 7 and 16 reload values from the stack);
+1.10 is supported for correctness, its speed is not tuned.
 
 **Why.** A radix-16 stage has 15 twiddles and 32 streams, more than fit in registers, so its inner loop
 reloaded vectors and pointers from the stack. AMD EPYC 9354 (AVX-512), instructions per butterfly:
 radix 16 middle stage 284 → 198, radix 8 100 → 79. One line, `plan_fft`, medians of 8 interleaved
 rounds: lengths 512–16384 take 0.79–0.94 (`Float32`) and 0.82–0.92 (`Float64`) of the time, lengths
 from 32768 on are unchanged (the same code against itself differs by 1–5 %). Not verified on aarch64.
+
+**Not done.** Radix 16 as two radix-4 passes (the first into the output slots, the second in place on
+them, blocked so that a block stays in L1), which needs no addressing tricks: its inner loops do not
+spill, but the extra pass through L1 costs what radix 16 saves over radix 8. AMD EPYC 9354, one line,
+medians of 5–6 interleaved rounds, against the one-pass radix 16: `Float32` 256, 2048, 4096: 1.24,
+1.24, 1.31; `Float64` 256, 2048: 1.17, 1.05 (same code against itself: 0.99–1.02), and slower than
+the best radix-4/8 chain at each length. With 256-bit vectors and 16 registers (`-C haswell`,
+`simd_bytes = 32`) 1.05–1.08 against the one-pass radix 16, and both lose to radix-4/8 chains by
+7–20 %.
 
 ## The prime radices from 17 to 73 share one looped kernel
 

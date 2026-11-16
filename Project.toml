@@ -1,6 +1,6 @@
 name = "FFTL"
 uuid = "b53ef638-a7f0-46a4-97a9-16ee08a896af"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Tobias Knopp <tobias@knoppweb.de>"]
 
 [deps]
@@ -29,7 +29,7 @@ PrecompileTools = "1"
 Preferences = "1"
 SIMD = "3"
 Test = "1"
-julia = "1.11"
+julia = "1.10"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"

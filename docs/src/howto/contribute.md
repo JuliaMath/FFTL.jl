@@ -46,7 +46,7 @@ The test files: `runtests.jl` (transforms against a reference DFT, both precisio
 `ka.jl` (KernelAbstractions plans, on the CPU backend), `inference.jl` (type inference of the
 public functions), `radix_table.jl` (the radix choice), and `aqua.jl` (package quality checks).
 CI runs the quick tests on Linux and macOS for pushes to `main` and for pull requests, and the
-full lists and Julia 1.11 (the oldest supported version) once a week. The C library has its own CI job.
+full lists and Julia 1.10 once a week. The C library has its own CI job.
 
 ## Build the documentation
 
