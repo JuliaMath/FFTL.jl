@@ -983,7 +983,7 @@ end
 function test_fftl_h()
   buf = zeros(UInt8, 64)
   n = fftl_version(pointer(buf), Csize_t(length(buf)))
-  @CHECK n == 5 && String(buf[1:6]) == "0.1.0\0", "fftl_version 0.1.0"
+  @CHECK n == 5 && String(buf[1:6]) == "0.2.0\0", "fftl_version 0.2.0"
   fill!(buf, 0)
   n = fftl_version(pointer(buf), Csize_t(3))
   @CHECK n == 5 && buf[1:3] == UInt8['0', '.', 0], "fftl_version truncates like snprintf"

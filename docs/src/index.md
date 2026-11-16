@@ -32,7 +32,7 @@ shares. [Contribute](@ref "Contribute") says where help is most useful.
 - Complex, real-input and all eleven real-to-real kinds (DCT-I to DCT-IV, DST-I to DST-IV,
   Hartley, halfcomplex), along any set of dimensions of any rank.
 - Any length: smooth lengths through generated codelets, lengths with large prime factors
-  through Bluestein's algorithm, no padding to powers of two.
+  resampled onto a smooth grid, no padding to powers of two.
 - `BigFloat` and other floating-point types in their own precision, not converted to `Float64`.
 - GPUs through KernelAbstractions.jl, with the same functions.
 - Multithreading where the transform is large enough, and the four-step algorithm for one long line
@@ -103,8 +103,8 @@ idct(C) ≈ r
 A plan is a Julia object that carries the radix sequence, the twiddle tables and the work
 buffers for one size and one set of dimensions. Radix sequences are chosen by a fixed rule, and
 the codelets they run are generated for the radix, element type and SIMD width actually used.
-Long transforms run on several threads, and lengths with large prime factors go through
-Bluestein's algorithm. The details are in [Algorithms](@ref "Algorithms").
+Long transforms run on several threads, and lengths with large prime factors are resampled onto a
+smooth grid. The details are in [Algorithms](@ref "Algorithms").
 
 ## Package status
 

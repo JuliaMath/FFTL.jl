@@ -18,9 +18,17 @@ using KernelAbstractions
     zi = inv(p) * y; KernelAbstractions.synchronize(be)
     @test relerr(zi, x) < tol(T)
   end
-  # Bluestein in one kernel (8 lines of M = 80 per workgroup) and in two launches (one line)
+  # Rader in one kernel (36 = 2²·3²); Bluestein (46 = 2·23) in one kernel for 8 lines and in
+  # two launches for one line
   @test length(FFTL.plan_ka(be, T, (8, 37), -1; region = 2:2).steps) == 1
-  @test length(FFTL.plan_ka(be, T, (37,), -1).steps) == 2
+  @test length(FFTL.plan_ka(be, T, (37,), -1).steps) == 1
+  @test length(FFTL.plan_ka(be, T, (8, 47), -1; region = 2:2).steps) == 1
+  @test length(FFTL.plan_ka(be, T, (47,), -1).steps) == 2
+  for dims in ((47,), (8, 47))
+    x = rand(Complex{T}, dims)
+    y = FFTL.plan_ka(be, T, dims, -1; region = length(dims):length(dims)) * x; KernelAbstractions.synchronize(be)
+    @test relerr(y, dftn(x, length(dims):length(dims))) < tol(T)
+  end
   p = FFTL.plan_ka(be, T, (8,), -1)
   @test_throws DimensionMismatch mul!(zeros(Complex{T}, 8), p, zeros(Complex{T}, 4))
   x = rand(Complex{T}, 8)

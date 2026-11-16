@@ -34,7 +34,9 @@
  * - Plans can be created, executed and destroyed from any thread; the same plan may execute
  *   on several threads at once through the new-array execute functions, as in FFTW.
  * - Not provided: the variables fftw_version, fftw_cc and fftw_codelet_optim, and
- *   fftw_estimate_cost (not described in the manual).
+ *   fftw_estimate_cost (exported by FFTW's library, not described in the manual).
+ * - fftw_copy_plan (documented in the manual's "Using Plans"; FFTW 3.3.10 does not have it): a
+ *   second reference to the same plan, destroyed with fftw_destroy_plan like any plan.
  */
 #ifndef FFTL_FFTW3_H
 #define FFTL_FFTW3_H

@@ -12,12 +12,13 @@ Size thresholds of FFTL (see `TUNING`):
   `clamp(prevpow2(L2 ÷ 32), 2^12, block_budget)`)
 - `fourstep_min`: length from which a single line uses the four-step algorithm on several threads
 - `factor_twiddles`: bytes above which the four-step uses factor twiddle tables
-- `bluestein_mt_min`: length from which Bluestein's algorithm runs on several threads
+- `resample_mt_min`: length from which a length with a large prime factor (resampling) runs on
+  several threads
 - `real_fourstep_bytes`: bytes of a real line from which it runs as a four-step on several threads
-- `real_bluestein_bytes`: bytes of a real line from which a non-smooth one runs on several threads
+- `real_resample_bytes`: bytes of a real line from which a non-smooth one runs on several threads
 - `plane_budget`: complex values of a plane (dimensions 1 and 2) that may be fused
 - `fourstep_nt_bytes`: bytes of a four-step from which phase 2 writes its output rows from a buffer
-  with non-temporal stores (below: the last stage writes y)
+  with non-temporal stores (below: the last stage writes y); with 64-byte vectors only
 - `fourstep_row_bytes`: least bytes per row of a lane block of a threaded four-step
 """
 struct Tuning
@@ -25,9 +26,9 @@ struct Tuning
   block_budget::Int
   fourstep_min::Int
   factor_twiddles::Int
-  bluestein_mt_min::Int
+  resample_mt_min::Int
   real_fourstep_bytes::Int
-  real_bluestein_bytes::Int
+  real_resample_bytes::Int
   plane_budget::Int
   fourstep_nt_bytes::Int
   fourstep_row_bytes::Int
@@ -37,6 +38,7 @@ const DEFAULT_TUNING = Tuning(1 << 15, 1 << 16, 1 << 13, 1 << 23, 1 << 14, 1 << 
                               8 << 20, 128)
 
 # Read at plan construction, except thread_min_work, block_budget, plane_budget and the fourstep_*
-# fields of the run, which a pass reads when it starts. Assigning `FFTL.TUNING[] = …` changes the settings for plans made afterwards
+# fields, which a pass reads when it starts (fourstep_row_bytes also sizes a four-step's buffers when
+# the plan is made). Assigning `FFTL.TUNING[] = …` changes the settings for plans made afterwards
 # and for passes started afterwards.
 const TUNING = Ref(DEFAULT_TUNING)

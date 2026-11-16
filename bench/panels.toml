@@ -2,8 +2,8 @@
 #
 # Each panel is one aggregated table, results/panel-<key>.csv: one row per case and library, with
 # the statistics written by the benchmark harness (harness/aggregate.jl, columns in its header).
-# The figures read only these tables. `sources` names the legacy overview CSVs that the panel was
-# built from; panels measured with the harness are written by its aggregation step directly.
+# The figures read only these tables. `sources` names the harness runs a panel was aggregated from;
+# their .meta files are concatenated into results/panel-<key>.meta.
 # `competitors` are the libraries that take part in the panel; FFTL is always in.
 # `machine` is the public processor name written into the tables.
 
@@ -12,43 +12,41 @@ key = "m1t1"
 title = "Apple M1 Max CPU, 1 thread"
 machine = "Apple M1 Max"
 competitors = ["fftw_measure", "ducc", "vdsp"]
-# dev run of the harness (2026-11-10/11), FFTL 1c04e37
-sources = ["harness dev run, 1 thread"]
+sources = ["campaign run 2026-11-15, FFTL v0.2.0, 1 thread"]
 
 [[panel]]
 key = "epyct1"
-title = "AMD EPYC 7702 CPU, 1 thread"
-machine = "AMD EPYC 7702"
+title = "AMD EPYC 7763 CPU, 1 thread"
+machine = "AMD EPYC 7763"
 competitors = ["fftw_measure", "ducc"]
-# dev run of the harness (2026-11-10), FFTL 8e31d3a
-sources = ["harness dev run, 1 thread"]
+sources = ["campaign run 2026-11-15, FFTL v0.2.0, 1 thread, socket 0"]
 
 [[panel]]
 key = "m1gpu"
 title = "Apple M1 Max GPU"
 machine = "Apple M1 Max"
 competitors = ["mpsgraph", "vkfft"]
-# dev run of the harness (2026-11-10), FFTL 3035ba5, Metal, Float32
-sources = ["harness dev run, Metal"]
+sources = ["campaign run 2026-11-15, FFTL v0.2.0, Metal, Float32"]
 
 [[panel]]
 key = "m1t8"
 title = "Apple M1 Max CPU, 8 threads"
 machine = "Apple M1 Max"
 competitors = ["fftw_measure", "ducc"]
-# dev runs of the harness, FFTL 1c04e37: 1 thread (2026-11-10), 8 threads (2026-11-11)
-sources = ["harness dev run, 1 and 8 threads"]
+# each library at its better of 1 and 8 threads per case
+sources = ["campaign runs 2026-11-15, FFTL v0.2.0, 1 and 8 threads"]
 
 [[panel]]
-key = "epyct16"
-title = "AMD EPYC 7702 CPU, 16 threads"
-machine = "AMD EPYC 7702"
+key = "epyct32"
+title = "AMD EPYC 7763 CPU, 32 threads"
+machine = "AMD EPYC 7763"
 competitors = ["fftw_measure", "ducc"]
-sources = ["overview-epyc7702-t16-kinds-8e31d3a.csv", "overview-epyc7702-t1-kinds-8e31d3a.csv"]
+# each library at its best of 1, 16 and 32 threads per case
+sources = ["campaign runs 2026-11-15, FFTL v0.2.0, 1, 16 and 32 threads, socket 0"]
 
 [[panel]]
 key = "a6000"
 title = "NVIDIA RTX A6000 GPU"
 machine = "NVIDIA RTX A6000"
 competitors = ["cufft", "vkfft"]
-sources = ["overview-a6000-gpu.csv"]
+sources = ["campaign run 2026-11-15, FFTL v0.2.0"]

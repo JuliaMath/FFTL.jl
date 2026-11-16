@@ -25,7 +25,7 @@ library:
 
 All eleven real-to-real kinds (`FFTW_R2HC`, `FFTW_HC2R`, `FFTW_DHT`, `FFTW_REDFT00` …
 `FFTW_REDFT11`, `FFTW_RODFT00` … `FFTW_RODFT11`), any rank, any lengths (lengths with large
-prime factors use Bluestein's algorithm), and every layout the manual describes: strides,
+prime factors are resampled onto a smooth grid), and every layout the manual describes: strides,
 embedded arrays, vector loops, different input and output layouts, in place and out of place,
 interleaved and split complex arrays.
 

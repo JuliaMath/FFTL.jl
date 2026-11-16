@@ -18,7 +18,7 @@
     @test_broken @inferred FFTL.plan_fft(x)
     @test_broken @inferred FFTL.plan_fft(x, (1, 2))
   end
-  # Bluestein length, the plan holds the work buffers
+  # a length with a large prime factor (resampling), the plan holds the work buffers
   let x = randn(Complex{T}, 79), y = similar(x)
     p = FFTL.plan_fft(x)
     mul!(y, p, x)
@@ -48,12 +48,12 @@
   let G = randn(Complex{T}, 40, 36, 30), W = similar(G)
     v = view(G, 3:34, 2:33, 2:25)
     w = view(W, 3:34, 2:33, 2:25)
-    # Julia 1.10: apply! on a view allocates 64-80 bytes per call (mul! with a separate output
-    # does not); 1.11 and later are allocation-free.
+    # Julia 1.10 and 1.11: apply! on a view allocates 64-80 bytes per call (mul! with a separate
+    # output does not); 1.12 and later are allocation-free.
     p = FFTL.plan_pass(v, 2; sign = -1, threads = 1)
     FFTL.apply!(p, v)
     @test (@inferred FFTL.apply!(p, v)) === v
-    @test (@allocated FFTL.apply!(p, v)) == 0 broken = VERSION < v"1.11"
+    @test (@allocated FFTL.apply!(p, v)) == 0 broken = VERSION < v"1.12"
     mul!(w, p, v)
     @test (@inferred mul!(w, p, v)) === w
     @test (@allocated mul!(w, p, v)) == 0
@@ -159,7 +159,7 @@ exe_r2r!(p, y, x) = GC.@preserve x y FFTL.execute_r2r!(p, pointer(y), pointer(x)
     @test (@inferred exe!(p, y, x)) === nothing
     @test (@allocated exe!(p, y, x)) == 0
   end
-  let p = (@inferred FFTL.RPlan{T}([79], [1], 1; threads = 1)), x = randn(Complex{T}, 79), y = similar(x)   # Bluestein
+  let p = (@inferred FFTL.RPlan{T}([79], [1], 1; threads = 1)), x = randn(Complex{T}, 79), y = similar(x)   # resampling
     exe!(p, y, x)
     @test (@allocated exe!(p, y, x)) == 0
   end

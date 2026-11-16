@@ -17,15 +17,15 @@ available.
 | DHT, `R2HC`, `HC2R` | ✓ | ✓ | ◐ not tuned | ✓ |
 | batched 1D passes (`plan_pass`, `plan_r2r_pass`) | ✓ | – | – | – |
 | any rank and any subset of dimensions | ✓ | ✓ | ✓ | ✓ |
-| any length (Bluestein above prime factor 73; 31 on the GPU and for generic floats) | ✓ | ✓ | ✓ | ✓ |
+| any length (prime factors above 73: resampling; 31 and Bluestein on the GPU and for generic floats) | ✓ resampling (`Float64` on aarch64: Bluestein for single lines) | ✓ Bluestein | ✓ Bluestein | ✓ resampling |
 
 ## Platforms
 
 | platform | status |
 |:--|:--|
 | Apple M1 Max (arm64, macOS) | development machine; codelets use the `FCADD`/`FCMLA` complex instructions; GPU via Metal |
-| AMD EPYC 7763 (Zen 3, x86-64 with AVX2, Linux) | x86-64 development machine |
-| AMD EPYC 7702 (Zen 2, x86-64 with AVX2, Linux) | x86-64 machine of the [benchmarks](@ref "Benchmarks") |
+| AMD EPYC 7763 (Zen 3, x86-64 with AVX2, Linux) | x86-64 development machine and the x86-64 machine of the [benchmarks](@ref "Benchmarks"); hosts the RTX A6000 |
+| AMD EPYC 7702 (Zen 2, x86-64 with AVX2, Linux) | x86-64 development machine (thresholds, tests) |
 | Intel Core i7-1185G7 (Tiger Lake, x86-64 with AVX-512, Linux) | 512-bit kernels tested; radix rules not retuned for AVX-512 |
 | Linux and macOS in CI | quick tests on every push to `main` and on pull requests; full tests weekly |
 | NVIDIA RTX A6000 | GPU via CUDA, measured against cuFFT |
