@@ -101,18 +101,44 @@ Adding a machine means adding a profile; no script changes.
 | `project` | Julia environment (relative to `bench/`, or absolute on the machine) |
 | `threads` | default thread counts |
 | `max_load` | start refused when the 1-minute load is higher (`--force` overrides) |
-| `pin` | `[pin]` table: thread count → CPU list for `taskset` (Linux) |
+| `pin` | `[pin]` table: thread count → CPU list for `taskset` (Linux); GPU profiles use the key `"0"`, a core on the GPU's NUMA node |
 | `device` | `"metal"` or `"cuda"` for GPU profiles, `libs` lists the libraries |
+| `fftw_lib`, `fftwf_lib` | the native FFTW build of the machine (double, single); written into the project's `LocalPreferences.toml` as FFTW_jll's library paths before FFTW loads |
+| `fftw` | `"jll"` to measure FFTW_jll's library on purpose; without it a CPU profile needs `fftw_lib` |
 | `host`, `remote_root`, `julia` | only for remote profiles |
+
+## FFTW: which library ran
+
+FFTW.jl loads FFTW_jll, whose library paths are preferences; they apply only when FFTW_jll is a
+direct dependency of the environment (it is in `bench/Project.toml`; add it to a machine's own
+environment too). `measure.jl` writes the profile's `fftw_lib`/`fftwf_lib` into the environment's
+`LocalPreferences.toml` (not versioned) before it loads FFTW, and the `.meta` records for both
+precisions whether the loaded library is native or the JLL artifact, its version string and its
+compiler flags (`fftw_cc`). A CPU run stops when the profile names a native library and another one
+is loaded, or names none (unless `fftw = "jll"`).
+
+## ducc0
+
+1-D c2c, r2c and c2r: per case the faster of a plan made once (`ducc_plan1d_setup`) and the free
+call; small lengths gain most from the plan, long `Float32` lines run faster through the free call.
+N-D transforms and the DHT use the array API, which has no plan object.
 
 ## GPU (`gpu.jl`)
 
 A profile with `device = "metal"` or `"cuda"` runs the catalog on the GPU, with the same raw format
 (threads = 0). Julia-side libraries: `fftl` (KernelAbstractions extension) and, on Metal, `mpsgraph`
 (Apple's FFT through Metal.jl, Float32 only). Separate-process libraries: `vkfft` and `cufft`
-(wrappers in `../vkfft` and `../cufft`). Julia-side timing: median over seven samples of `reps`
-back-to-back transforms, per transform; separate-process libraries report their own times. Not
-included: vkfft_batch. DHT is not run on the GPU.
+(wrappers in `../vkfft` and `../cufft`). Timing, the same for every library: 50 ms of the same
+transform as warm-up, then the median over seven samples of `reps` back-to-back transforms, per
+transform; the separate-process libraries do this in their own harness (`BENCH_WARMUP_MS`). Small
+GPU transforms are bound by the host's launch rate: without the warm-up, a round that follows an
+idle wait (for the previous library's process) ran up to 1.8 µs per launch slower on an AMD EPYC
+7763 host, and the timings of the in-process library depended on the round. On CUDA the Julia side waits
+with a blocking `cuStreamSynchronize`, as the C++ harnesses do: CUDA.jl's default wait sleeps after
+a short poll, which cost a library that queues faster than the GPU runs up to 100 µs per transform.
+With `aa = true` in the tier, a second FFTL plan on its own arrays runs as `fftl_aa`, interleaved with the
+other libraries as on the CPU, so that the aggregation gives an A/A band for GPU panels too. The `.meta` records the pin, the
+warm-up, and whether the package code equals the latest release tag (a run may use a newer harness on released code). Not included: vkfft_batch. DHT is not run on the GPU.
 
 GPU profiles use their own environment, `bench/envs/metal` for Metal (Metal.jl, KernelAbstractions,
 FFTL dev'd from the checkout). The CPU environment `bench/Project.toml` does not list them. Instantiate

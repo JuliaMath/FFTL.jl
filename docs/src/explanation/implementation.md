@@ -141,3 +141,23 @@ slower, and its purpose is accuracy and generality.
 `ext/FFTLKernelAbstractionsExt.jl` holds the KernelAbstractions extension. Its kernels compute one
 pass of a transform in workgroup memory. The pass sizes follow the workgroup memory the device
 offers; the rules were measured on an Apple M1 Max, and the CUDA path on an RTX A6000.
+
+A workgroup holds `G` lines (lanes) of a pass. Normally `G` divides the number of lines; a pass
+over all of a dimension (one pass) may instead take the lines in memory order with any `G`
+(ragged lanes: the lanes past the last line repeat it and store nothing new), which keeps the
+workgroups full when the line count is prime. Lengths with a prime factor above 31 use a fused
+kernel when the convolution fits one pass: Bluestein's (forward DFT of the chirped line, product
+with the transformed chirp, backward DFT) or Rader's (the same with permuted loads and stores, for a
+prime whose ``p - 1`` is 13-smooth), both in workgroup memory. These kernels split their length into
+few, even radices (`local_radices(n, true)`), since a thread per butterfly of the largest radix
+makes a small radix next to 16 take many rounds.
+
+A real transform along the first dimension runs in one kernel launch wherever its complex DFT is a
+single kernel (`rpack`, see `ext/ka_real.jl`). For odd lengths, the kernel reads two real lines as one
+complex line of the same length; this works for the fused kernels and for a plain one-pass kernel.
+For even lengths whose half is a Rader or one-pass Bluestein length, it reads one real line as a
+complex line of half the length (Makhoul's permutation for DCT-II and DST-II). In both cases its last
+loop separates the result into the real transform. Small GPU transforms are bound by the launch rate
+of the host: a raw CUDA launch costs about 2.3 µs of host time on an AMD EPYC 7763 host, and a
+KernelAbstractions launch about 3.8 µs. A transform built from a pack kernel, the DFT and a post
+kernel therefore cost three times as much as the DFT alone.

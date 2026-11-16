@@ -355,10 +355,17 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
         ref = mk(x; threads = 1) * x
         for nt in pick((2, 3, 4), (3,))
           p = mk(x; threads = nt)
-          @test p.kernels[1] isa FFTL.CompositeMT
-          @test p * x == ref
-          z = copy(x); mul!(z, p, z)
-          @test z == ref
+          if nt <= FFTL.composite_split(T, n)[1]
+            @test p.kernels[1] isa FFTL.CompositeMT
+            @test p * x == ref
+            z = copy(x); mul!(z, p, z)
+            @test z == ref
+          else
+            # fewer first-stage lines than threads (Float32 3·193·1021 splits as 3·197053):
+            # the whole line goes to the threaded Bluestein kernel
+            @test p.kernels[1] isa FFTL.BluesteinMT
+            @test relerr(p * x, ref) < tol(T)
+          end
         end
       end
     end

@@ -40,13 +40,20 @@ Metal.jl's FFT in nearly all measured cases. The CUDA path is tuned and measured
 ([Benchmarks](@ref "Benchmarks")).
 
 Real transforms (`rfft`, `irfft`, `brfft`) compute the half spectrum through a complex transform
-of half the length, with the pre- and post-processing inside its first and last pass.
+of half the length, with the pre- and post-processing inside its first and last pass. Odd lengths
+put two real lines into one complex line, a complex DFT of length ``n`` per pair.
 
 The real-to-real kinds are reduced to complex DFTs: of half the length for DCT-II to DCT-IV and
 DST-II to DST-IV of even length, of length ``n - 1`` for DCT-I and ``n + 1`` for DST-I, mostly
 with the extra steps inside the passes. On CUDA, a DCT-I whose length ``n - 1`` has a prime factor
-above 31 takes a four-step DFT instead of Bluestein's algorithm (the pass radices stop at 31). Odd lengths of the other kinds take a complex DFT of
-length ``2n``, the Hartley and halfcomplex kinds one of length ``n``. DCT-II and DST-II are the
+above 31 takes a four-step DFT instead of Bluestein's algorithm (the pass radices stop at 31).
+DCT-II and DST-II of odd length take one complex DFT of length ``n`` per two lines; odd lengths of
+the other kinds take a complex DFT of length ``2n``, the Hartley and halfcomplex kinds one of length ``n``.
+
+Lengths with a prime factor above 31: a prime whose ``p - 1`` has prime factors up to 13 runs
+Rader's algorithm in one kernel per dimension, other lengths Bluestein's algorithm (one kernel
+when the convolution fits one pass). Odd real transforms of such lengths do the packing of the
+real lines inside that kernel. DCT-II and DST-II are the
 most tuned of them; for the other kinds the speed relative to VkFFT depends on the kind and the
 size, from faster to several times slower.
 

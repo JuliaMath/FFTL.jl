@@ -9,7 +9,12 @@
 #
 # Timing. Julia-side libraries: a round is the median over seven samples of `reps` transforms back to
 # back with one synchronisation, per transform. The separate-process libraries report their own
-# timings: one call of their harness is one round, and that harness takes its best of seven samples.
+# timings: one call of their harness is one round, and that harness takes the median of seven
+# samples in the same way. Every library runs the same transform for WARMUP seconds before its
+# timed samples (the separate-process harnesses through BENCH_WARMUP_MS): small transforms are bound
+# by the host's launch rate, and a host core that idled (waiting for the previous library's process)
+# runs below its clock for the first milliseconds, up to 1.8 µs per launch on a shared EPYC host.
+# The machine profile's `pin` puts the measuring process and its child processes on one core.
 # plan_seconds is the first plan, with kernel generation and run-time compilation.
 #
 # Not here: vkfft_batch (Metal; all transforms of a sample in one command buffer), which is not a
@@ -30,7 +35,12 @@ if DEVICE == "metal"
   const FLOATS = (Float32,)
 else
   @eval using KernelAbstractions, CUDA
-  const AT = CUDA.CuArray; const SYNC = CUDA.synchronize
+  const AT = CUDA.CuArray
+  # Blocking wait (cuStreamSynchronize), as cudaDeviceSynchronize in the cuFFT and VkFFT harnesses.
+  # CUDA.jl's default wait polls for a while and then sleeps; when the host queues transforms
+  # faster than the GPU runs them, the backlog outlasts the polling and the sleep adds up to
+  # 100 µs per transform (a 10 µs one-block kernel, A6000 on a shared EPYC host).
+  const SYNC = () -> CUDA.synchronize(blocking = true)
   const FLOATS = (Float32, Float64)
 end
 
@@ -59,9 +69,20 @@ function julia_plan(lib, kind, xd, n1)
   (time_ns() - t0) / 1e9, p
 end
 
-# Median over seven samples of `reps` back-to-back transforms, per transform.
+const WARMUP = 0.05
+ENV["BENCH_WARMUP_MS"] = string(round(Int, 1000WARMUP))
+
+# Median over seven samples of `reps` back-to-back transforms, per transform, after WARMUP seconds
+# of the same transform.
 function per_transform(f, reps)
   f(); SYNC()
+  t0 = time_ns()
+  while time_ns() - t0 < WARMUP * 1e9
+    for _ in 1:reps
+      f()
+    end
+    SYNC()
+  end
   ts = Float64[]
   for _ in 1:7
     t = time_ns()
@@ -83,7 +104,8 @@ end
 
 # Measures the cases of the catalog on the GPU. `cases` are (kind, shape, family); rows go to `out`
 # in the CPU raw format with threads = 0. Progress lines go to stdout for monitor.jl.
-function gpu_measure(out, cases, libs, rounds, machine_label, tier_name)
+# aa: a second FFTL plan on its own arrays (fftl_aa), measured like another library: the A/A band.
+function gpu_measure(out, cases, libs, rounds, machine_label, tier_name; aa = false)
   total = length(cases) * length(FLOATS)
   done = 0
   for (kind, shape, family) in cases, T in FLOATS
@@ -101,15 +123,17 @@ function gpu_measure(out, cases, libs, rounds, machine_label, tier_name)
     OT = kind in ("c2c", "r2c") ? Complex{T} : T
     yshape = kind == "r2c" ? (n1 ÷ 2 + 1, shape[2:end]...) : shape
     libs_here = filter(l -> available(l, kind), libs)
+    aa && "fftl" in libs_here && push!(libs_here, "fftl_aa")
     # Julia-side plans are made and checked once per case; the separate-process libraries have none.
     plans = Dict{String,Any}()
     for lib in libs_here
-      if lib in ("fftl", "mpsgraph")
-        tp, p = julia_plan(lib, kind, xd, n1)
+      if lib in ("fftl", "fftl_aa", "mpsgraph")
+        xl = lib == "fftl_aa" ? copy(xd) : xd
+        tp, p = julia_plan(lib == "fftl_aa" ? "fftl" : lib, kind, xl, n1)
         y = AT(Array{OT}(undef, yshape))
-        mul!(y, p, xd); SYNC()
+        mul!(y, p, xl); SYNC()
         err = maximum(abs.(ComplexF64.(Array(y)) .- ref)) / refmax
-        plans[lib] = (tp = tp, p = p, y = y, err = err)
+        plans[lib] = (tp = tp, p = p, x = xl, y = y, err = err)
       end
     end
     isempty(libs_here) && continue
@@ -118,7 +142,7 @@ function gpu_measure(out, cases, libs, rounds, machine_label, tier_name)
       for lib in order
         if haskey(plans, lib)
           pl = plans[lib]
-          sec = per_transform(() -> mul!(pl.y, pl.p, xd), reps)
+          sec = per_transform(() -> mul!(pl.y, pl.p, pl.x), reps)
           plan, err = pl.tp, pl.err
         else
           # separate-process libraries: the harness takes its own times

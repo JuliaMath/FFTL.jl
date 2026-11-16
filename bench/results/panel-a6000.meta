@@ -1,0 +1,11 @@
+label: NVIDIA RTX A6000
+tier: campaign; rounds 7; device cuda
+threads: 0 (GPU); pin: 100
+warm-up: 50 ms of the same transform before each round, all libraries
+FFTL 1efbaf1; julia 1.13.3
+fftw: FFTW_jll artifact; fftw-3.3.11-sse2-avx2-avx2_128; cc: cc -O3 -fomit-frame-pointer -mtune=native -malign-double -fstrict-aliasing -fno-schedule-insns; libfftw3.so (reference only)
+fftwf: FFTW_jll artifact; fftw-3.3.11-sse2-avx2-avx2_128; cc: cc -O3 -fomit-frame-pointer -mtune=native -malign-double -fstrict-aliasing -fno-schedule-insns; libfftw3f.so (reference only)
+libraries: fftl,cufft,vkfft
+cases: 341 (kind, shape, family)
+start: 2026-11-15T16:18:39; load: 9.51
+end: 2026-11-15T18:30:15; load: 17.40

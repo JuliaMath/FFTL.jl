@@ -216,13 +216,33 @@ AMD EPYC 9354 it gained 6–8 % at 192 and 320 and nothing measurable at other l
 **Decision (2026-11-12).** In the stages vectorised over q, the twiddle multiply reads re(w) and im(w)
 from the table (`ccmul_at`; memory operands on x86), and the R input and R output streams are addressed
 as base + odd·stride·2^e from one base per 8 streams (`stream_addr`). The base pointer is hidden from
-LLVM's loop optimiser (`opaque_ptr`), which otherwise goes back to one pointer per stream.
+LLVM's loop optimiser (`opaque_ptr`), which otherwise goes back to one pointer per stream. The base is
+formed in the integer domain (`inttoptr` of the address), which scalar evolution does not analyse; the
+same stage kernels as with `llvm.launder.invariant.group` (inner loops identical up to register names
+and, in three `Float32` range kernels, instruction order; AMD EPYC 9354, Julia 1.13). The scaled
+addresses stay a typed `getelementptr` in `llvmcall`: Julia's pointer arithmetic is a byte GEP of a
+separate shift, which LLVM hoists and merges into an invalid x86 scale, and the middle stages of
+radix 8 and 16 then spill (radix 16, `Float64`: 196 → 224–232 instructions per inner loop). On Julia 1.10
+(LLVM 15, typed pointers, a `Ptr` passed to `llvmcall` as an integer) `scaled_ptr` is the same GEP
+written with typed pointers between `inttoptr` and `ptrtoint`; LLVM folds the conversions into the
+address of the load. The kernels compiled by 1.10 are not the same as those of 1.13 (some are
+unrolled, and some range and middle stages of radix 5, 7 and 16 reload values from the stack);
+1.10 is supported for correctness, its speed is not tuned.
 
 **Why.** A radix-16 stage has 15 twiddles and 32 streams, more than fit in registers, so its inner loop
 reloaded vectors and pointers from the stack. AMD EPYC 9354 (AVX-512), instructions per butterfly:
 radix 16 middle stage 284 → 198, radix 8 100 → 79. One line, `plan_fft`, medians of 8 interleaved
 rounds: lengths 512–16384 take 0.79–0.94 (`Float32`) and 0.82–0.92 (`Float64`) of the time, lengths
 from 32768 on are unchanged (the same code against itself differs by 1–5 %). Not verified on aarch64.
+
+**Not done.** Radix 16 as two radix-4 passes (the first into the output slots, the second in place on
+them, blocked so that a block stays in L1), which needs no addressing tricks: its inner loops do not
+spill, but the extra pass through L1 costs what radix 16 saves over radix 8. AMD EPYC 9354, one line,
+medians of 5–6 interleaved rounds, against the one-pass radix 16: `Float32` 256, 2048, 4096: 1.24,
+1.24, 1.31; `Float64` 256, 2048: 1.17, 1.05 (same code against itself: 0.99–1.02), and slower than
+the best radix-4/8 chain at each length. With 256-bit vectors and 16 registers (`-C haswell`,
+`simd_bytes = 32`) 1.05–1.08 against the one-pass radix 16, and both lose to radix-4/8 chains by
+7–20 %.
 
 ## The prime radices from 17 to 73 share one looped kernel
 
@@ -334,6 +354,113 @@ FFTL for the rest.
 - Methods are global per process, so this is the only arrangement in which a scope with `using FFTL`
   reaches FFTL whatever a dependency loads. Tested: with `B -> FFTL` and `B -> A -> FFTW`, B gets FFTL and
   A gets FFTW; a scope that loads both must qualify the name.
+
+## GPU: large prime factors in multi-dimensional transforms
+
+**Decision (2026-11-14).** In the KernelAbstractions extension:
+
+- **Ragged lanes.** A one-pass kernel takes the lines of a dimension in memory order with any number
+  of lines per workgroup; the lanes past the last line repeat it and store nothing new. It is used
+  where the old rule (the lines per workgroup divide the line count) leaves fewer than four lines per
+  workgroup, and in the fused convolution kernels.
+- **Rader's algorithm** for a prime length ``p`` whose ``p - 1`` has prime factors up to 13 and fits
+  one pass: the cyclic convolution of length ``p - 1`` in one kernel, with the same structure as the
+  fused Bluestein kernel (permuted loads and stores from a table, ``X_0`` from the forward result).
+  A single line of a prime above 512 keeps Bluestein's algorithm.
+- **Balanced radices** in the fused Bluestein and Rader kernels: the fewest stages of radices up to 16,
+  the smallest largest radix among them (1008 as ``[12, 12, 7]``, 100 as ``[10, 10]``). Ordinary passes
+  keep the chain of small radices.
+- **Odd real transforms by a DFT of ``n`` per two lines.** r2c, c2r, DCT-II and DST-II of odd length
+  pack two real lines into one complex line (Makhoul's permutation for DCT-II/DST-II) instead of a
+  complex DFT of ``2n`` (DCT-II/DST-II) or of each real line (r2c/c2r). With a fused line plan the
+  packing and the separation of the pair run inside that kernel.
+- On Apple GPUs the Bluestein length is the next power of two when it fits one pass.
+
+**Why.** On a GPU, multi-dimensional transforms with a dimension of 101 or 1009 were 5–20× slower than
+cuFFT or VkFFT (harness dev runs on an NVIDIA RTX A6000 and an Apple M1 Max). The causes, measured one
+by one on the M1 Max:
+
+- A prime line count (101, 101²) left one line per workgroup, 14 threads for a pass of 224: passes of
+  128 and 224 along a stride of 101 ran at 145 GB/s, along a stride of 128 at 470 GB/s. With ragged
+  lanes the stride of 101 runs at 470 GB/s.
+- Bluestein's convolution needs a length of at least ``2p - 1`` (224 or 256 for 101), Rader's ``p - 1``
+  (100): 101³ dimension 2, 89 µs against 141 µs.
+- In the fused kernels the split of the length into radices decides the speed: one thread per
+  butterfly of the largest radix, so a small radix next to 16 takes many rounds per thread (1009²
+  dimension 1: 1008 as ``[12, 12, 7]`` 141 µs, as ``[8, 2, 9, 7]`` 249 µs; 101³: 224 as ``[16, 2, 7]``
+  335 µs, 256 as ``[16, 16]`` 142 µs). A single line runs in one workgroup, where more threads win, so
+  ordinary passes keep many small stages (r2c 3000, a line of 1500: 300 threads 41 µs, 100 threads 58 µs).
+- Code size: loops over long lines unrolled at generation (1009 elements, 84 threads) made the fused
+  kernel slower than separate kernels; as loops in the kernel the packed kernel is faster.
+
+Measurements (`Float32` unless noted; µs; harness timing, back-to-back transforms):
+
+| case | before | after | fastest other library |
+|---|---|---|---|
+| Apple M1 Max, c2c 101³ | 1333 | 222 | 228 (VkFFT) |
+| Apple M1 Max, REDFT10 101³ | 3405 | 257 | 210 (VkFFT) |
+| Apple M1 Max, REDFT10 1009² | 1592 | 279 | 373 (VkFFT) |
+| NVIDIA RTX A6000, c2c 101³ | 372 | 85 | 80.5 |
+| NVIDIA RTX A6000, c2c 101³ `Float64` | 3904 | 868 | 935 |
+| NVIDIA RTX A6000, REDFT10 101³ | 1035 | 61 | 49 |
+| NVIDIA RTX A6000, REDFT10 1009² | 548 | 60 | 61.5 |
+
+Harness dev runs on the M1 Max GPU (341 cases, three rounds, the code before and after measured on the
+same day): FFTL's speed-up over the fastest of MPSGraph and VkFFT, geometric mean, went from 0.76 to
+1.20 on the non-smooth sizes, from 1.08 to 1.20 on the held-out sizes (not used during this work), and
+stayed at 1.52/1.54 on the tuned sizes. An A/B over 245 tuned and non-smooth cases against the previous
+code, three rounds: geometric mean of the time ratio 0.95; cases above 1.1 were within the noise of the
+previous code in four further rounds.
+
+**Provenance.** Rader's algorithm (1968) inside the radix kernels instead of Bluestein, and the limit of
+13 for the prime factors of ``p - 1``, follow the VkFFT paper (D. Tolmachev, IEEE Access 11, 2023,
+§IV.A); the limit was confirmed by measurement (139, with ``138 = 2·3·23``, is 1.7× slower with Rader).
+No VkFFT code was read. Ragged lanes, the packed odd real transforms and the radix split were found by
+measurement before the paper was read.
+
+**Not done.** Rader for primes whose ``p - 1`` has a factor above 13 (REDFT10 139×117×156 is at 0.92 of the
+fastest library on the M1 and 2.3× slower than it on the A6000), and for a ``p - 1`` beyond one pass. The
+radix split of ordinary passes on many lines. The length rule for Bluestein on CUDA (224 kept there).
+
+## GPU: small real transforms in one launch
+
+**Decision (2026-11-15).** A real transform along the first dimension (r2c, c2r, DCT-II, DST-II)
+runs in a single kernel launch wherever its complex DFT is a single kernel:
+
+- **Odd lengths:** a plain one-pass kernel packs two real lines into one complex line, as the fused
+  kernels already did.
+- **Even lengths whose half is a Rader or one-pass Bluestein length:** that fused kernel reads the
+  real line as a complex line of half the length (Makhoul's permutation for DCT-II and DST-II) and
+  separates the result in its last loop.
+- **Less host work per call:** no tuple slices and a function barrier in the r2r `mul!`, and
+  user arrays reinterpreted on the device instead of on the host.
+
+**Why.** Small GPU transforms are bound by the host's launch rate. On an NVIDIA RTX A6000 with an
+AMD EPYC 7763 host, a raw CUDA launch costs about 2.3 µs of host time and a KernelAbstractions launch
+about 3.8 µs, while the kernels of these transforms run for 1.5–3 µs. FFTL ran a pack kernel, the
+DFT and a post kernel, three launches where cuFFT and VkFFT use one: c2r 21 `Float32` took 14 µs
+against 2.3 µs.
+
+Measurements on the NVIDIA RTX A6000, µs. Interleaved, pinned to one core, 50 ms warm-up, blocking
+wait, median of 7 samples of 100 back-to-back transforms; "before" is the previous `main`:
+
+| case | before | after |
+|---|---|---|
+| r2c 27 `Float32` | 14.5 | 3.48 |
+| c2r 225 `Float32` | 14.7 | 3.41 |
+| REDFT10 21 `Float32` | 17.8 | 3.60 |
+| REDFT10 74 `Float32` | 19.7 | 5.65 |
+| r2c 32 `Float32` | 4.69 | 3.62 |
+| REDFT10 21 `Float64` | 17.9 | 4.75 |
+| controls: c2c 16, 128; REDFT10 64; r2c 37 | | 0.97–1.01 × before |
+
+On the Apple M1 Max GPU, 25 cases: geometric mean 0.79 of the previous time (c2r 21 21.0 → 8.1 µs),
+controls 0.97–1.00.
+
+**Not done.** About 1 µs per call above cuFFT and VkFFT remains on the single launch. Real
+transforms along other dimensions, and multi-pass lines, keep their pack and post kernels.
+Multi-dimensional small cases are bound by the device, not by launches: REDFT10 37×37 runs two Rader
+passes, 11.7 µs against 7.0 µs.
 
 ## Scope
 
