@@ -76,12 +76,11 @@ a cost model fitted to measured chains picks the fastest 7-smooth length in ``[2
 length with many radix 9, 5 or 3 stages transforms several times slower than a power of two a
 few percent larger (`grid_length` in `src/plan.jl`).
 
-On x86 a grid of 8 MiB or more (``m \ge 2^{19}`` in `Float64`) is transformed by a
-[four-step](@ref "Long one-dimensional transforms: four-step") transform on the calling thread
-instead of a chain. A chain of that length no longer fits in cache and makes one pass over
-memory per stage; the four-step makes two. On a Zen 2 core this is 1.06× faster at ``2^{19}``
-and 1.3× from ``2^{20}`` on. On the M1 the chain is faster at every length measured (up to
-``2^{22}``), so there the chains stay.
+A large grid on one thread is transformed by a four-step: with 64-byte vectors (AVX-512) from the
+length a single line would take one (`serial_fourstep`), on other x86 machines from 8 MiB
+(``m \ge 2^{19}`` in `Float64`), on aarch64 never (`grid_fourstep` in `src/plan.jl`). The
+[four-step](@ref "Long one-dimensional transforms: four-step") then runs on the calling thread
+instead of a chain.
 
 ### Lengths with a smooth part
 
@@ -129,8 +128,9 @@ A transform along dimension ``d`` of an array with strides ``S_d`` is a set of l
 
 ## Long one-dimensional transforms: four-step
 
-A single long line with a smooth length ``n = n_1 n_2`` on several threads uses the four-step
-algorithm:
+A single long line with a smooth length ``n = n_1 n_2`` uses the four-step algorithm on
+several threads, and, with 64-byte vectors (AVX-512), on one thread once its data reaches 16 times
+the last-level cache of a core (in `Float32` for powers of two only):
 
 1. ``n_2`` transforms of length ``n_1`` over the columns,
 2. multiplication by the twiddle factors ``e^{\sigma 2\pi i\, j_1 k_2/n}``,
@@ -138,6 +138,22 @@ algorithm:
 
 Each of the two transform steps is split over the threads, with a barrier in between. The
 factorisation ``n_1 n_2`` is chosen when the plan is made (`fourstep_split`).
+
+Both steps work on blocks of columns, and each block passes through a buffer in cache. The
+twiddle multiplication and the transposition into the intermediate array happen in registers, a
+square of vectors at a time. A block's rows are at least 128 bytes (256 on one thread), so
+`Float32` takes twice the columns of `Float64`. With 64-byte vectors (AVX-512), where it was
+measured, the first step also copies the block's rows into the buffer before transforming it, so
+no butterfly stage reads the input with its row stride (for a power of two a large power of two,
+whose rows share cache sets); the intermediate array is written with non-temporal stores (the
+second step reads it on other threads, and ordinary stores would first have to take ownership of
+lines that another core still holds), and the second step writes a large output through the
+buffer with non-temporal stores as well. On an Apple M1 Max the copy cost 5–15 %.
+
+On one thread the four-step pays only well beyond the cache: a chain makes one pass over memory
+per stage, the four-step two, but its work in cache costs about as much as a dozen passes of a
+chain at full bandwidth. A chain of a large power of two loses bandwidth to its strides, which is
+where the four-step gains most.
 
 ## Real transforms
 

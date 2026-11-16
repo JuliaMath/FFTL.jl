@@ -254,11 +254,17 @@ function grid_length(::Type{T}, L::Int) where {T}
   best
 end
 
-# Grid transforms of at least this many bytes run as a four-step on one thread: on Zen 2 a
-# Stockham chain beyond the cache drops to 7 GFLOP/s, the four-step is 1.06× faster at 2^19
-# (8 MiB, Float64) and 1.3× from 2^20 on, 0.8× at 3·2^17 and below. On the M1 Max the chain is
-# faster at every length up to 2^22.
+# Grid transforms (resampling grids, Bluestein convolutions) of at least this many bytes run as a
+# four-step on one thread: on Zen 2 a Stockham chain beyond the cache drops to 7 GFLOP/s, the
+# four-step is 1.06× faster at 2^19 (8 MiB, Float64) and 1.3× from 2^20 on, 0.8× at 3·2^17 and
+# below. On the M1 Max the chain is faster at every length up to 2^22.
 const GRID_FOURSTEP_BYTES = Sys.ARCH === :aarch64 ? typemax(Int) : 1 << 23
+
+# Whether a grid transform of length m on one thread is a four-step: with 64-byte vectors (where
+# the rule was measured) the rule of a single line (`serial_fourstep`; a fixed 8 MiB made grids of
+# 8–64 MiB 1.1–1.9 times slower on an EPYC 9354), elsewhere GRID_FOURSTEP_BYTES.
+grid_fourstep(::Type{T}, m::Int) where {T} = fourstep_split(m) > 0 &&
+  (SERIAL_FOURSTEP[] ? serial_fourstep(T, m) : m * sizeof(Complex{T}) >= GRID_FOURSTEP_BYTES)
 
 # Lines of a length with a prime factor above MAX_RADIX_PRIME take Bluestein's algorithm instead of
 # resampling where the interpolation costs more than Bluestein's second transform: Float64 on
@@ -298,11 +304,12 @@ function Bluestein{T}(n::Int, σ::Int, ::Type{C} = TypedKernels) where {T,C}
   Bluestein{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, zeros(Complex{T}, M), w1, w2)
 end
 
-# The forward and backward transforms of length M of a Bluestein kernel. The run-time plans keep
-# their chains (one concrete type for juliac --trim).
+# The forward and backward transforms of length M of a Bluestein kernel: four-steps on one thread
+# where `grid_fourstep` says so. The run-time plans keep their chains (one concrete type for
+# juliac --trim).
 convolution_transforms(::Type{T}, M::Int, ::Type{C}) where {T,C} = (C{T}(M, -1), C{T}(M, 1))
 function convolution_transforms(::Type{T}, M::Int, ::Type{TypedKernels}) where {T}
-  if M * sizeof(Complex{T}) >= GRID_FOURSTEP_BYTES && fourstep_split(M) > 0
+  if grid_fourstep(T, M)
     return (FourStep{T}(M, -1, 1), FourStep{T}(M, 1, 1))
   end
   (RChain{T}(M, -1), RChain{T}(M, 1))

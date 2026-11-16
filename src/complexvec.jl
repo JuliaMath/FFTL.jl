@@ -158,3 +158,43 @@ end
 
 # number of complex values per vector
 ncomplex(::Type{Vec{N,T}}) where {N,T} = N ÷ 2
+
+# Transpose of a C×C block of complex values held in C vectors of C complex values each: rows[r]
+# holds (r, 0 … C-1), the result's vector c holds (0 … C-1, c). log2(C) rounds; in the round of
+# size h, row r (r & h == 0) and row r + h exchange their off-diagonal h×h blocks, so that
+# element (r, c) with c & h != 0 swaps with (r + h, c - h). Plain methods for the vector types of
+# the kernels (C = 1, 2, 4, 8).
+function ctranspose_body(C, N)
+  cur = Any[Symbol(:r, i) for i in 1:C]
+  ex = Any[:(($(cur...),) = rows)]
+  h = C ÷ 2
+  while h >= 1
+    nxt = copy(cur)
+    for r in 0:C-1
+      r & h == 0 || continue
+      ia = Int[]; ib = Int[]
+      for c in 0:C-1
+        lo = c & h == 0
+        ca = lo ? c : C + c - h          # complex index into the pair (row r, row r + h)
+        cb = lo ? c + h : C + c
+        push!(ia, 2ca, 2ca + 1); push!(ib, 2cb, 2cb + 1)
+      end
+      a = gensym(:t); b = gensym(:t)
+      push!(ex, :($a = shufflevector($(cur[r+1]), $(cur[r+h+1]), Val($(Tuple(ia))))),
+                :($b = shufflevector($(cur[r+1]), $(cur[r+h+1]), Val($(Tuple(ib))))))
+      nxt[r+1] = a; nxt[r+h+1] = b
+    end
+    cur = nxt
+    h ÷= 2
+  end
+  push!(ex, :(($(cur...),)))
+  ex
+end
+
+for T in (Float32, Float64), N in (2, 4, 8, 16)
+  N * sizeof(T) <= 64 || continue
+  C = N ÷ 2
+  @eval @inline ctranspose(rows::NTuple{$C,Vec{$N,$T}}) = begin
+    $(ctranspose_body(C, N)...)
+  end
+end

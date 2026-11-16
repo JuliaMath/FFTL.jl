@@ -22,7 +22,7 @@ mutable struct RPlan{T<:FFTLFloat} <: AbstractFFTs.Plan{Complex{T}}
   σ::Int
   chains::Vector{RChain{T}}                      # per dimension in region (smooth lengths)
   rs::Vector{Union{Nothing,RResample{T},RBluestein{T}}}  # per dimension: resampling or Bluestein, or nothing
-  four::Union{Nothing,RFourStep{T}}              # one long contiguous line on several threads
+  four::Union{Nothing,RFourStep{T}}              # one long contiguous line as a four-step
   work1::Vector{Complex{T}}
   work2::Vector{Complex{T}}
   nthreads::Int
@@ -42,7 +42,7 @@ function RPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:Intege
   rs = Union{Nothing,RResample{T},RBluestein{T}}[]
   # one long line (the other transformed dimensions have length 1): the four-step algorithm
   long = filter(d -> dims[d] > 1, reg)
-  four = length(long) == 1 && fourstep_dim(dims, long[1], nt) ? FourStep{T}(dims[long[1]], Int(σ), nt, RChain) : nothing
+  four = length(long) == 1 && fourstep_dim(T, dims, long[1], nt) ? FourStep{T}(dims[long[1]], Int(σ), nt, RChain) : nothing
   for d in reg
     n = dims[d]
     S, _ = dim_extent(dims, d)

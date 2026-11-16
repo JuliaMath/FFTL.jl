@@ -72,7 +72,7 @@ end
 
 resample_transform(::Type{T}, m::Int, σ::Int, ::Type{C}) where {T,C} = C{T}(m, σ)
 resample_transform(::Type{T}, m::Int, σ::Int, ::Type{TypedKernels}) where {T} =
-  m * sizeof(Complex{T}) >= GRID_FOURSTEP_BYTES && fourstep_split(m) > 0 ? FourStep{T}(m, σ, 1) : RChain{T}(m, σ)
+  grid_fourstep(T, m) ? FourStep{T}(m, σ, 1) : RChain{T}(m, σ)
 
 # Grid length, width, deconvolution factors and weights of a length-n resampling (shared by plans).
 function resample_parts(::Type{T}, n::Int, m::Int = grid_length(T, 2n)) where {T}
