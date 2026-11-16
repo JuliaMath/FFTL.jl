@@ -129,8 +129,8 @@ A transform along dimension ``d`` of an array with strides ``S_d`` is a set of l
 ## Long one-dimensional transforms: four-step
 
 A single long line with a smooth length ``n = n_1 n_2`` uses the four-step algorithm on
-several threads, and on one thread once its data reaches 16 times the last-level cache of a core
-(in `Float32` for powers of two only):
+several threads, and, with 64-byte vectors (AVX-512), on one thread once its data reaches 16 times
+the last-level cache of a core (in `Float32` for powers of two only):
 
 1. ``n_2`` transforms of length ``n_1`` over the columns,
 2. multiplication by the twiddle factors ``e^{\sigma 2\pi i\, j_1 k_2/n}``,
@@ -139,15 +139,16 @@ several threads, and on one thread once its data reaches 16 times the last-level
 Each of the two transform steps is split over the threads, with a barrier in between. The
 factorisation ``n_1 n_2`` is chosen when the plan is made (`fourstep_split`).
 
-Both steps work on blocks of columns, and each block passes through a buffer in cache. The first
-step copies the block's rows into the buffer before transforming it, so no butterfly stage reads
-the input with its row stride (for a power of two a large power of two, whose rows share cache
-sets). The twiddle multiplication and the transposition into the intermediate array happen in
-registers, a square of vectors at a time, and the intermediate array is written with
-non-temporal stores: the second step reads it on other threads, and ordinary stores would first
-have to take ownership of lines that another core still holds. The second step writes its output
-through the buffer with non-temporal stores as well when the output is large. A block's rows are
-at least 128 bytes (256 on one thread), so `Float32` takes twice the columns of `Float64`.
+Both steps work on blocks of columns, and each block passes through a buffer in cache. The
+twiddle multiplication and the transposition into the intermediate array happen in registers, a
+square of vectors at a time. A block's rows are at least 128 bytes (256 on one thread), so
+`Float32` takes twice the columns of `Float64`. With 64-byte vectors (AVX-512), where it was
+measured, the first step also copies the block's rows into the buffer before transforming it, so
+no butterfly stage reads the input with its row stride (for a power of two a large power of two,
+whose rows share cache sets); the intermediate array is written with non-temporal stores (the
+second step reads it on other threads, and ordinary stores would first have to take ownership of
+lines that another core still holds), and the second step writes a large output through the
+buffer with non-temporal stores as well. On an Apple M1 Max the copy cost 5–15 %.
 
 On one thread the four-step pays only well beyond the cache: a chain makes one pass over memory
 per stage, the four-step two, but its work in cache costs about as much as a dozen passes of a

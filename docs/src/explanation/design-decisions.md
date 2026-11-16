@@ -331,19 +331,21 @@ is 26.8 MB instead of 49.5 MB, its code 8.8 MB instead of 18.6 MB.
 **Decision (2026-11-14).** The four-step (`FourStep`, `src/threads.jl`) works on blocks of columns
 that pass through a buffer in cache:
 
-- Step 1 copies a block's rows into the buffer and transforms them there; no butterfly stage reads the
-  input with its row stride n1.
+- With 64-byte vectors, step 1 copies a block's rows into the buffer and transforms them there; no
+  butterfly stage reads the input with its row stride n1 (`FOURSTEP_COPY`).
 - The twiddle multiplication and the transposition into the intermediate array A are done in
   registers, C × C complex values at a time (`ctranspose`, C values per vector), and A is written
   with non-temporal stores where each store is a whole aligned line (64-byte vectors; the rows of A
   are padded by 64 bytes).
-- Step 2 writes its output through the buffer with non-temporal stores from
-  `TUNING[].fourstep_nt_bytes` (8 MiB) of output, below that its last stage writes the output.
+- With 64-byte vectors, step 2 writes its output through the buffer with non-temporal stores from
+  `TUNING[].fourstep_nt_bytes` (8 MiB) of output; below that, and with narrower vectors, its last
+  stage writes the output.
 - A block's rows are at least 128 bytes on several threads (`TUNING[].fourstep_row_bytes`; `Float32`
   takes 16 columns, `Float64` 8) and 256 bytes on one thread.
-- On one thread a single line takes the four-step from 16 times the last-level cache of a core,
-  in `Float32` for powers of two only (`serial_fourstep`); the convolution grids of Bluestein's
-  algorithm follow the same rule.
+- With 64-byte vectors, a single line on one thread takes the four-step from 16 times the last-level
+  cache of a core, in `Float32` for powers of two only (`serial_fourstep`); the grids of resampling
+  and Bluestein's algorithm follow the same rule (`grid_fourstep`; elsewhere from 8 MiB on x86 and
+  never on aarch64).
 
 **Why.** AMD EPYC 9354 (32 MiB L3 per four cores), measurements in one process with the variants
 alternating unless noted:
@@ -389,8 +391,19 @@ mostly 1.00–1.24 times the current time; chains of 2048 with radix 8 took 0.89
 The lane-block kernels themselves are slower than single lines of the same length (1.1–1.9 times
 per element in cache for powers of two), which is the larger gain left. A three-factor (nested) four-step for lengths whose blocks outgrow L2. The
 multiple of the cache for the one-thread rule and every threshold here are measured on this machine
-only; aarch64 and 32-byte vectors are not measured (there A is written with ordinary stores). 32
-threads could not be measured on the shared machine (one thread of the pool waits for a core).
+only; 32 threads could not be measured on the shared machine (one thread of the pool waits for a
+core).
+
+**Limited to 64-byte vectors (2026-11-16).** The one-thread rule, the copy in step 1 and the
+non-temporal output hold only with 64-byte vectors, where they were measured. On an Apple M1 Max
+(12 MiB last-level cache) the one-thread rule took 2²⁴ `Float64` to the four-step at 1.59 times the
+chain's time, and the copy cost 5–15 % (4 threads, in one process, without it: `Float64` 0.85–0.92,
+`Float32` 0.90–1.01 at 2¹⁶–2²⁴, 10⁶ and 6⁸). The register transpose and the row widths hold
+everywhere: on the M1 the transpose took `Float32` to 0.86–0.92 of the loop over single values
+(`Float64`, one value per vector, 0.99–1.00), and row widths of 16–128 bytes were within 3 %. Against
+`main` before the four-step changes (M1 Max, 2 rounds in alternating processes, a second copy of
+`main` as A/A): one thread 0.94–1.04, 4 threads `Float64` within the A/A spread and `Float32`
+0.87–0.92 at 2²², 3·2²⁰, 2²⁴ and 10⁶. 32-byte vectors (AVX2) are not measured.
 
 ## Run-time pass plans for trimmed programs
 
