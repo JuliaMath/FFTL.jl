@@ -164,6 +164,15 @@ radix 16 middle stage 284 → 198, radix 8 100 → 79. One line, `plan_fft`, med
 rounds: lengths 512–16384 take 0.79–0.94 (`Float32`) and 0.82–0.92 (`Float64`) of the time, lengths
 from 32768 on are unchanged (the same code against itself differs by 1–5 %). Not verified on aarch64.
 
+**Not done.** Radix 16 as two radix-4 passes (the first into the output slots, the second in place on
+them, blocked so that a block stays in L1), which needs no addressing tricks: its inner loops do not
+spill, but the extra pass through L1 costs what radix 16 saves over radix 8. AMD EPYC 9354, one line,
+medians of 5–6 interleaved rounds, against the one-pass radix 16: `Float32` 256, 2048, 4096: 1.24,
+1.24, 1.31; `Float64` 256, 2048: 1.17, 1.05 (same code against itself: 0.99–1.02), and slower than
+the best radix-4/8 chain at each length. With 256-bit vectors and 16 registers (`-C haswell`,
+`simd_bytes = 32`) 1.05–1.08 against the one-pass radix 16, and both lose to radix-4/8 chains by
+7–20 %.
+
 ## The prime radices from 17 to 73 share one looped kernel
 
 **Decision (2026-11-13).** A stage of a prime radix from 17 on runs `prime_stage!` (`src/primestage.jl`):
