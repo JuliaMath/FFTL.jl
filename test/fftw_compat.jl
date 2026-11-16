@@ -1,25 +1,6 @@
 # The interface under FFTW.jl's names, the scope rules and AbstractFFTs's generic functions.
-# Needs FFTW.jl (test dependency); the first testset runs before FFTW is loaded.
+# Needs FFTW.jl (test dependency); the test without FFTW runs first, in runtests.jl.
 import AbstractFFTs
-
-fftw_loaded() = any(m -> nameof(m) === :FFTW, values(Base.loaded_modules))
-
-@testset "AbstractFFTs without FFTW" begin
-  if fftw_loaded()
-    @test_skip "FFTW already loaded"
-  else
-    x = randn(ComplexF64, 12, 10)
-    @test AbstractFFTs.plan_fft(x) isa FFTL.FFTLPlan
-    @test AbstractFFTs.fft(x) ≈ FFTL.fft(x)
-    @test AbstractFFTs.fft(real(x)) ≈ FFTL.fft(real(x))
-    @test AbstractFFTs.ifft(AbstractFFTs.fft(x)) ≈ x
-    r = randn(Float32, 9, 4)
-    @test AbstractFFTs.irfft(AbstractFFTs.rfft(r), 9) ≈ r
-    @test AbstractFFTs.plan_rfft(r) isa FFTL.RFFTLPlan
-    y = copy(x); AbstractFFTs.fft!(y)
-    @test y ≈ FFTL.fft(x)
-  end
-end
 
 @eval using FFTW
 

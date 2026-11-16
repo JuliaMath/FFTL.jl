@@ -84,8 +84,8 @@ yd = FFTL.fft(MtlArray(randn(ComplexF32, 1024, 1024)))
 **Fourier and discrete cosine transforms written in Julia, with wide support for number types and CPU and GPU execution.**
 
 - Complex, real-input and all eleven real-to-real kinds of FFTW, along any subset of
-  dimensions, for any length (the part of a length made of prime factors above 73 through
-  Bluestein's algorithm).
+  dimensions, for any length (the part of a length made of prime factors above 73 resampled onto
+  a smooth grid).
 - `Float32` and `Float64` on the fast path (SIMD codelets, threads). `BigFloat`, `Double64`,
   `Float128` and other floating-point types are transformed in their own precision by a generic
   path, accurate to a few ulps of the type.
@@ -131,7 +131,8 @@ figures there are regenerated from the committed data on every documentation bui
   stride S is a chain started with stride S, the S neighbouring columns forming the vectorised
   index. No transposition.
 - **Lengths with prime factors above 73** split off their smooth part in one Cooley–Tukey step
-  and use Bluestein's algorithm only for the rest.
+  and resample only the rest onto a smooth grid (one transform of twice its length and a short
+  interpolation).
 - **Threads** split each dimension over slices or blocks of columns; long 1D transforms use the
   four-step algorithm.
 

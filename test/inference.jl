@@ -18,7 +18,7 @@
     @test_broken @inferred FFTL.plan_fft(x)
     @test_broken @inferred FFTL.plan_fft(x, (1, 2))
   end
-  # Bluestein length, the plan holds the work buffers
+  # a length with a large prime factor (resampling), the plan holds the work buffers
   let x = randn(Complex{T}, 79), y = similar(x)
     p = FFTL.plan_fft(x)
     mul!(y, p, x)
@@ -159,7 +159,7 @@ exe_r2r!(p, y, x) = GC.@preserve x y FFTL.execute_r2r!(p, pointer(y), pointer(x)
     @test (@inferred exe!(p, y, x)) === nothing
     @test (@allocated exe!(p, y, x)) == 0
   end
-  let p = (@inferred FFTL.RPlan{T}([79], [1], 1; threads = 1)), x = randn(Complex{T}, 79), y = similar(x)   # Bluestein
+  let p = (@inferred FFTL.RPlan{T}([79], [1], 1; threads = 1)), x = randn(Complex{T}, 79), y = similar(x)   # resampling
     exe!(p, y, x)
     @test (@allocated exe!(p, y, x)) == 0
   end

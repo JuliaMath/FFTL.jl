@@ -50,6 +50,7 @@ application they happen at different times.
 - DCT-I and DST-I are computed through a real DFT of about twice the length, and DCT-IV of odd
   length likewise. The extra length shows in the measurements.
 - On the GPU, the real-to-real kinds are not tuned yet.
-- Bluestein transforms a line through two transforms of length ``M ≥ 2q - 1``, where ``q`` is
-  at most the part of the length made of prime factors above 73 (the smooth part is split off,
-  see [Algorithms](@ref "Lengths with a smooth part")). A prime length pays this in full.
+- A length with prime factors above 73 is resampled: one transform of a smooth length
+  ``m ≥ 2q`` and ``w`` multiply-adds per output, where ``q`` is at most the part of the length
+  made of those prime factors (the smooth part is split off, see
+  [Algorithms](@ref "Lengths with a smooth part")). A prime length pays this in full.

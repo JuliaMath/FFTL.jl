@@ -29,8 +29,8 @@ is how the KernelAbstractions kernels use the codelet generator without a second
 ## Kernel cache
 
 Kernels are cached by kind, element type, length, sign and radix sequence. The cache has 128
-entries and drops the least recently used one when it is full. A Bluestein kernel is two entries,
-its chain and its tables. `clear_cache!` empties it. Within one plan, dimensions with the same
+entries and drops the least recently used one when it is full. A resampling kernel is several
+entries: its chain and its tables. `clear_cache!` empties it. Within one plan, dimensions with the same
 length and stride class share a kernel object.
 
 ## Cache sizes and blocks
