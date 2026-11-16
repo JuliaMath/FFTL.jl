@@ -485,17 +485,12 @@ use_half_dft(S, n, outer, nt) = iseven(n) && n >= 4 &&
 function half_dft(::Type{T}, sz, d, kind, z::Vector{Complex{T}}, nt) where {T}
   S, outer = dim_extent(sz, d)
   n = sz[d]
-  if S == 1 && outer == 1 && nt > 1 && n >= 1 << 17 && !iseven(n) && haskey(ODD_KINDS, kind)
-    return half_odd(T, n, ODD_KINDS[kind], nt)
-  end
-  if (kind == REDFT11 || kind == RODFT11) && S == 1 && outer == 1 && nt > 1 && n >= 1 << 17 && iseven(n)
-    return half_iv(T, n, kind == RODFT11, z, nt)
-  end
-  if (kind == REDFT01 || kind == RODFT01) && S == 1 && outer == 1 && nt > 1 && n >= 1 << 17 && iseven(n)
-    return half_iii(T, n, kind == RODFT01, nt)
-  end
-  if (kind == REDFT00 || kind == RODFT00) && S == 1 && outer == 1 && nt > 1 && n >= 1 << 17
-    return half_i(T, n, kind == RODFT00, nt)
+  # a single long line on several threads
+  if S == 1 && outer == 1 && nt > 1 && n >= 1 << 17
+    !iseven(n) && haskey(ODD_KINDS, kind) && return half_odd(T, n, ODD_KINDS[kind], nt)
+    (kind == REDFT11 || kind == RODFT11) && iseven(n) && return half_iv(T, n, kind == RODFT11, z, nt)
+    (kind == REDFT01 || kind == RODFT01) && iseven(n) && return half_iii(T, n, kind == RODFT01, nt)
+    (kind == REDFT00 || kind == RODFT00) && return half_i(T, n, kind == RODFT00, nt)
   end
   (kind == REDFT10 || kind == RODFT10 || kind == DHT) && use_half_dft(S, n, outer, nt) || return nothing
   M = n ÷ 2
@@ -636,9 +631,7 @@ function half_iv(::Type{T}, n::Int, dst::Bool, z::Vector{Complex{T}}, nt::Int) w
   HalfIV{T,typeof(cplan)}(n, dst, z, zeros(Complex{T}, M), pre, post, cplan)
 end
 
-half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfIV{T}, nt::Int) where {T} = half_iv!(py, px, H, nt)
-
-function half_iv!(py::Ptr{T}, px::Ptr{T}, H::HalfIV{T}, nt::Int) where {T}
+function half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfIV{T}, nt::Int) where {T}
   n = H.n; M = n ÷ 2; dst = H.dst
   z = H.z; zt = H.zt; pre = H.pre; post = H.post
   GC.@preserve H px py begin
@@ -700,9 +693,7 @@ function half_odd(::Type{T}, n::Int, kind::Symbol, nt::Int) where {T}
                            pre, post, zeros(Complex{T}, L), zeros(Complex{T}, L), cplan)
 end
 
-half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfOdd{T}, nt::Int) where {T} = half_odd!(py, px, H, nt)
-
-function half_odd!(py::Ptr{T}, px::Ptr{T}, H::HalfOdd{T}, nt::Int) where {T}
+function half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfOdd{T}, nt::Int) where {T}
   n = H.n; L = H.L; kind = H.kind; w = H.w; out = H.out; pre = H.pre; post = H.post
   GC.@preserve H px py begin
     each_line(L, 1, nt) do c, j
@@ -755,9 +746,7 @@ function half_iii(::Type{T}, n::Int, dst::Bool, nt::Int) where {T}
                             Ref(zero(T)), cplan)
 end
 
-half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfIII{T}, nt::Int) where {T} = half_iii!(py, px, H, nt)
-
-function half_iii!(py::Ptr{T}, px::Ptr{T}, H::HalfIII{T}, nt::Int) where {T}
+function half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfIII{T}, nt::Int) where {T}
   n = H.n; M = n ÷ 2; dst = H.dst
   a = H.a; b = H.b; pa = H.pre_a; pb = H.pre_b; post = H.post
   GC.@preserve H px py begin
@@ -803,9 +792,7 @@ function half_i(::Type{T}, n::Int, dst::Bool, nt::Int) where {T}
   HalfI{T,typeof(cplan)}(n, dst, zeros(Complex{T}, m), zeros(Complex{T}, m), cplan)
 end
 
-half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfI{T}, nt::Int) where {T} = half_i!(py, px, H, nt)
-
-function half_i!(py::Ptr{T}, px::Ptr{T}, H::HalfI{T}, nt::Int) where {T}
+function half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfI{T}, nt::Int) where {T}
   n = H.n; m = length(H.w); dst = H.dst; w = H.w
   GC.@preserve H px py begin
     if dst

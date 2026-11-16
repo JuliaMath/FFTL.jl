@@ -206,6 +206,8 @@ end
 # (n, P) instead, so that neighbouring threads take neighbouring elements of a line.
 @inline dct2o_idx(t, n, P, S) = S == one(Int32) ? (t ÷ n, t % n, t) : (t % P, t ÷ P, t)
 @inline dct2o_at(p, k, n, P, S) = S == one(Int32) ? p * n + k : p + P * k
+# 1-based index of element j of line l (memory order) of lines of length n along the dimension
+@inline lineat(l, S, n, j) = l % S + S * n * (l ÷ S) + S * j + 1
 
 @kernel function ka_dct2o_pre!(z, @Const(x), S, n, L, P, dst)
   t = (@index(Global, Linear) - 1) % Int32
@@ -214,8 +216,8 @@ end
   T = real(eltype(z))
   sg = dst != 0 && isodd(j) ? -one(T) : one(T)
   la = p; lb = p + P
-  a = @inbounds sg * x[la % S + S * n * (la ÷ S) + S * j + 1]
-  b = lb < L ? @inbounds(sg * x[lb % S + S * n * (lb ÷ S) + S * j + 1]) : zero(T)
+  a = @inbounds sg * x[lineat(la, S, n, j)]
+  b = lb < L ? @inbounds(sg * x[lineat(lb, S, n, j)]) : zero(T)
   @inbounds z[t+1] = complex(a, b)
 end
 
@@ -228,9 +230,9 @@ end
   w = @inbounds tw[k+1]
   kk = dst != 0 ? n - Int32(1) - k : k
   la = p; lb = p + P
-  @inbounds y[la % S + S * n * (la ÷ S) + S * kk + 1] = real(w * (zk + zm))
+  @inbounds y[lineat(la, S, n, kk)] = real(w * (zk + zm))
   # (Z_k - conj Z_(n-k))/(2i) times 2 t_k, real part
-  lb < L && @inbounds(y[lb % S + S * n * (lb ÷ S) + S * kk + 1] = imag(w * (zk - zm)))
+  lb < L && @inbounds(y[lineat(lb, S, n, kk)] = imag(w * (zk - zm)))
 end
 
 # r2c / c2r of odd length n along a dimension, two real lines per complex line as for the odd
@@ -243,8 +245,8 @@ end
   t = (@index(Global, Linear) - 1) % Int32
   p, m, _ = dct2o_idx(t, n, P, S)
   la = p; lb = p + P
-  a = @inbounds x[la % S + S * n * (la ÷ S) + S * m + 1]
-  b = lb < L ? @inbounds(x[lb % S + S * n * (lb ÷ S) + S * m + 1]) : zero(a)
+  a = @inbounds x[lineat(la, S, n, m)]
+  b = lb < L ? @inbounds(x[lineat(lb, S, n, m)]) : zero(a)
   @inbounds z[t+1] = complex(a, b)
 end
 
@@ -255,8 +257,8 @@ end
   zk = @inbounds Z[dct2o_at(p, k, n, P, S) + 1]
   zm = conj(@inbounds Z[dct2o_at(p, k == zero(Int32) ? zero(Int32) : n - k, n, P, S) + 1])
   la = p; lb = p + P
-  @inbounds y[la % S + S * h * (la ÷ S) + S * k + 1] = (zk + zm) * T(0.5)
-  lb < L && @inbounds(y[lb % S + S * h * (lb ÷ S) + S * k + 1] = complex(imag(zk) - imag(zm), real(zm) - real(zk)) * T(0.5))
+  @inbounds y[lineat(la, S, h, k)] = (zk + zm) * T(0.5)
+  lb < L && @inbounds(y[lineat(lb, S, h, k)] = complex(imag(zk) - imag(zm), real(zm) - real(zk)) * T(0.5))
 end
 
 @kernel function ka_c2ro_pre!(Z, @Const(X), S, n, h, L, P)
@@ -264,8 +266,8 @@ end
   p, k, _ = dct2o_idx(t, n, P, S)
   la = p; lb = p + P
   kk = k < h ? k : n - k
-  a = @inbounds X[la % S + S * h * (la ÷ S) + S * kk + 1]
-  b = lb < L ? @inbounds(X[lb % S + S * h * (lb ÷ S) + S * kk + 1]) : zero(a)
+  a = @inbounds X[lineat(la, S, h, kk)]
+  b = lb < L ? @inbounds(X[lineat(lb, S, h, kk)]) : zero(a)
   if k == zero(Int32)
     a = complex(real(a)); b = complex(real(b))
   elseif k >= h
@@ -279,14 +281,15 @@ end
   p, m, _ = dct2o_idx(t, n, P, S)
   la = p; lb = p + P
   v = @inbounds z[t+1]
-  @inbounds y[la % S + S * n * (la ÷ S) + S * m + 1] = real(v)
-  lb < L && @inbounds(y[lb % S + S * n * (lb ÷ S) + S * m + 1] = imag(v))
+  @inbounds y[lineat(la, S, n, m)] = real(v)
+  lb < L && @inbounds(y[lineat(lb, S, n, m)] = imag(v))
 end
 
 # DCT-I of lines of length N + 1 as the r2c of their even extension xe (length 2N, xe_i = x_i for
 # i ≤ N, x_(2N-i) above) by a complex DFT of length N, for any N (Bluestein included):
 # z_K = xe_2K + i xe_2K+1, Z = DFT_N(z), y_K = Re[(Z_K + conj Z_(N-K))/2 + u_K (Z_K - conj Z_(N-K))]
 # with u_K = -i/2 exp(-iπK/N), K = 0…N (Z_N = Z_0).
+@inline r2c_at(za, zm, u, T) = (za + conj(zm)) * T(0.5) + u * (za - conj(zm))
 @kernel function ka_dct1_pre!(z, @Const(x), S, N)
   t = (@index(Global, Linear) - 1) % Int32
   i, K, o = lineidx(t, S, N)
@@ -304,10 +307,9 @@ end
   T = real(eltype(y))
   @inbounds za = Z[zb+S*K+1]
   @inbounds zm = K == zero(Int32) ? za : Z[zb+S*(N-K)+1]
-  ca = conj(zm); cm = conj(za)
-  @inbounds y[yb+S*K+1] = real((za + ca) * T(0.5) + u[K+1] * (za - ca))
+  @inbounds y[yb+S*K+1] = real(r2c_at(za, zm, u[K+1], T))
   if K == zero(Int32) || Int32(2) * K != N
-    @inbounds y[yb+S*(N-K)+1] = real((zm + cm) * T(0.5) + u[N-K+1] * (zm - cm))
+    @inbounds y[yb+S*(N-K)+1] = real(r2c_at(zm, za, u[N-K+1], T))
   end
 end
 
@@ -340,13 +342,15 @@ end
   T = real(eltype(y))
   @inbounds za = Z[zb+S*K+1]
   @inbounds zm = Z[zb+S*(N-K)+1]
-  ca = conj(zm); cm = conj(za)
-  @inbounds y[yb+S*(K-Int32(1))+1] = -imag((za + ca) * T(0.5) + u[K+1] * (za - ca))
+  @inbounds y[yb+S*(K-Int32(1))+1] = -imag(r2c_at(za, zm, u[K+1], T))
   if Int32(2) * K != N
-    @inbounds y[yb+S*(N-K-Int32(1))+1] = -imag((zm + cm) * T(0.5) + u[N-K+1] * (zm - cm))
+    @inbounds y[yb+S*(N-K-Int32(1))+1] = -imag(r2c_at(zm, za, u[N-K+1], T))
   end
 end
 
+# u_j = -i/2 exp(-iπj/m), j = 0…m: the r2c split of a line of length 2m
+r2c_split_table(backend, ::Type{T}, m) where {T} =
+  todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / m)) for j in 0:m])
 todevice(backend, v::Vector) =(d = KA.allocate(backend, eltype(v), length(v)); copyto!(d, v); d)
 devzeros(backend, T, dims) = KA.zeros(backend, T, dims...)
 setdim(sz, d, v) = ntuple(i -> i == d ? v : sz[i], length(sz))
@@ -571,10 +575,9 @@ end
   ia = K; ib = K == zero(Int32) ? K : N - K
   @inbounds za = Zs[ia ÷ PF + SF * (ia % PF) + one(Int32)]
   @inbounds zm = K == zero(Int32) ? za : Zs[ib ÷ PF + SF * (ib % PF) + one(Int32)]
-  ca = conj(zm); cm = conj(za)
-  @inbounds y[K+1] = real((za + ca) * T(0.5) + u[K+1] * (za - ca))
+  @inbounds y[K+1] = real(r2c_at(za, zm, u[K+1], T))
   if K == zero(Int32) || Int32(2) * K != N
-    @inbounds y[N-K+1] = real((zm + cm) * T(0.5) + u[N-K+1] * (zm - cm))
+    @inbounds y[N-K+1] = real(r2c_at(zm, za, u[N-K+1], T))
   end
 end
 
@@ -591,7 +594,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       # DCT-I: r2c of the even extension (length 2(n-1)) by one complex DFT of length n - 1, the
       # extension built at the first pass's loads, real parts at the last pass (rhook 8)
       n1 = n - 1
-      u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
+      u = r2c_split_table(backend, T, n1)
       P = KAPlan(backend, T, setdim(sz, d, n1), -1; region = d:d, rhook = 8, rtab = (u, u))
       if P.rhook != 0
         push!(dims, (:fused, Int(k), P))
@@ -603,7 +606,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       # smooth (Bluestein), or the pass layout does not take the hooks
       # (with Bluestein the pack step runs in the first pass's chirp loads)
       n1 = n - 1; zsz = setdim(sz, d, n1)
-      u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
+      u = r2c_split_table(backend, T, n1)
       f1, P1 = FFTL.factorize(n1, KA_MAX_PRIME)
       if nameof(typeof(backend)) === :CUDABackend && length(sz) == 1 && P1 > 1 && n1 >= KA_FOURSTEP_MIN
         # one large prime factor: four-step DFT (KAFourStep) instead of Bluestein of length 2n
@@ -619,7 +622,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
     if k == FFTL.RODFT00 && n >= 2
       # DST-I: r2c of the odd extension (length 2(n+1)) by one complex DFT of length n + 1
       n1 = n + 1; zsz = setdim(sz, d, n1)
-      u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-j / n1)) for j in 0:n1])
+      u = r2c_split_table(backend, T, n1)
       push!(dims, (:dst1, KAPlan(backend, T, zsz, -1; region = d:d), u,
                    devzeros(backend, Complex{T}, zsz), devzeros(backend, Complex{T}, zsz)))
       continue
@@ -656,7 +659,7 @@ function KAR2RPlan(backend, ::Type{T}, sz::NTuple{N,Int}, kinds, region) where {
       end
       if σ < 0 && FFTL.factorize(M, KA_MAX_PRIME)[2] == 1
         # the whole DCT-II/DST-II in the line plan's passes (pass_kernel's rhook 2/3)
-        u = todevice(backend, [Complex{T}(complex(0, -0.5) * cispi(-2j / n)) for j in 0:M])
+        u = r2c_split_table(backend, T, M)
         P = KAPlan(backend, T, hsz, -1; region = d:d, rhook = k == FFTL.REDFT10 ? 2 : 3, rtab = (u, tw))
         if P.rhook != 0
           push!(dims, (:fused, Int(k), P))
