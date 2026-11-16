@@ -124,4 +124,3 @@ are built from their current releases with native CPU flags; FFTW is planned wit
 |:--|:--|
 | harness, protocol and figures | done |
 | campaign: Apple M1 Max CPU and GPU, AMD EPYC 7763 (1, 16, 32 threads), NVIDIA RTX A6000 | done (v0.2.0) |
-| campaign: A6000 rerun with an A/A pair | running |

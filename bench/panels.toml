@@ -26,7 +26,7 @@ key = "m1gpu"
 title = "Apple M1 Max GPU"
 machine = "Apple M1 Max"
 competitors = ["mpsgraph", "vkfft"]
-sources = ["campaign run 2026-11-15, FFTL v0.2.0, Metal, Float32"]
+sources = ["campaign run 2026-11-16 with A/A pair, FFTL v0.2.0, Metal, Float32"]
 
 [[panel]]
 key = "m1t8"
@@ -49,4 +49,4 @@ key = "a6000"
 title = "NVIDIA RTX A6000 GPU"
 machine = "NVIDIA RTX A6000"
 competitors = ["cufft", "vkfft"]
-sources = ["campaign run 2026-11-15, FFTL v0.2.0"]
+sources = ["campaign run 2026-11-15/16 with A/A pair, FFTL v0.2.0"]
