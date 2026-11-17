@@ -4,6 +4,9 @@ Real-to-real transforms map real data to real data. They are the transforms behi
 (DCT-II), spectral Poisson solvers with Dirichlet or Neumann boundary conditions (DST-I, DCT-I),
 and the Hartley transform. FFTL computes all eleven kinds, along any dimensions, each dimension
 with its own kind.
+Two worked examples follow this page: [compressing an image](@ref "Compressing an image with the DCT")
+with the DCT-II and [solving Poisson's equation](@ref "Solving Poisson's equation with the DST")
+with the DST-I.
 
 ## The kinds
 

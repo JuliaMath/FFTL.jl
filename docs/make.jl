@@ -48,9 +48,9 @@ makedocs(;
     ],
     "Tutorials" => [
       "Spectrum of a sampled signal" => "generated/tutorials/spectrum.md",
-      "Compressing an image with the DCT" => "generated/tutorials/image_dct.md",
-      "Solving Poisson's equation with the DST" => "generated/tutorials/poisson.md",
       "Fast convolution" => "generated/tutorials/convolution.md",
+      "Any length, no padding" => "generated/tutorials/any_length.md",
+      "One function, any precision" => "generated/tutorials/precision.md",
     ],
     "How-to Guides" => [
       "Coming from FFTW.jl" => "howto/fftw.md",
@@ -58,6 +58,8 @@ makedocs(;
       "Transforms along dimensions" => "howto/dimensions.md",
       "Real data" => "howto/real.md",
       "Cosine, sine and Hartley transforms" => "howto/cosine_sine.md",
+      "Example: compressing an image with the DCT" => "generated/howto/image_dct.md",
+      "Example: Poisson's equation with the DST" => "generated/howto/poisson.md",
       "Threads" => "howto/threads.md",
       "Number types" => "howto/number_types.md",
       "Precompilation" => "howto/precompile.md",
