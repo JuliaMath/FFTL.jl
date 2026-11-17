@@ -73,9 +73,8 @@ the serial kernel; otherwise the whole length is one `ResampleMT`.
 ×0.64 to ×1.04 of the fastest other library with one thread, and from ×0.77 to ×1.16 with 16 threads
 (measured with Bluestein's algorithm on the leftover). Resampling needs one transform of a length of
 at least 2q where Bluestein's algorithm needs two: it took 0.51–0.82 of Bluestein's time for primes
-from 1009 to 100003 (Tiger Lake, one thread), at an error of 2–5·10⁻¹⁵ in `Float64` (Bluestein about
-5·10⁻¹⁶). The batched pass vectorises across the lanes and loses with few of them: against the lanes one
-by one it took 1.7–3.8 times as long at s = 2, 1.1–1.6 at s = 7, 0.73–1.04 at s = 16 and 0.56–1.04 at
+from 1009 to 100003 (Tiger Lake, one thread), at a larger error in `Float64` (see "Accuracy" below).
+The batched pass vectorises across the lanes and loses with few of them: against the lanes one by one it took 1.7–3.8 times as long at s = 2, 1.1–1.6 at s = 7, 0.73–1.04 at s = 16 and 0.56–1.04 at
 s = 32 (`Float64`, q = 37, 1009, 10007, EPYC 9354, one thread; `Float32` 2.1–7.3, 1.6–2.9, 0.84–1.31,
 0.87–0.96). The switch is on the lane count and not on the number of threads, which keeps serial and
 threaded plans bitwise equal.
@@ -102,6 +101,33 @@ by lane, took 445 of 554 ms, almost all of it in writing each output 2¹⁶ valu
 with the same outputs written contiguously); the batched pass writes runs of consecutive outputs. Error against FFTW in
 `Float64` precision, largest over the cases: `Float64` 3.3·10⁻¹⁵ (Bluestein 1.0·10⁻¹⁵), `Float32`
 1.8·10⁻⁷ (Bluestein 3.1·10⁻⁷).
+
+**Accuracy (2026-11-17): accepted, `Float64` up to about 25 ε.** Error = largest |y − ref| over
+the largest |ref|, against a reference in double-double arithmetic, in units of ε of the precision;
+primes 101–1000003, composites s·q, 101², 1009², 101³, `rfft`, `brfft` and DCT-II on such lengths.
+
+| | `Float64` | `Float32` |
+|---|---|---|
+| resampling, AMD EPYC 7702 | 6.7–23 ε (2-D, 3-D 11–24 ε) | 0.5–1.9 ε |
+| resampling, Apple M1 Max (batched leftover, threaded line) | 17–27 ε | 1.0–2.4 ε |
+| Bluestein's algorithm (v0.2.0, same cases) | 1.4–4.3 ε | 1.2–3.9 ε |
+
+The cause is the deconvolution, not the window: the input is multiplied by 1/ψ̂, which spans a
+factor of about 8 over the band at w = 16 and m ≈ 2n, and the rounding of the grid transform is
+amplified by that factor. The truncation error of the window is below ε there. A wider window raises β
+and the factor (14 at w = 20, 25 at w = 24): w = 20 gave 19 ε rms and w = 24 39–54 ε rms at m ≈ 2n
+(w = 16: 16 ε rms), whatever β. A larger grid lowers the factor (3.4 at m ≈ 2.5n, 2.3 at 3n):
+m ≈ 2.5n gave 8.5–14 ε in 1-D and 18 ε for 1009² (the errors of the dimensions add up) at 1.12–1.27
+times the time, m ≈ 3n no better at 1.16–1.42. On x86 the grid length is the fastest smooth length
+in [2n, 2.8n], so the factor and the error vary with n (101: grid 256, 8.7 ε). The rms error does
+not grow with q (15.4–15.8 ε rms for 1009 to 1000003); the maximum grows slowly with the number of
+outputs. Bluestein's algorithm for `Float64` on x86 as well would take 1.07–1.55 times the time of
+resampling on most cases (EPYC 7702, one thread, 3 interleaved rounds). The bound is stated in the
+docstring of `Resample`, and the tests check 40 ε (`Float64`) and 4 ε (`Float32`) against a 128-bit
+reference.
+
+On the same machine Bluestein's algorithm (v0.2.0) was faster than resampling for 10007 and 16·10007
+(0.87–0.89 of the time, c2c, `rfft`, `brfft`, DCT-II); not followed up.
 
 **Replaced.** Bluestein's algorithm on the leftover and `BluesteinMT` for a whole line on threads
 (2026-11-07). Generic number types and the GPU passes keep Bluestein's algorithm.

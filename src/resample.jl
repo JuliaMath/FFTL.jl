@@ -5,7 +5,11 @@ DFT of any length n by oversampled interpolation (a type-2 NUFFT at the points k
 divided by the Fourier transform of the kernel, is zero-padded to a smooth length m ≥ 2n and
 transformed; output k is interpolated from the w grid values around k·m/n with the
 exponential-of-semicircle kernel ψ(z) = exp(β(√(1-z²)-1)). One transform of length 2n where
-Bluestein's algorithm takes two; the error is about exp(-πw√(1-n/m)) relative to ‖x‖.
+Bluestein's algorithm takes two. The truncation error is about exp(-πw√(1-n/m)) relative to ‖x‖;
+in floating point the deconvolution factors amplify the rounding of the grid transform by about
+Φ̂(0)/Φ̂(n/2m) (about 8 at w = 16, m ≈ 2n), so the error is up to about 25 eps in `Float64` (against
+2–4 eps for Bluestein's algorithm) and 2.5 eps in `Float32`. A wider window raises β and with it
+this factor, so it does not lower the error.
 """
 struct Resample{T,F,WS} <: Kernel{T}
   n::Int
@@ -32,6 +36,8 @@ struct RPoly{T}
   d::Int
 end
 
+# Target of the truncation error. In Float64 the amplified rounding of the grid transform is larger
+# (see the docstring of Resample).
 resample_tol(::Type{T}) where {T} = 10 * Float64(eps(T))
 
 # Narrowest multiple of 4 meeting the tolerance at m ≥ 2n; a constant per T (16 for Float64, 8 for
