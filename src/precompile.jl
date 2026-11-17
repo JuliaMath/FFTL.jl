@@ -39,30 +39,33 @@ The next load recompiles FFTL with the selected workload.
 const PRECOMPILE_WORKLOAD = @load_preference("precompile_workload", "lean")
 
 # Plans built and applied by the workload for element type T: complex transforms of the
-# shapes (forward, backward, inverse), run-time plans, real transforms, passes on views.
+# shapes (forward, backward, inverse), run-time plans, real transforms, passes on views. The input
+# values do not matter (no code path depends on them), so the arrays are ones: `randn` belongs to
+# Random, which FFTL does not depend on (Julia builds without Random in the system image have
+# `Base.randn` without methods).
 function precompile_workload(::Type{T}, shapes, rshapes, rplans, zp; fourstep = false) where {T}
   for sz in shapes
-    x = randn(Complex{T}, sz...)
+    x = ones(Complex{T}, sz...)
     for plan in (plan_fft, plan_bfft, plan_ifft)
       p = plan(x; threads = 1)
       mul!(similar(x), p, x)
     end
   end
   for (sz, reg) in rplans
-    x = randn(Complex{T}, sz...)
+    x = ones(Complex{T}, sz...)
     p = RPlan{T}(sz, reg, -1; threads = 1)
     mul!(similar(x), p, x)
   end
   for sz in rshapes
-    x = randn(T, sz...)
+    x = ones(T, sz...)
     plan_rfft(x; threads = 1) * x
   end
-  z = randn(Complex{T}, zp...)
+  z = ones(Complex{T}, zp...)
   for (v, d) in ((view(z, 2:zp[1]-1, 2:zp[2]-1), 1), (view(z, 2:zp[1]-1, :), 2))
     apply!(plan_pass(v, d), v)
   end
   if fourstep   # one long line on several threads
-    x = randn(Complex{T}, 2^14)
+    x = ones(Complex{T}, 2^14)
     mul!(similar(x), plan_fft(x; threads = 4), x)
   end
   nothing
