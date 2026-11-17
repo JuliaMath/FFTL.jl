@@ -1,7 +1,7 @@
 # Performance
 
-This page describes what the design does for speed and how speed is measured. The numbers themselves
-come with the [benchmark release](@ref "Benchmarks"), not here.
+This page describes what the design does for speed and how speed is measured. The numbers are on
+the [Benchmarks](@ref "Benchmarks") page.
 
 ## Where the speed comes from
 
@@ -22,8 +22,7 @@ once. The plan cache and the precompile workload remove the compilation cost fro
 
 ## Benchmark protocol
 
-A claim about speed is a measurement made under a fixed protocol. The benchmark release will
-follow this one:
+A claim about speed is a measurement made under a fixed protocol. The benchmarks follow this one:
 
 - **A/B on the same machine.** Two versions run interleaved, one process per variant, on the same
   inputs. A change is accepted only when its median is better outside the noise.

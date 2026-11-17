@@ -82,8 +82,8 @@ makedocs(;
       "C header (fftw3.h)" => "generated/libfftl_fftw3_header.md",
       "C header (fftl.h)" => "generated/libfftl_header.md",
       "Platforms and limits" => "reference/platforms.md",
-      "Benchmarks" => "reference/benchmarks.md",
     ],
+    "Benchmarks" => "reference/benchmarks.md",
   ],
   # FFTL exports nothing, so there are no exports for checkdocs to walk. The names in the
   # `@docs` blocks of reference/api.md are the enforced list: a binding without a docstring
