@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   test:
-    name: Julia ${{ matrix.version }} · ${{ matrix.os }}
+    name: Julia ${{ matrix.version }} · ${{ matrix.os }}${{ matrix.large_primes == 'bluestein' && ' · Float64 Bluestein' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -36,9 +36,15 @@ jobs:
       matrix:
         version: ['1']
         os: [ubuntu-latest, macos-latest]
+        large_primes: [resample]
+        # the preference float64_large_primes = "bluestein" (Bluestein's algorithm for every
+        # Float64 transform of a length with a prime factor above 73)
+        include:
+          - {version: '1', os: ubuntu-latest, large_primes: bluestein}
+          - {version: '1', os: macos-latest, large_primes: bluestein}
     env:
       JULIA_NUM_THREADS: 2
-      COVERAGE: ${{ matrix.os == 'ubuntu-latest' && matrix.version == '1' && github.event_name == 'push' }}
+      COVERAGE: ${{ matrix.os == 'ubuntu-latest' && matrix.version == '1' && matrix.large_primes == 'resample' && github.event_name == 'push' }}
       FFTL_TEST_FULL: ${{ github.event_name == 'schedule' || inputs.full == true }}
     steps:
       - uses: actions/checkout@v5
@@ -46,6 +52,9 @@ jobs:
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v2
+      - name: Preference float64_large_primes
+        if: matrix.large_primes == 'bluestein'
+        run: printf '[FFTL]\nfloat64_large_primes = "bluestein"\n' > LocalPreferences.toml
       - uses: julia-actions/julia-buildpkg@v1
       # --check-bounds=yes (disables @inbounds and invalidates all precompiled packages) only in
       # the full run: it triples the time of the quick run

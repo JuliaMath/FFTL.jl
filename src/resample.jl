@@ -326,10 +326,11 @@ run!(py::Ptr{T}, px::Ptr{T}, pw1::Ptr{T}, pw2::Ptr{T}, P::Resample{T}, S::Int) w
 const RS_BATCH_LANES = 32
 
 # The length-q DFTs of the s lanes of a composite kernel: batched, or lane by lane for few lanes
-# (Bluestein's algorithm where `bluestein_lines`). C: TypedKernels, or RChain for the run-time plans
+# (Bluestein's algorithm where `bluestein_lines`, for every lane count where `bluestein_all`). C: TypedKernels, or RChain for the run-time plans
 # (a lane's grid or convolution transform is then a chain).
 leftover_kernel(::Type{T}, q::Int, σ::Int, s::Int, ::Type{C} = TypedKernels) where {T,C} =
-  s >= RS_BATCH_LANES ? RsBatch{T}(q, σ, s) : bluestein_lines(T) ? Bluestein{T}(q, σ, C) : Resample{T}(q, σ, C)
+  s >= RS_BATCH_LANES && !bluestein_all(T) ? RsBatch{T}(q, σ, s) :
+  bluestein_lines(T) ? Bluestein{T}(q, σ, C) : Resample{T}(q, σ, C)
 
 # Lane by lane (the batched pass, RsBatch, has its own method below).
 function leftover!(py::Ptr{T}, pz::Ptr{T}, tw::Vector{Complex{T}}, rs::Union{Resample{T},Bluestein{T}}, n::Int, s::Int, B::Int, Sy::Int) where {T}

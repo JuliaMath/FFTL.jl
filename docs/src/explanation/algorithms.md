@@ -65,7 +65,8 @@ largest output, is up to about ``25\,\varepsilon`` in `Float64` (Bluestein's alg
 ``\varepsilon``) and ``2.5\,\varepsilon`` in `Float32`, where resampling is more accurate than
 Bluestein's algorithm (2–4 ``\varepsilon``). It does not grow with ``n``. A wider window does not
 help: it raises ``\beta`` and with it the amplification; a larger grid does, at a cost (see the
-design decisions). The weights of every output are tabulated up to a table size (1 MiB
+design decisions). The preference `float64_large_primes = "bluestein"` (`FFTL.FLOAT64_LARGE_PRIMES`)
+selects Bluestein's algorithm for every `Float64` transform of such a length. The weights of every output are tabulated up to a table size (1 MiB
 in `Float64`, 4 MiB in `Float32`, where the two measured about even), above it they are
 evaluated from piecewise polynomials. Generic number types (`BigFloat` and others,
 `src/generic.jl`) keep Bluestein's algorithm, which is exact: there the width grows with the

@@ -171,6 +171,7 @@ line_fourstep(p) = nothing
 run_half!(py::Ptr{T}, px::Ptr{T}, K::FourStep{T}, nt::Int) where {T} = run_fourstep!(py, px, K, nt)
 run_half!(py::Ptr{T}, px::Ptr{T}, K::CompositeMT{T}, nt::Int) where {T} = run_composite_mt!(py, px, K, nt)
 run_half!(py::Ptr{T}, px::Ptr{T}, K::ResampleMT{T}, nt::Int) where {T} = run_resample_mt!(py, px, K, nt)
+run_half!(py::Ptr{T}, px::Ptr{T}, K::BluesteinMT{T}, nt::Int) where {T} = run_bluestein_mt!(py, px, K, nt)
 
 # Lines along dimension d of an array of size `sz` (real side), as (lane stride S, line offsets
 # in elements of the real side and of the complex side).
@@ -286,7 +287,7 @@ inner_length(n) = iseven(n) ? n ÷ 2 : n
 function half_threads(::Type{T}, h, σ, nt) where {T}
   use_fourstep(T, h, nt) && return FourStep{T}(h, σ, nt)
   use_composite_mt(T, h, nt) && return CompositeMT{T}(h, σ, nt)
-  use_resample_mt(h, nt) && return ResampleMT{T}(h, σ, nt)
+  use_resample_mt(h, nt) && return line_mt(T, h, σ, nt)
   nothing
 end
 
