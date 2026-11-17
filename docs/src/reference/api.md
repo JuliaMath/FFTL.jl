@@ -101,6 +101,7 @@ FFTL.clear_cache!
 FFTL.cpu_caches
 FFTL.set_cpu_caches!
 FFTL.PRECOMPILE_WORKLOAD
+FFTL.FLOAT64_LARGE_PRIMES
 FFTL.REG_BYTES
 ```
 

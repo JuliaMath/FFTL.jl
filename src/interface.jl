@@ -72,7 +72,7 @@ function FFTLPlan{T}(sz::NTuple{N,Int}, region, σ::Int; threads::Integer = Thre
   function dim_kernel(d)
     fourstep_dim(T, sz, d, nt) && return FourStep{T}(sz[d], σ, nt)
     composite_mt_dim(T, sz, d, nt) && return CompositeMT{T}(sz[d], σ, nt)
-    resample_mt_dim(sz, d, nt) && return ResampleMT{T}(sz[d], σ, nt)
+    resample_mt_dim(sz, d, nt) && return line_mt(T, sz[d], σ, nt)
     S, _ = dim_extent(sz, d)
     lines_mt_dim(sz, d, nt) && return LinesMT{T}(sz[d], σ, S, nt)
     get!(() -> kernel(T, sz[d], σ, S), cache, (sz[d], S > LARGE_STRIDE || !smooth(sz[d]) ? S : 0))
@@ -105,6 +105,7 @@ function Base.show(io::IO, ::MIME"text/plain", p::FFTLPlan{T}) where {T}
     k isa CompositeMT && print(io, "chain of length ", k.s, ", ", leftover_name(k.rss[1]), " of length ", k.q, " on threads, grid length ", grid_size(k.rss[1]))
     k isa LinesMT && print(io, "one kernel per thread, blocks of ", k.B, " lines")
     k isa ResampleMT && print(io, "resampled on threads, grid length ", k.fwd.n)
+    k isa BluesteinMT && print(io, "Bluestein on threads, convolution length ", k.fwd.n)
     k isa FourStep && print(io, "four-step $(k.n1) × $(k.n2), radices ", radix_tuple(k.k1), " and ", radix_tuple(k.k2))
   end
 end
@@ -230,7 +231,7 @@ end
 
 # These kernels represent a single long line and own their transform buffers. Reuse the plan's
 # serial workspace to gather/scatter only when that line is not contiguous.
-function run_strided_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Union{FourStep{T},ResampleMT{T},CompositeMT{T}},
+function run_strided_dim!(py::Ptr{T}, px::Ptr{T}, p, k::Union{FourStep{T},ResampleMT{T},BluesteinMT{T},CompositeMT{T}},
                           d::Int, sy::NTuple{N,Int}, sx::NTuple{N,Int}) where {T,N}
   n = p.sz[d]
   if sx[d] == sy[d] == 1
@@ -274,6 +275,11 @@ transforms large enough to profit run on up to `threads` threads (default: the v
 not measure while planning. Other floating-point types (BigFloat, Double64, Float128, …) are
 transformed in their own precision by a generic, single-threaded path; Float16, integers and
 other numbers are converted to ComplexF64.
+
+Accuracy: the largest error over the largest output is a few ε of the element type for lengths
+whose prime factors are at most 73. The part of a length made of larger primes is resampled:
+up to about 25 ε in Float64 (2–4 ε with the preference [`FFTL.FLOAT64_LARGE_PRIMES`](@ref) set
+to `"bluestein"`, at 1.07–1.55 times the time) and 2.5 ε in Float32.
 """
 function plan_fft(x::AbstractArray, region = 1:ndims(x); threads = nothing, num_threads = nothing,
                   flags = nothing, timelimit = nothing, kw...)

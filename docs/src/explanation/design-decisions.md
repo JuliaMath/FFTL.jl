@@ -126,6 +126,13 @@ resampling on most cases (EPYC 7702, one thread, 3 interleaved rounds). The boun
 docstring of `Resample`, and the tests check 40 ε (`Float64`) and 4 ε (`Float32`) against a 128-bit
 reference.
 
+**Preference (2026-11-17).** The default stays resampling; `float64_large_primes = "bluestein"`
+(`FFTL.FLOAT64_LARGE_PRIMES`, read at precompile time like `simd_bytes`) makes every `Float64` kernel of
+such a length Bluestein's: single lines (`bluestein_lines`), composite leftovers of any lane count (no
+`RsBatch`) and the threaded long line (`BluesteinMT`, the kernel of FFTL 0.2, in place of
+`ResampleMT`). `Float32` resamples in both modes. CI runs the tests in both modes, with the bound
+8 ε instead of 40 ε for `Float64`.
+
 On the same machine Bluestein's algorithm (v0.2.0) was faster than resampling for 10007 and 16·10007
 (0.87–0.89 of the time, c2c, `rfft`, `brfft`, DCT-II); not followed up.
 

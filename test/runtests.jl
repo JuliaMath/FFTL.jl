@@ -65,6 +65,7 @@ using SIMD: Vec
 # Default: a quick run that covers every feature with fewer sizes (CI on every push).
 # FFTL_TEST_FULL=true: the full lists.
 const FULL = get(ENV, "FFTL_TEST_FULL", "false") == "true"
+@info "preference float64_large_primes = $(FFTL.FLOAT64_LARGE_PRIMES)"
 pick(full, quick) = FULL ? full : quick
 # quick run: Float32 takes every other case (its kernels compile separately from Float64's)
 thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
@@ -109,20 +110,28 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
 
   @testset "accuracy of resampled transforms, $T" for T in (Float64, Float32)
     # max error over max of a 128-bit reference (FFTL's generic BigFloat transform), in eps(T).
-    # Measured: Float64 up to about 27 eps (the deconvolution factors amplify the rounding of the
-    # grid transform), Float32 up to about 2.5 eps. The bounds catch a doubling. On aarch64 single
-    # Float64 lines are Bluestein's; the batched leftover (32·q) and the threaded kernel resample.
-    lim = T === Float64 ? 40 : 4
+    # Measured: Float64 up to about 27 eps resampled (the deconvolution factors amplify the rounding
+    # of the grid transform), 2–5 eps with the preference float64_large_primes = "bluestein";
+    # Float32 up to about 2.5 eps. The bounds catch a doubling. On aarch64 single Float64 lines are
+    # Bluestein's in both modes; the batched leftover (32·q) and the threaded kernel resample by default.
+    lim = T === Float64 ? (FFTL.bluestein_all(T) ? 8 : 40) : 4
     err(y, r) = Float64(norm(y - r, Inf) / norm(r, Inf)) / eps(T)
     setprecision(BigFloat, 128) do
       B = BigFloat
       cases = pick([((101,), 1), ((1009,), 1), ((10007,), 1), ((12 * 1009,), 1), ((32 * 101,), 1),
-                    ((32 * 1009,), 1), ((101, 101), 1), ((20011,), 2)],
-                   [((1009,), 1), ((32 * 101,), 1), ((101, 101), 1)])
+                    ((32 * 1009,), 1), ((101, 101), 1), ((79, 79, 79), 1), ((20011,), 2)],
+                   [((1009,), 1), ((32 * 101,), 1), ((101, 101), 1), ((20011,), 2)])
       for (sz, nt) in cases
         x = randn(Complex{T}, sz...); xb = Complex{B}.(x)
-        @test err(FFTL.plan_fft(x; threads = nt) * x, FFTL.fft(xb)) < lim
+        p = FFTL.plan_fft(x; threads = nt)
+        @test err(p * x, FFTL.fft(xb)) < lim
         @test err(FFTL.plan_bfft(x; threads = nt) * x, FFTL.bfft(xb)) < lim
+        # the kernel the preference selects: the batched leftover and the threaded line
+        if sz == (32 * 101,)
+          @test p.kernels[1].rs isa (FFTL.bluestein_all(T) ? FFTL.Bluestein : FFTL.RsBatch)
+        elseif nt > 1
+          @test p.kernels[1] isa (FFTL.bluestein_all(T) ? FFTL.BluesteinMT : FFTL.ResampleMT)
+        end
       end
       for n in pick((1009, 10007), (1009,))
         xr = randn(T, n); X = FFTL.rfft(xr)
@@ -439,7 +448,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
         ref = mk(x; threads = 1) * x
         for nt in pick((2, 3, 4), (3,))
           p = mk(x; threads = nt)
-          @test p.kernels[1] isa FFTL.ResampleMT
+          @test p.kernels[1] isa (FFTL.bluestein_all(T) ? FFTL.BluesteinMT : FFTL.ResampleMT)
           @test relerr(p * x, ref) < tol(T)
           z = copy(x); mul!(z, p, z)
           @test relerr(z, ref) < tol(T)
@@ -465,7 +474,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
           else
             # fewer first-stage lines than threads (Float32 3·193·1021 splits as 3·197053):
             # the whole line is resampled on threads
-            @test p.kernels[1] isa FFTL.ResampleMT
+            @test p.kernels[1] isa (FFTL.bluestein_all(T) ? FFTL.BluesteinMT : FFTL.ResampleMT)
             @test relerr(p * x, ref) < tol(T)
           end
         end
@@ -1071,7 +1080,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     for (T, n) in ((Float64, 80896), (Float64, 92935), (Float64, 2 * 1009 * 79), (Float32, 33490), (Float32, 92935), (Float32, 100003))
       x = randn(T, n)
       p = FFTL.plan_rfft(x; threads = 3)
-      @test p.four isa Union{FFTL.CompositeMT,FFTL.ResampleMT}
+      @test p.four isa Union{FFTL.CompositeMT,FFTL.ResampleMT,FFTL.BluesteinMT}
       X = p * x
       @test relerr(X, FFTL.plan_rfft(x; threads = 1) * x) < 10tol(T)
       @test relerr(FFTL.plan_brfft(X, n; threads = 3) * X, n .* x) < 10tol(T)

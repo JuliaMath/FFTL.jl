@@ -272,8 +272,36 @@ grid_fourstep(::Type{T}, m::Int) where {T} = fourstep_split(m) > 0 &&
 # 1.18–1.53 (10007, 20014 real, 100003, 101², 127²), Float32 0.60–0.84. Only single lines (and
 # composite leftovers lane by lane) are affected; the batched leftover pass (RsBatch) and the threaded
 # kernels resample in both precisions, they were faster there in Float64 as well (64·1009: 0.80;
-# 1000003 on 8 threads: 0.72).
-bluestein_lines(::Type{T}) where {T} = T === Float64 && Sys.ARCH === :aarch64
+# 1000003 on 8 threads: 0.72). The preference below switches every Float64 kernel to Bluestein's.
+bluestein_lines(::Type{T}) where {T} = T === Float64 && (Sys.ARCH === :aarch64 || FLOAT64_LARGE_PRIMES == "bluestein")
+
+"""
+    FFTL.FLOAT64_LARGE_PRIMES
+
+How `Float64` transforms compute the part of a length made of prime factors above
+`MAX_RADIX_PRIME` (73), selected when FFTL was built: `"resample"` (default) or `"bluestein"`.
+
+Resampling is faster; its error (largest error over the largest output) is up to about 25 ε in
+`Float64`, about 5·10⁻¹⁵. Bluestein's algorithm stays at 2–4 ε, as in FFTL 0.2, and takes 1.07–1.55
+times as long on most such lengths (AMD EPYC 7702, one thread). `"bluestein"` uses it for every
+`Float64` line, leftover and threaded line of such a length. `Float32` always resamples (2.5 ε,
+more accurate than Bluestein's algorithm there). The preference is read at precompile time, so
+`juliac --trim` builds are unaffected:
+
+```julia
+using Preferences, FFTL
+Preferences.set_preferences!(FFTL, "float64_large_primes" => "bluestein"; force = true)
+```
+
+The next load recompiles FFTL.
+"""
+const FLOAT64_LARGE_PRIMES = @load_preference("float64_large_primes", "resample")::String
+FLOAT64_LARGE_PRIMES in ("resample", "bluestein") ||
+  error("preference float64_large_primes must be \"resample\" or \"bluestein\", not \"$FLOAT64_LARGE_PRIMES\"")
+
+# Every Float64 transform of such a length through Bluestein's algorithm: also the batched leftover
+# pass and the threaded line, which resample on aarch64 by default.
+bluestein_all(::Type{T}) where {T} = T === Float64 && FLOAT64_LARGE_PRIMES == "bluestein"
 
 """
     Bluestein{T}

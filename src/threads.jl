@@ -427,6 +427,60 @@ function run_resample_mt!(py::Ptr{T}, px::Ptr{T}, P::ResampleMT{T}, nt::Int) whe
 end
 
 """
+    BluesteinMT{T}
+
+Bluestein's algorithm (see `Bluestein`) for one long contiguous line on several threads, in
+`Float64` where `bluestein_all`: the two convolution transforms run as four-step transforms and
+the three element-wise passes (chirp product with zero padding, filter product, chirp product) are
+split over the threads.
+"""
+struct BluesteinMT{T,F1,F2} <: Kernel{T}
+  n::Int
+  chirp::Vector{Complex{T}}       # c_j, j = 0…n-1
+  kernel::Vector{Complex{T}}      # DFT of the convolution kernel, scaled by 1/M
+  fwd::F1
+  bwd::F2
+  buf::Vector{Complex{T}}         # length M
+end
+
+function BluesteinMT{T}(n::Int, σ::Int, nt::Int) where {T}
+  M = grid_length(T, 2n - 1)
+  while fourstep_split(M) == 0
+    M = grid_length(T, M + 1)
+  end
+  w1 = Vector{Complex{T}}(undef, M); w2 = Vector{Complex{T}}(undef, M)
+  chirp, b = cached(() -> bluestein_tables(T, n, σ, RChain{T}(M, -1), w1, w2), CacheKey(:bluestein, T, n, σ, [M])
+                   )::Tuple{Vector{Complex{T}},Vector{Complex{T}}}
+  fwd = FourStep{T}(M, -1, nt); bwd = FourStep{T}(M, 1, nt)
+  BluesteinMT{T,typeof(fwd),typeof(bwd)}(n, chirp, b, fwd, bwd, Vector{Complex{T}}(undef, M))
+end
+
+function run_bluestein_mt!(py::Ptr{T}, px::Ptr{T}, P::BluesteinMT{T}, nt::Int) where {T}
+  n = P.n; M = length(P.buf)
+  GC.@preserve P begin
+    cx = Ptr{Complex{T}}(px); cy = Ptr{Complex{T}}(py)
+    pb = Ptr{Complex{T}}(cptr(P.buf))
+    pc = Ptr{Complex{T}}(cptr(P.chirp)); pk = Ptr{Complex{T}}(cptr(P.kernel))
+    chunked(M, nt) do j
+      unsafe_store!(pb, j < n ? unsafe_load(cx, j + 1) * unsafe_load(pc, j + 1) : zero(Complex{T}), j + 1)
+    end
+    run_fourstep!(cptr(P.buf), cptr(P.buf), P.fwd, nt)
+    chunked(M, nt) do j
+      unsafe_store!(pb, unsafe_load(pb, j + 1) * unsafe_load(pk, j + 1), j + 1)
+    end
+    run_fourstep!(cptr(P.buf), cptr(P.buf), P.bwd, nt)
+    chunked(n, nt) do k
+      unsafe_store!(cy, unsafe_load(pb, k + 1) * unsafe_load(pc, k + 1), k + 1)
+    end
+  end
+  nothing
+end
+
+# The kernel of one long line of a non-smooth length on several threads.
+line_mt(::Type{T}, n::Int, σ::Int, nt::Int) where {T} =
+  bluestein_all(T) ? BluesteinMT{T}(n, σ, nt) : ResampleMT{T}(n, σ, nt)
+
+"""
     CompositeMT{T}
 
 The composite kernel (first stage of length s, resampled DFT of length q) for one long contiguous
@@ -712,6 +766,9 @@ run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::FourStep{T}, S::Int, n::Int, outer
 
 run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::ResampleMT{T}, S::Int, n::Int, outer::Int) where {T} =
   run_resample_mt!(py, px, k, p.nthreads)
+
+run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::BluesteinMT{T}, S::Int, n::Int, outer::Int) where {T} =
+  run_bluestein_mt!(py, px, k, p.nthreads)
 
 run_kernel_dim!(py::Ptr{T}, px::Ptr{T}, p, k::CompositeMT{T}, S::Int, n::Int, outer::Int) where {T} =
   run_composite_mt!(py, px, k, p.nthreads)
