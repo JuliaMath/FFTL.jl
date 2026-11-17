@@ -55,9 +55,17 @@ grid (a type-2 nonuniform FFT evaluated at the points ``k\,m/n``; `src/resample.
 3. output ``k`` is the sum of the ``w`` grid values around ``k\,m/n``, weighted by
    ``\psi(z) = e^{\beta(\sqrt{1 - z^2} - 1)}`` (the exponential of a semicircle).
 
-The result is not exact: its error is about ``e^{-\pi w \sqrt{1 - n/m}}`` relative to ``\lVert x \rVert``.
-FFTL takes the narrowest ``w`` (a multiple of 4) for an error of ``10\,\varepsilon``: 16 taps in
-`Float64`, 8 in `Float32`. The weights of every output are tabulated up to a table size (1 MiB
+The result is not exact: the truncation error of the kernel is about
+``e^{-\pi w \sqrt{1 - n/m}}`` relative to ``\lVert x \rVert``. FFTL takes the narrowest ``w`` (a
+multiple of 4) for a truncation error of ``10\,\varepsilon``: 16 taps in `Float64`, 8 in `Float32`.
+In floating point a second term dominates in `Float64`: step 1 multiplies the input by up to
+``\hat\psi(0)/\hat\psi(n/2m)`` (about 8 at ``w = 16``, ``m \approx 2n``), and the rounding of the grid
+transform is amplified by about that factor. The error, largest over the outputs against the
+largest output, is up to about ``25\,\varepsilon`` in `Float64` (Bluestein's algorithm 2–4
+``\varepsilon``) and ``2.5\,\varepsilon`` in `Float32`, where resampling is more accurate than
+Bluestein's algorithm (2–4 ``\varepsilon``). It does not grow with ``n``. A wider window does not
+help: it raises ``\beta`` and with it the amplification; a larger grid does, at a cost (see the
+design decisions). The weights of every output are tabulated up to a table size (1 MiB
 in `Float64`, 4 MiB in `Float32`, where the two measured about even), above it they are
 evaluated from piecewise polynomials. Generic number types (`BigFloat` and others,
 `src/generic.jl`) keep Bluestein's algorithm, which is exact: there the width grows with the
@@ -68,8 +76,7 @@ keeps it too for single lines (see the design decisions): with two values per NE
 Compared with Bluestein's algorithm, which needs two transforms of a length ``\ge 2n - 1``, one
 transform is saved for ``n\,w`` multiply-adds. Measured against it on a Tiger Lake core (one
 thread, before Bluestein was removed), the time ratio was 0.51–0.82 for primes from 1009 to
-100003, at an error of 2–5·10⁻¹⁵ in `Float64` (Bluestein about 5·10⁻¹⁶) and 1–2·10⁻⁷ in
-`Float32` (Bluestein about 2.5·10⁻⁷).
+100003.
 
 The grid length is a smooth number. On aarch64 it is the smallest 5-smooth ``m \ge 2n``. On x86
 a cost model fitted to measured chains picks the fastest 7-smooth length in ``[2n,\, 2.8\,n]``: a

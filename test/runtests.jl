@@ -107,6 +107,32 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     end
   end
 
+  @testset "accuracy of resampled transforms, $T" for T in (Float64, Float32)
+    # max error over max of a 128-bit reference (FFTL's generic BigFloat transform), in eps(T).
+    # Measured: Float64 up to about 27 eps (the deconvolution factors amplify the rounding of the
+    # grid transform), Float32 up to about 2.5 eps. The bounds catch a doubling. On aarch64 single
+    # Float64 lines are Bluestein's; the batched leftover (32·q) and the threaded kernel resample.
+    lim = T === Float64 ? 40 : 4
+    err(y, r) = Float64(norm(y - r, Inf) / norm(r, Inf)) / eps(T)
+    setprecision(BigFloat, 128) do
+      B = BigFloat
+      cases = pick([((101,), 1), ((1009,), 1), ((10007,), 1), ((12 * 1009,), 1), ((32 * 101,), 1),
+                    ((32 * 1009,), 1), ((101, 101), 1), ((20011,), 2)],
+                   [((1009,), 1), ((32 * 101,), 1), ((101, 101), 1)])
+      for (sz, nt) in cases
+        x = randn(Complex{T}, sz...); xb = Complex{B}.(x)
+        @test err(FFTL.plan_fft(x; threads = nt) * x, FFTL.fft(xb)) < lim
+        @test err(FFTL.plan_bfft(x; threads = nt) * x, FFTL.bfft(xb)) < lim
+      end
+      for n in pick((1009, 10007), (1009,))
+        xr = randn(T, n); X = FFTL.rfft(xr)
+        @test err(X, FFTL.rfft(B.(xr))) < lim
+        @test err(FFTL.brfft(X, n), FFTL.brfft(Complex{B}.(X), n)) < lim
+        @test err(FFTL.r2r(xr, FFTL.REDFT10), FFTL.r2r(B.(xr), FFTL.REDFT10)) < lim
+      end
+    end
+  end
+
   @testset "deconvolution factors of resampling, $T" for T in (Float64, Float32)
     # against the same quadrature rule in 256-bit arithmetic: odd and even n, within one block of
     # resample_corr and across several, both ends of the index range
