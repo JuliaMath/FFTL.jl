@@ -87,7 +87,7 @@ yd = FFTL.fft(MtlArray(randn(ComplexF32, 1024, 1024)))
   dimensions, for any length (the part of a length made of prime factors above 73 resampled onto
   a smooth grid). For such lengths the `Float64` error is up to about 25 ε (largest error over
   the largest output, about 5·10⁻¹⁵), against 2–4 ε with Bluestein's algorithm; the preference
-  `float64_large_primes = "bluestein"` selects Bluestein's algorithm at 1.07–1.55 times the time
+  `float64_large_primes = "bluestein"` selects Bluestein's algorithm at 1.1–1.6 times the time
   ([`FFTL.FLOAT64_LARGE_PRIMES`](https://JuliaMath.github.io/FFTL.jl/dev/reference/api)).
   `Float32` resamples at up to 2.5 ε.
 - `Float32` and `Float64` on the fast path (SIMD codelets, threads). `BigFloat`, `Double64`,

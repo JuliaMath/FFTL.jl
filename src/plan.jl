@@ -282,8 +282,9 @@ How `Float64` transforms compute the part of a length made of prime factors abov
 `MAX_RADIX_PRIME` (73), selected when FFTL was built: `"resample"` (default) or `"bluestein"`.
 
 Resampling is faster; its error (largest error over the largest output) is up to about 25 ε in
-`Float64`, about 5·10⁻¹⁵. Bluestein's algorithm stays at 2–4 ε, as in FFTL 0.2, and takes 1.07–1.55
-times as long on most such lengths (AMD EPYC 7702, one thread). `"bluestein"` uses it for every
+`Float64`, about 5·10⁻¹⁵. Bluestein's algorithm stays at 2–4 ε, as in FFTL 0.2, and takes 1.1–1.6
+times as long on most such lengths (AMD EPYC 7702, one thread: 1.07–1.55; Apple M1 Max: batched
+leftovers 1.2–1.3 on one thread, long lines 1.24–1.57 on eight threads). `"bluestein"` uses it for every
 `Float64` line, leftover and threaded line of such a length. `Float32` always resamples (2.5 ε,
 more accurate than Bluestein's algorithm there). The preference is read at precompile time, so
 `juliac --trim` builds are unaffected:

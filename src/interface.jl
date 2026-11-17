@@ -279,7 +279,7 @@ other numbers are converted to ComplexF64.
 Accuracy: the largest error over the largest output is a few ε of the element type for lengths
 whose prime factors are at most 73. The part of a length made of larger primes is resampled:
 up to about 25 ε in Float64 (2–4 ε with the preference [`FFTL.FLOAT64_LARGE_PRIMES`](@ref) set
-to `"bluestein"`, at 1.07–1.55 times the time) and 2.5 ε in Float32.
+to `"bluestein"`, at 1.1–1.6 times the time) and 2.5 ε in Float32.
 """
 function plan_fft(x::AbstractArray, region = 1:ndims(x); threads = nothing, num_threads = nothing,
                   flags = nothing, timelimit = nothing, kw...)
