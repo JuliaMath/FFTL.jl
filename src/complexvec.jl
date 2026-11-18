@@ -11,16 +11,39 @@
 using Preferences: @load_preference
 
 """
+    FFTL.CPU_FEATURES
+
+`"host"` (default): the kernels use the instructions of the CPU FFTL is compiled on (AVX2,
+AVX-512, FCMA). `"baseline"`: only what every CPU of the platform has (x86-64: none of them;
+Apple silicon: FCMA), for code compiled ahead of time for other machines, e.g. a PackageCompiler
+app built with `cpu_target = "generic"`: LLVM cannot compile the x86 intrinsics for that target
+("LLVM ERROR: Do not know how to split the result of this operator!"), and the app would need
+the build machine's CPU features anyway. Set with
+
+```julia
+using Preferences, FFTL
+Preferences.set_preferences!(FFTL, "cpu_features" => "baseline"; force = true)
+```
+"""
+const CPU_FEATURES = @load_preference("cpu_features", "host")::String
+CPU_FEATURES in ("host", "baseline") ||
+  error("FFTL preference cpu_features must be \"host\" or \"baseline\", not \"$CPU_FEATURES\"")
+const HOST_FEATURES = CPU_FEATURES == "host"
+
+"""
     HAS_FCMA
 
 Whether the host CPU has the ARMv8.3 complex-number instructions (FCADD, FCMLA). Apple silicon
-always has them; on Linux the `fcma` flag in `/proc/cpuinfo` is checked.
+always has them (also with `cpu_features = "baseline"`); on Linux the `fcma` flag in
+`/proc/cpuinfo` is checked.
 """
 const HAS_FCMA = let
   if Sys.ARCH !== :aarch64
     false
   elseif Sys.isapple()
     true
+  elseif !HOST_FEATURES
+    false
   elseif Sys.islinux() && isfile("/proc/cpuinfo")
     occursin(r"\bfcma\b", read("/proc/cpuinfo", String))
   else
@@ -33,7 +56,7 @@ end
 
 Whether the host is an x86-64 CPU with AVX2 and FMA (256-bit kernels).
 """
-const HAS_AVX2 = Sys.ARCH === :x86_64 &&
+const HAS_AVX2 = HOST_FEATURES && Sys.ARCH === :x86_64 &&
   Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx2) &&
   Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_fma)
 
