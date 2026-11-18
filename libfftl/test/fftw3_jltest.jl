@@ -982,12 +982,13 @@ end
 # fftl_version and fftl_last_error, the two functions of fftl.h
 function test_fftl_h()
   buf = zeros(UInt8, 64)
+  v = string(pkgversion(FFTL))
   n = fftl_version(pointer(buf), Csize_t(length(buf)))
-  @CHECK n == 5 && String(buf[1:6]) == "0.2.0\0", "fftl_version 0.2.0"
+  @CHECK n == length(v) && String(buf[1:n+1]) == v * "\0", "fftl_version $v"
   fill!(buf, 0)
   n = fftl_version(pointer(buf), Csize_t(3))
-  @CHECK n == 5 && buf[1:3] == UInt8['0', '.', 0], "fftl_version truncates like snprintf"
-  @CHECK fftl_version(Ptr{UInt8}(C_NULL), Csize_t(0)) == 5, "fftl_version(NULL, 0): the length"
+  @CHECK n == length(v) && buf[1:3] == [codeunits(v)[1:2]; 0x00], "fftl_version truncates like snprintf"
+  @CHECK fftl_version(Ptr{UInt8}(C_NULL), Csize_t(0)) == length(v), "fftl_version(NULL, 0): the length"
   set_error!("a message of 22 bytes!")
   fill!(buf, 0xff)
   @CHECK fftl_last_error(Ptr{UInt8}(C_NULL), Csize_t(0)) == 22, "fftl_last_error(NULL, 0): the length"
