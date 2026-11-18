@@ -740,9 +740,10 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       p = FFTL.plan_pass_runtime(randn(Complex{T}, sz), d)
       @test p isa FFTL.PassPlan{T,2,FFTL.RPassKern{T}}
     end
-    # against the length-specialised plan, every kernel kind: smooth, resampling, composite, four-step
+    # against the length-specialised plan, every kernel kind: smooth, resampling, composite (leftover
+    # lane by lane and batched), four-step
     for (n, sz_other, nt) in ((64, 5, 1), (100, 7, 1), (1000, 3, 2), (1009, 4, 1), (2 * 79 * 83, 2, 1),
-                              (2^17, 1, 3))
+                              (64 * 1009, 1, 1), (2^17, 1, 3))
       x = randn(Complex{T}, n, sz_other)
       for sign in (-1, 1)
         ref = FFTL.plan_pass(x, 1; sign, threads = nt); rt = FFTL.plan_pass_runtime(x, 1; sign, threads = nt)

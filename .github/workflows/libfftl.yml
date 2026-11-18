@@ -38,6 +38,10 @@ jobs:
           julia -t 4 --project=test test/fftw3_jltest.jl
       - name: Build the trimmed library and the C test
         run: libfftl/build.sh
+      - name: Run-time pass plans (trim probe)
+        run: |
+          libfftl/probe/build.sh
+          libfftl/probe/test.sh
       - name: FFTW3 symbols
         run: libfftl/test/fftw3_symbols.sh
       - name: FFTW3 differential C test (against FFTW_jll)

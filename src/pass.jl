@@ -20,7 +20,15 @@ function runtime_kernel(::Type{T}, n::Int, σ::Int, S::Int) where {T}
   chain = RChain{T}(s, σ, radices(s, S * q; esize = sizeof(Complex{T})))
   rs = leftover_kernel(T, q, σ, s, RChain)
   tw = cached(() -> Complex{T}.(unit_roots(σ, n)), CacheKey(:composite, T, n, σ, Int[]))::Vector{Complex{T}}
-  Composite{T,typeof(chain),typeof(rs)}(n, s, q, chain, rs, tw, Vector{Complex{T}}(undef, S * n))
+  buf = Vector{Complex{T}}(undef, S * n)
+  # One branch per leftover type: the leftover is a union of five types, more than inference splits,
+  # and juliac --trim needs every constructor call resolved.
+  rs isa RsBatch{T,RChain{T},RTable{T}} && return Composite{T,RChain{T},typeof(rs)}(n, s, q, chain, rs, tw, buf)
+  rs isa RsBatch{T,RChain{T},RPoly{T}} && return Composite{T,RChain{T},typeof(rs)}(n, s, q, chain, rs, tw, buf)
+  rs isa Resample{T,RChain{T},RTable{T}} && return Composite{T,RChain{T},typeof(rs)}(n, s, q, chain, rs, tw, buf)
+  rs isa Resample{T,RChain{T},RPoly{T}} && return Composite{T,RChain{T},typeof(rs)}(n, s, q, chain, rs, tw, buf)
+  rs::RBluestein{T}
+  Composite{T,RChain{T},RBluestein{T}}(n, s, q, chain, rs, tw, buf)
 end
 
 """
@@ -162,8 +170,26 @@ The transform of `p` applied to `v` in place.
 """
 apply!(p::PassPlan, v) = mul!(v, p, v)
 
-function run_pass!(py::Ptr{T}, px::Ptr{T}, p::PassPlan{T}) where {T}
-  k = p.kernel; CT = 2 * sizeof(T)
+run_pass!(py::Ptr{T}, px::Ptr{T}, p::PassPlan{T}) where {T} = run_pass!(py, px, p, p.kernel)
+
+# The kernel of a run-time plan is one of the ten types of RPassKern: one branch per type, so that
+# every call below (and the closures for the tasks) has a concrete kernel type (juliac --trim).
+function run_pass!(py::Ptr{T}, px::Ptr{T}, p::PassPlan{T,N,RPassKern{T}}) where {T,N}
+  k = p.kernel
+  k isa RChain{T} && return run_pass!(py, px, p, k)
+  k isa Resample{T,RChain{T},RTable{T}} && return run_pass!(py, px, p, k)
+  k isa Resample{T,RChain{T},RPoly{T}} && return run_pass!(py, px, p, k)
+  k isa RBluestein{T} && return run_pass!(py, px, p, k)
+  k isa Composite{T,RChain{T},RsBatch{T,RChain{T},RTable{T}}} && return run_pass!(py, px, p, k)
+  k isa Composite{T,RChain{T},RsBatch{T,RChain{T},RPoly{T}}} && return run_pass!(py, px, p, k)
+  k isa Composite{T,RChain{T},Resample{T,RChain{T},RTable{T}}} && return run_pass!(py, px, p, k)
+  k isa Composite{T,RChain{T},Resample{T,RChain{T},RPoly{T}}} && return run_pass!(py, px, p, k)
+  k isa Composite{T,RChain{T},RBluestein{T}} && return run_pass!(py, px, p, k)
+  run_pass!(py, px, p, k::RFourStep{T})
+end
+
+function run_pass!(py::Ptr{T}, px::Ptr{T}, p::PassPlan{T}, k) where {T}
+  CT = 2 * sizeof(T)
   if k isa FourStep
     off = p.offs[1] * CT
     run_fourstep!(py + off, px + off, k, p.nthreads)
