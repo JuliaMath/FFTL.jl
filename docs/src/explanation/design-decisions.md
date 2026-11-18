@@ -465,6 +465,17 @@ specialised and the run-time plans is within noise of each other on the same vie
 **Costs.** For real lengths with large prime factors, the run-time kernel is one resampled transform,
 without the composite split of the specialised plan.
 
+**Kernel unions are split by hand (0.3.1).** The kernel field of a run-time plan is the union
+`RPassKern`, ten concrete types since 0.3.0 (the leftover of a composite is batched or lane by lane,
+with table or polynomial weights, or Bluestein). Inference splits unions of at most four types; above
+that the closures that run the lines on the tasks and the `Composite` constructor became dynamic calls,
+and `juliac --trim=safe` rejected them. `runtime_kernel` and `run_pass!` therefore branch on each
+concrete type with `isa`, so every call below the branch is static. libfftl does not build run-time pass
+plans and did not show the regression; `libfftl/probe/` (a vector of run-time pass plans of
+Float32/Float64, complex and real, applied with `mul!` and called from C) is built in the libfftl
+workflow with `--trim=safe` and keeps these paths trimmable. A new kernel type in `RPassKern` needs a
+branch in both functions.
+
 ## The interface: FFTW.jl's names, FFTL's own functions, AbstractFFTs as a backend
 
 **Decision (2026-11-06).** FFTL exports FFTW.jl's names (`fft`, `bfft`, `ifft`, `rfft`, `brfft`,

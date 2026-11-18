@@ -49,6 +49,8 @@ FFTL_TEST_FULL=true julia --project=. -e 'using Pkg; Pkg.test()' # full lists of
 CI runs the quick selection with `JULIA_NUM_THREADS=2` and the full lists once a week.
 `FFTL_TEST_VERBOSE=true` prints the time of every test set. The C library is built with
 `libfftl/build.sh` and tested with `libfftl/test/fftw3_ctest.sh` (see `docs/src/howto/libfftl.md`).
+The run-time pass plans, which libfftl does not use, have their own trim probe: `libfftl/probe/build.sh`
+(fails on any verifier error), then `libfftl/probe/test.sh` (calls it from C).
 Documentation: `julia --project=docs docs/make.jl`.
 
 ## Code and commits
