@@ -12,4 +12,7 @@
   transform of such a length, at 1.1–1.6 times the time on most of them (#47, #49).
 - Four-step transforms of long lines with cache buffers; the row copy and the non-temporal output
   only with 64-byte vectors (#33).
+- Preference `cpu_features = "baseline"`: kernels with only the instructions every CPU of the
+  platform has, for code compiled ahead of time for other CPUs, such as a PackageCompiler app
+  with `cpu_target = "generic"` (#53).
 - Julia 1.10 is supported again (0.2.1, #45).

@@ -13,17 +13,25 @@ using Preferences: @load_preference
 """
     FFTL.CPU_FEATURES
 
-`"host"` (default): the kernels use the instructions of the CPU FFTL is compiled on (AVX2,
-AVX-512, FCMA). `"baseline"`: only what every CPU of the platform has (x86-64: none of them;
-Apple silicon: FCMA), for code compiled ahead of time for other machines, e.g. a PackageCompiler
-app built with `cpu_target = "generic"`: LLVM cannot compile the x86 intrinsics for that target
-("LLVM ERROR: Do not know how to split the result of this operator!"), and the app would need
-the build machine's CPU features anyway. Set with
+Which CPU instructions the kernels use, set by the preference `cpu_features`:
+
+- `"host"` (default): those of the CPU FFTL is compiled on (AVX2, AVX-512, FCMA).
+- `"baseline"`: those every CPU of the platform has: none of these on x86-64, FCMA on Apple
+  silicon, none on other aarch64 CPUs.
+
+`"baseline"` is for code compiled ahead of time for other CPUs, such as a PackageCompiler app or
+sysimage built with `cpu_target = "generic"`: LLVM cannot compile the host's intrinsics for such
+a target ("LLVM ERROR: Do not know how to split the result of this operator!"), and the code
+would need the build machine's CPU anyway. On x86-64 the kernels then use 16-byte vectors; on an
+AVX-512 CPU a real 3D transform in `Float32` takes about 1.5 times as long. On Apple silicon the
+target must include FCMA (`apple-m1`, Julia's default there, not `generic`). Set with
 
 ```julia
 using Preferences, FFTL
 Preferences.set_preferences!(FFTL, "cpu_features" => "baseline"; force = true)
 ```
+
+The next load recompiles FFTL.
 """
 const CPU_FEATURES = @load_preference("cpu_features", "host")::String
 CPU_FEATURES in ("host", "baseline") ||
