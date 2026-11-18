@@ -56,8 +56,11 @@ Base.@ccallable function fftl_last_error(buf::Ptr{UInt8}, len::Csize_t)::Csize_t
   copy_cstr(codeunits(last_error()), buf, Int(len))
 end
 
+# the version of the FFTL package the library is built from
+const FFTL_VERSION = string(pkgversion(FFTL))
+
 Base.@ccallable function fftl_version(buf::Ptr{UInt8}, len::Csize_t)::Csize_t
-  copy_cstr(codeunits("0.2.0"), buf, Int(len))
+  copy_cstr(codeunits(FFTL_VERSION), buf, Int(len))
 end
 
 # --- the FFTW3 interface (include/fftw3.h) --------------------------------------------

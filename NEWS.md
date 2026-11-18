@@ -1,6 +1,6 @@
 # News
 
-## 0.3.0 (unreleased)
+## 0.3.0
 
 - Lengths with prime factors above 73: the large-prime part is resampled onto a smooth grid
   (one transform of about twice its length) instead of Bluestein's algorithm (two such
@@ -15,4 +15,11 @@
 - Preference `cpu_features = "baseline"`: kernels with only the instructions every CPU of the
   platform has, for code compiled ahead of time for other CPUs, such as a PackageCompiler app
   with `cpu_target = "generic"` (#53).
-- Julia 1.10 is supported again (0.2.1, #45).
+- The precompile workload no longer calls `randn`, so loading FFTL does not need Random (#48, #50).
+- libfftl: `fftl_version` reports the version of the package the library is built from.
+- Documentation: Benchmarks in the main menu, an accuracy section, two tutorials on any length
+  and on precision (#51, #52).
+
+## 0.2.1
+
+- Julia 1.10 is supported again (#45).
