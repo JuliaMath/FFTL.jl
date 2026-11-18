@@ -66,7 +66,9 @@ largest output, is up to about ``25\,\varepsilon`` in `Float64` (Bluestein's alg
 Bluestein's algorithm (2–4 ``\varepsilon``). It does not grow with ``n``. A wider window does not
 help: it raises ``\beta`` and with it the amplification; a larger grid does, at a cost (see the
 design decisions). The preference `float64_large_primes = "bluestein"` (`FFTL.FLOAT64_LARGE_PRIMES`)
-selects Bluestein's algorithm for every `Float64` transform of such a length. The weights of every output are tabulated up to a table size (1 MiB
+selects Bluestein's algorithm for every `Float64` transform of such a length.
+
+The weights of every output are tabulated up to a table size (1 MiB
 in `Float64`, 4 MiB in `Float32`, where the two measured about even), above it they are
 evaluated from piecewise polynomials. Generic number types (`BigFloat` and others,
 `src/generic.jl`) keep Bluestein's algorithm, which is exact: there the width grows with the
@@ -76,7 +78,7 @@ keeps it too for single lines (see the design decisions): with two values per NE
 
 Compared with Bluestein's algorithm, which needs two transforms of a length ``\ge 2n - 1``, one
 transform is saved for ``n\,w`` multiply-adds. Measured against it on a Tiger Lake core (one
-thread, before Bluestein was removed), the time ratio was 0.51–0.82 for primes from 1009 to
+thread), the time ratio was 0.51–0.82 for primes from 1009 to
 100003.
 
 The grid length is a smooth number. On aarch64 it is the smallest 5-smooth ``m \ge 2n``. On x86

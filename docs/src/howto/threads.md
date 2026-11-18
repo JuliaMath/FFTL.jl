@@ -36,7 +36,9 @@ number of values the transform touches:
   the ``s`` resampled transforms of length ``q`` are spread over the threads in chunks of lanes;
   the result is bitwise the same as on one thread. Otherwise one resampled transform of the whole
   length runs with its grid transform as a four-step transform on the threads, and its
-  interpolation split over them.
+  interpolation split over them. With the preference `float64_large_primes = "bluestein"`
+  (see [Accuracy](@ref "Accuracy")), `Float64` takes Bluestein's algorithm in both cases, its
+  two convolution transforms as four-step transforms on the threads.
 
 A 1D transform on a machine where some cores are busy is held up by the slowest piece, so fewer
 threads than cores can be the faster choice there.

@@ -20,7 +20,7 @@ coding agent makes it possible to implement, test and measure the many details s
 needs. The aim now is to develop it further as a project of the Julia community (see
 [Contributing](#contributing)).
 
-FFTL is experimental and was recently registered; the interface can still change. The manual is at
+FFTL is experimental; the interface can still change. The manual is at
 [JuliaMath.github.io/FFTL.jl](https://JuliaMath.github.io/FFTL.jl).
 
 ## Installation
@@ -85,11 +85,7 @@ yd = FFTL.fft(MtlArray(randn(ComplexF32, 1024, 1024)))
 
 - Complex, real-input and all eleven real-to-real kinds of FFTW, along any subset of
   dimensions, for any length (the part of a length made of prime factors above 73 resampled onto
-  a smooth grid). For such lengths the `Float64` error is up to about 25 ε (largest error over
-  the largest output, about 5·10⁻¹⁵), against 2–4 ε with Bluestein's algorithm; the preference
-  `float64_large_primes = "bluestein"` selects Bluestein's algorithm at 1.1–1.6 times the time
-  ([`FFTL.FLOAT64_LARGE_PRIMES`](https://JuliaMath.github.io/FFTL.jl/dev/reference/api)).
-  `Float32` resamples at up to 2.5 ε.
+  a smooth grid).
 - `Float32` and `Float64` on the fast path (SIMD codelets, threads). `BigFloat`, `Double64`,
   `Float128` and other floating-point types are transformed in their own precision by a generic
   path, accurate to a few ulps of the type.
@@ -110,6 +106,15 @@ the runtime 10 MB. The run-time plans the library uses (`FFTL.RPlan`, `FFTL.RRFF
 **Entry points for special variants.** `FFTL.plan_pass(v, d)` transforms all lines of a strided view
 along one dimension, and `FFTL.plan_r2r_pass` does the same for real-to-real kinds. Libraries that build
 their own transforms from one-dimensional passes use these; NFFT.jl is one of them.
+
+## Accuracy
+
+The largest error over the largest output is 1–2 ε for lengths whose prime factors are at most 73.
+Lengths with larger prime factors are resampled: up to about 25 ε in `Float64` (about 5·10⁻¹⁵) and
+2.5 ε in `Float32`. The preference `float64_large_primes = "bluestein"` keeps `Float64` at 2–4 ε,
+at 1.1–1.6 times the time. The manual's
+[Platforms and limits](https://JuliaMath.github.io/FFTL.jl/dev/reference/platforms) page has the
+table and the switch.
 
 ## Performance
 

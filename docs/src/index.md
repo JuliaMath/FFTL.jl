@@ -9,8 +9,8 @@ KernelAbstractions on GPUs, and as a C library ([`libfftl`](@ref "C library (lib
 compiled from the same Julia code.
 
 !!! warning "Experimental"
-    FFTL.jl is under development and was recently registered. The interface can still change; the
-    documented parts are the ones tested in CI.
+    FFTL.jl is under development. The interface can still change; the documented parts are the
+    ones tested in CI.
 
 ## Background
 
@@ -56,7 +56,7 @@ AbstractFFTs.jl's generic functions (see [Coming from FFTW.jl](@ref "Coming from
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/JuliaMath/FFTL.jl")
+Pkg.add("FFTL")
 ```
 
 ## Quick start
