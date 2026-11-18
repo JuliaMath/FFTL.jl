@@ -65,12 +65,19 @@ using SIMD: Vec
 # Default: a quick run that covers every feature with fewer sizes (CI on every push).
 # FFTL_TEST_FULL=true: the full lists.
 const FULL = get(ENV, "FFTL_TEST_FULL", "false") == "true"
-@info "preference float64_large_primes = $(FFTL.FLOAT64_LARGE_PRIMES)"
+@info "preferences: float64_large_primes = $(FFTL.FLOAT64_LARGE_PRIMES), cpu_features = $(FFTL.CPU_FEATURES) (REG_BYTES = $(FFTL.REG_BYTES))"
 pick(full, quick) = FULL ? full : quick
 # quick run: Float32 takes every other case (its kernels compile separately from Float64's)
 thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
 
 @testset "FFTL" verbose = get(ENV, "FFTL_TEST_VERBOSE", "false") == "true" begin
+  @testset "preference cpu_features" begin
+    if FFTL.CPU_FEATURES == "baseline"
+      @test !FFTL.HAS_AVX2 && !FFTL.HAS_AVX512
+      Sys.ARCH === :x86_64 && @test FFTL.REG_BYTES == 16
+      @test FFTL.HAS_FCMA == (Sys.ARCH === :aarch64 && Sys.isapple())
+    end
+  end
   @testset "complex vector operations" begin
     # Checks the active implementation (FCADD/FCMLA on aarch64) and the shuffle formulas used
     # where these instructions are missing.

@@ -59,6 +59,24 @@ check these bounds for both settings.
 | AMD, Intel GPUs | not tested |
 | Windows | not tested |
 
+### Code compiled for other CPUs
+
+FFTL compiles its kernels for the CPU it is loaded on: AVX2 or AVX-512 on x86-64, the
+`FCADD`/`FCMLA` complex instructions on aarch64. Code compiled ahead of time for other CPUs, such
+as a PackageCompiler app or sysimage with `cpu_target = "generic"`, needs the preference
+`cpu_features = "baseline"`, which limits the kernels to the instructions every CPU of the
+platform has:
+
+```julia
+using Preferences, FFTL
+Preferences.set_preferences!(FFTL, "cpu_features" => "baseline"; force = true)
+```
+
+On x86-64 the kernels then use 16-byte vectors (about 1.5 times the time of AVX-512 for a real 3D
+transform in `Float32`). On Apple silicon `FCADD`/`FCMLA` stay in use, so the target must be
+`apple-m1` or later. [`FFTL.CPU_FEATURES`](@ref) reports the setting; CI runs the tests with it on
+Linux.
+
 ## Julia versions
 
 | | version |
