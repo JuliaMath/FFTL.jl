@@ -8,10 +8,6 @@ and other floating-point types, on several threads with SIMD on the CPU, through
 KernelAbstractions on GPUs, and as a C library ([`libfftl`](@ref "C library (libfftl)"))
 compiled from the same Julia code.
 
-!!! warning "Experimental"
-    FFTL.jl is under development. The interface can still change; the documented parts are the
-    ones tested in CI.
-
 ## Background
 
 FFTL was written by a coding agent under the guidance of a domain expert. Julia makes a library
@@ -48,9 +44,12 @@ programs that use them can be trimmed as well.
 transform one dimension of a strided array. Libraries that assemble their own transforms from such
 passes, such as NFFT.jl, use them.
 
-**The interface of the ecosystem.** FFTL exports FFTW.jl's names with FFTW.jl's conventions and
-scalings, so `using FFTL` can take the place of `using FFTW`, and it is a backend of
-AbstractFFTs.jl's generic functions (see [Coming from FFTW.jl](@ref "Coming from FFTW.jl")).
+**The interface of the ecosystem.** FFTL implements AbstractFFTs.jl: its plans are AbstractFFTs
+plans, and generic code that calls `AbstractFFTs.fft`, `plan_fft`, … runs on FFTL. In addition,
+`using FFTL` brings functions with the names, conventions and scalings of FFTW.jl (`fft`, `rfft`,
+`dct`, `FFTL.r2r`, …), so code written for FFTW.jl runs after replacing `using FFTW` by
+`using FFTL`. These functions are FFTL's own, so a dependency that loads FFTW.jl does not redirect
+them (see [Coming from FFTW.jl](@ref "Coming from FFTW.jl")).
 
 ## Installation
 
@@ -114,7 +113,7 @@ smooth grid. The details are in [Algorithms](@ref "Algorithms").
 | License | MIT |
 | Interface | AbstractFFTs.jl backend; plans are `AbstractFFTs.Plan`s with `mul!`, `*`, `\` and `inv` |
 | Platforms | Linux and macOS (CI); Apple M1 Max is the development machine |
-| GPU | experimental, via KernelAbstractions.jl |
+| GPU | via KernelAbstractions.jl, tuned on Metal and CUDA |
 | C library | experimental, `juliac --trim`, see [libfftl](@ref "C library (libfftl)") |
 
 The complete matrix of transforms, number types and platforms is in

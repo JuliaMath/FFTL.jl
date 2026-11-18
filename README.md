@@ -20,8 +20,7 @@ coding agent makes it possible to implement, test and measure the many details s
 needs. The aim now is to develop it further as a project of the Julia community (see
 [Contributing](#contributing)).
 
-FFTL is experimental; the interface can still change. The manual is at
-[JuliaMath.github.io/FFTL.jl](https://JuliaMath.github.io/FFTL.jl).
+The manual is at [JuliaMath.github.io/FFTL.jl](https://JuliaMath.github.io/FFTL.jl).
 
 ## Installation
 
@@ -51,13 +50,14 @@ c = dct(r)                 # orthonormal DCT-II; idct is its inverse
 h = FFTL.r2r(r, (FFTL.REDFT10, FFTL.R2HC))   # unnormalised real-to-real, one kind per dimension
 ```
 
-FFTL exports the names FFTW.jl exports (`fft`, `plan_fft`, `fft!`, `rfft`, `dct`, `plan_dct`, …),
-with FFTW.jl's conventions and scalings, so `using FFTL` can take the place of `using FFTW`.
-As in FFTW.jl, `FFTL.r2r`, the kinds and `FFTL.set_num_threads` are used with the prefix. These
-functions are FFTL's own: a module that writes `using FFTL` gets FFTL, also when one of its
-dependencies loads FFTW.jl. Generic code that calls
-[AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl)'s functions runs on FFTL as well;
-with FFTW.jl loaded, it runs on FFTW for FFTW's arrays. The manual has a page for
+FFTL implements [AbstractFFTs.jl](https://github.com/JuliaMath/AbstractFFTs.jl): its plans are
+AbstractFFTs plans, and generic code that calls AbstractFFTs's functions runs on FFTL (with
+FFTW.jl loaded as well, on FFTW for FFTW's arrays). In addition, FFTL exports functions with the
+names FFTW.jl exports (`fft`, `plan_fft`, `fft!`, `rfft`, `dct`, `plan_dct`, …) and FFTW.jl's
+conventions and scalings, so `using FFTL` can take the place of `using FFTW`. As in FFTW.jl,
+`FFTL.r2r`, the kinds and `FFTL.set_num_threads` are used with the prefix. These functions are
+FFTL's own: a module that writes `using FFTL` gets FFTL, also when one of its dependencies loads
+FFTW.jl. The manual has a page for
 [coming from FFTW.jl](https://JuliaMath.github.io/FFTL.jl/dev/howto/fftw).
 
 Plans use `threads = Threads.nthreads()` by default; transforms below about 2^15 values run on
@@ -89,7 +89,7 @@ yd = FFTL.fft(MtlArray(randn(ComplexF32, 1024, 1024)))
 - `Float32` and `Float64` on the fast path (SIMD codelets, threads). `BigFloat`, `Double64`,
   `Float128` and other floating-point types are transformed in their own precision by a generic
   path, accurate to a few ulps of the type.
-- GPUs through KernelAbstractions.jl (tuned on Metal and CUDA; experimental). Complex and real
+- GPUs through KernelAbstractions.jl (tuned on Metal and CUDA). Complex and real
   transforms are tuned; the real-to-real kinds work, and their speed depends on the kind.
 
 **A C library made from the Julia code.** `libfftl/` compiles the package with
