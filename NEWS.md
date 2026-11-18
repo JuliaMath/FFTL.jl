@@ -1,5 +1,13 @@
 # News
 
+## 0.3.1
+
+- The run-time pass plans (`plan_pass_runtime`, `plan_r2c_pass_runtime`, `plan_c2r_pass_runtime`)
+  compile with `juliac --trim=safe` again; in 0.3.0 the new kernels for large prime factors left
+  calls the trim verifier could not resolve. A trim probe of these plans now runs in the libfftl
+  workflow (#57).
+- Documentation: benchmark panels of the 0.3.0 campaign (#56).
+
 ## 0.3.0
 
 - Lengths with prime factors above 73: the large-prime part is resampled onto a smooth grid
