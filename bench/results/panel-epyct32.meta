@@ -1,32 +1,35 @@
-label: AMD EPYC 7763
+label: AMD EPYC 7702
 tier: campaign; rounds 7; budget 0.2 s; stride 1; A/A true
-threads: 1; pin: 8
-FFTL 1efbaf1; julia 1.13.3
+threads: 1; pin: 64
+FFTL 6ce74e9; julia 1.13.3
+package code: no release tag
 fftw: native; fftw-3.3.11-sse2-avx-avx2-avx2_128; cc: gcc -O3 -march=native; libfftw3.so
 fftwf: native; fftw-3.3.11-sse2-avx-avx2-avx2_128; cc: gcc -O3 -march=native; libfftw3f.so
 libraries: fftl,fftw_measure,ducc,fftl_aa (A/A)
 cases: 341 (kind, shape, family), each in both precisions
-start: 2026-11-15T18:30:51; load: 16.85
-end: 2026-11-15T20:01:39; load: 17.83
+start: 2026-11-18T07:07:51; load: 1.34
+end: 2026-11-18T08:42:34; load: 4.34
 
-label: AMD EPYC 7763
+label: AMD EPYC 7702
 tier: campaign; rounds 7; budget 0.2 s; stride 1; A/A true
-threads: 16; pin: 8-23
-FFTL 1efbaf1; julia 1.13.3
+threads: 16; pin: 64-79
+FFTL 6ce74e9; julia 1.13.3
+package code: no release tag
 fftw: native; fftw-3.3.11-sse2-avx-avx2-avx2_128; cc: gcc -O3 -march=native; libfftw3.so
 fftwf: native; fftw-3.3.11-sse2-avx-avx2-avx2_128; cc: gcc -O3 -march=native; libfftw3f.so
 libraries: fftl,fftw_measure,ducc,fftl_aa (A/A)
 cases: 341 (kind, shape, family), each in both precisions
-start: 2026-11-15T20:01:45; load: 18.01
-end: 2026-11-15T21:34:21; load: 27.90
+start: 2026-11-18T08:42:39; load: 4.24
+end: 2026-11-18T10:21:40; load: 8.21
 
-label: AMD EPYC 7763
+label: AMD EPYC 7702
 tier: campaign; rounds 7; budget 0.2 s; stride 1; A/A true
-threads: 32; pin: 8-39
-FFTL 1efbaf1; julia 1.13.3
+threads: 32; pin: 64-95
+FFTL 6ce74e9; julia 1.13.3
+package code: no release tag
 fftw: native; fftw-3.3.11-sse2-avx-avx2-avx2_128; cc: gcc -O3 -march=native; libfftw3.so
 fftwf: native; fftw-3.3.11-sse2-avx-avx2-avx2_128; cc: gcc -O3 -march=native; libfftw3f.so
 libraries: fftl,fftw_measure,ducc,fftl_aa (A/A)
 cases: 341 (kind, shape, family), each in both precisions
-start: 2026-11-15T21:34:27; load: 27.35
-end: 2026-11-15T23:12:33; load: 34.76
+start: 2026-11-18T10:21:45; load: 7.63
+end: 2026-11-18T12:05:04; load: 15.47

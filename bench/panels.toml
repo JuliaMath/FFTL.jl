@@ -12,14 +12,14 @@ key = "m1t1"
 title = "Apple M1 Max CPU, 1 thread"
 machine = "Apple M1 Max"
 competitors = ["fftw_measure", "ducc", "vdsp"]
-sources = ["campaign run 2026-11-15, FFTL v0.2.0, 1 thread"]
+sources = ["campaign run 2026-11-18, FFTL 0.3.0 (6ce74e9), 1 thread"]
 
 [[panel]]
 key = "epyct1"
-title = "AMD EPYC 7763 CPU, 1 thread"
-machine = "AMD EPYC 7763"
+title = "AMD EPYC 7702 CPU, 1 thread"
+machine = "AMD EPYC 7702"
 competitors = ["fftw_measure", "ducc"]
-sources = ["campaign run 2026-11-15, FFTL v0.2.0, 1 thread, socket 0"]
+sources = ["campaign run 2026-11-18, FFTL 0.3.0 (6ce74e9), 1 thread, socket 1"]
 
 [[panel]]
 key = "m1gpu"
@@ -34,15 +34,15 @@ title = "Apple M1 Max CPU, 8 threads"
 machine = "Apple M1 Max"
 competitors = ["fftw_measure", "ducc"]
 # each library at its better of 1 and 8 threads per case
-sources = ["campaign runs 2026-11-15, FFTL v0.2.0, 1 and 8 threads"]
+sources = ["campaign runs 2026-11-18, FFTL 0.3.0 (6ce74e9), 1 and 8 threads"]
 
 [[panel]]
 key = "epyct32"
-title = "AMD EPYC 7763 CPU, 32 threads"
-machine = "AMD EPYC 7763"
+title = "AMD EPYC 7702 CPU, 32 threads"
+machine = "AMD EPYC 7702"
 competitors = ["fftw_measure", "ducc"]
 # each library at its best of 1, 16 and 32 threads per case
-sources = ["campaign runs 2026-11-15, FFTL v0.2.0, 1, 16 and 32 threads, socket 0"]
+sources = ["campaign runs 2026-11-18, FFTL 0.3.0 (6ce74e9), 1, 16 and 32 threads, socket 1"]
 
 [[panel]]
 key = "a6000"

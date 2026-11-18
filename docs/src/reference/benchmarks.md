@@ -1,11 +1,13 @@
 # Benchmarks
 
-!!! note "Measurement campaign for v0.2.0"
-    The figures and numbers on this page come from the measurement campaign of FFTL v0.2.0
-    (November 2026): seven rounds per case and library, every library warmed up before each
-    round, an A/A pair of FFTL in every run. The EPYC and the A6000 share one host with other users;
-    their runs are pinned to cores (the CPU runs to one socket, the GPU run to one core on the
-    GPU's socket) and their A/A bands are part of the panel tables.
+!!! note "Measurement campaigns"
+    The CPU panels come from the measurement campaign of FFTL 0.3.0 (November 2026, commit
+    `6ce74e9`, whose package code is that of 0.3.0 apart from the `cpu_features` preference, which
+    is off by default). The GPU panels come from the campaign of v0.2.0; FFTL's GPU code has not
+    changed since. Every run has seven rounds per case and library, every library warmed up before
+    each round, and an A/A pair of FFTL. CPU runs are pinned to one socket. The A6000 shares its
+    host with other users; its run is pinned to one core on the GPU's socket. The A/A bands are
+    part of the panel tables.
 
 The numbers in the text are read from the summaries that the figure scripts write
 (`bench/fig_speedup.jl`, `bench/fig_standing.jl`), so text and figures come from the same data.
@@ -60,9 +62,9 @@ Markdown.parse("""
 | platform | competitors | FFTL faster in | median speed-up | cases |
 |:--|:--|--:|--:|--:|
 | Apple M1 Max, 1 thread | FFTW, ducc0, vDSP $(q("m1t1"))
-| AMD EPYC 7763, 1 thread | FFTW, ducc0 $(q("epyct1"))
+| AMD EPYC 7702, 1 thread | FFTW, ducc0 $(q("epyct1"))
 | Apple M1 Max, 8 threads | FFTW, ducc0 $(q("m1t8"))
-| AMD EPYC 7763, 32 threads | FFTW, ducc0 $(q("epyct32"))
+| AMD EPYC 7702, 32 threads | FFTW, ducc0 $(q("epyct32"))
 | Apple M1 Max GPU | MPSGraph, VkFFT $(q("m1gpu"))
 | NVIDIA RTX A6000 | cuFFT, VkFFT $(q("a6000"))
 """)
@@ -111,8 +113,8 @@ from the sizes used for tuning.
 | machine | role |
 |:--|:--|
 | Apple M1 Max | development machine, CPU and Metal GPU |
-| AMD EPYC 7763 (Zen 3, 2 sockets, AVX2) | x86-64 CPU of the figures above; hosts the A6000 |
-| AMD EPYC 7702 (Zen 2, 2 sockets, AVX2) | x86-64 development machine (thresholds, tests) |
+| AMD EPYC 7702 (Zen 2, 2 sockets, AVX2) | x86-64 CPU of the figures above; x86-64 development machine (thresholds, tests) |
+| AMD EPYC 7763 (Zen 3, 2 sockets, AVX2) | x86-64 CPU of the v0.2.0 campaign; hosts the A6000 |
 | NVIDIA RTX A6000 | CUDA GPU |
 
 Each result names the library, its version, the build flags and the thread count. Competitors
@@ -123,5 +125,6 @@ are built from their current releases with native CPU flags; FFTW is planned wit
 | part | status |
 |:--|:--|
 | harness, protocol and figures | done |
-| campaign: Apple M1 Max CPU and GPU, AMD EPYC 7763 (1, 16, 32 threads), NVIDIA RTX A6000 | done (v0.2.0) |
+| campaign 0.3.0: Apple M1 Max CPU (1, 8 threads), AMD EPYC 7702 (1, 16, 32 threads) | done |
+| campaign v0.2.0: Apple M1 Max GPU, NVIDIA RTX A6000 (CPU panels replaced by 0.3.0) | done |
 | campaign: A6000 rerun with an A/A pair | running |
