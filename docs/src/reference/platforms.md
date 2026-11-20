@@ -54,15 +54,17 @@ check these bounds for both settings.
 | AMD EPYC 7702 (Zen 2, x86-64 with AVX2, Linux) | x86-64 development machine (thresholds, tests) and the x86-64 machine of the [benchmarks](@ref "Benchmarks") |
 | AMD EPYC 7763 (Zen 3, x86-64 with AVX2, Linux) | x86-64 development machine; hosts the RTX A6000 |
 | Intel Core i7-1185G7 (Tiger Lake, x86-64 with AVX-512, Linux) | 512-bit kernels tested; radix rules not retuned for AVX-512 |
-| Linux and macOS in CI | quick tests on every push to `main` and on pull requests; full tests weekly |
+| Linux, Windows and macOS in CI | quick tests on every push to `main` and on pull requests; full tests weekly |
 | NVIDIA RTX A6000 | GPU via CUDA, measured against cuFFT |
 | AMD, Intel GPUs | not tested |
-| Windows | not tested |
 
 ### Code compiled for other CPUs
 
 FFTL compiles its kernels for the CPU it is loaded on: AVX2 or AVX-512 on x86-64, the
-`FCADD`/`FCMLA` complex instructions on aarch64. Code compiled ahead of time for other CPUs, such
+`FCADD`/`FCMLA` complex instructions on aarch64. On x86-64 it takes AVX2 and AVX-512 from Julia's
+code generation target, not from the CPU: Julia compiles for fewer features than the CPU has when
+started with `-C`, and when the closest target in its system image has narrower vector registers
+(an AVX-512 CPU then gets 256-bit code). CI runs the tests with `-C x86-64` and `-C haswell`. Code compiled ahead of time for other CPUs, such
 as a PackageCompiler app or sysimage with `cpu_target = "generic"`, needs the preference
 `cpu_features = "baseline"`, which limits the kernels to the instructions every CPU of the
 platform has:

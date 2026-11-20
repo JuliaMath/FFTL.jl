@@ -476,6 +476,25 @@ Float32/Float64, complex and real, applied with `mul!` and called from C) is bui
 workflow with `--trim=safe` and keeps these paths trimmable. A new kernel type in `RPassKern` needs a
 branch in both functions.
 
+## x86 instruction sets come from the code generation target
+
+**Decision (2026-11-20).** `HAS_AVX2` and `HAS_AVX512`, which select the vector width and the
+`addsub`/`fmaddsub` intrinsics, require the feature both in CPUID and in Julia's code generation
+target. The target is checked with `Core.Intrinsics.have_fma` and by compiling a 256-bit integer
+addition and a 512-bit addition and looking for `vpaddd ymm` and `zmm` in the machine code.
+
+**Why.** Julia can compile for fewer features than the CPU reports: with `-C`, and when the closest
+target in its system image has narrower vector registers, it removes AVX-512 (or AVX) from the JIT
+target. FFTL 0.3.1 read CPUID only and aborted while precompiling on a Zen 4 laptop with Windows
+(issue #59): LLVM cannot lower the AVX-512 intrinsic for a target without AVX-512 ("Do not know how to
+split the result of this operator!"). With `-C x86-64` on an AVX2 machine the SSE3 `addsub` failed the
+same way ("Cannot select: X86ISD::ADDSUB"). Julia exports no query for the JIT target's features
+besides FMA, hence the compiled probe. CI runs the tests with `-C x86-64` and `-C haswell`; the second
+covers the AVX-512 case only when the runner's AVX-512 is usable, which the test log reports.
+
+**Costs.** Two small compilations at precompile time. aarch64 is unchanged: `FCMA` still comes from the
+platform (Apple) or `/proc/cpuinfo`, so a target without it needs `cpu_features = "baseline"`.
+
 ## The interface: FFTW.jl's names, FFTL's own functions, AbstractFFTs as a backend
 
 **Decision (2026-11-06).** FFTL exports FFTW.jl's names (`fft`, `bfft`, `ifft`, `rfft`, `brfft`,

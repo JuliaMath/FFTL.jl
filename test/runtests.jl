@@ -65,7 +65,7 @@ using SIMD: Vec
 # Default: a quick run that covers every feature with fewer sizes (CI on every push).
 # FFTL_TEST_FULL=true: the full lists.
 const FULL = get(ENV, "FFTL_TEST_FULL", "false") == "true"
-@info "preferences: float64_large_primes = $(FFTL.FLOAT64_LARGE_PRIMES), cpu_features = $(FFTL.CPU_FEATURES) (REG_BYTES = $(FFTL.REG_BYTES))"
+@info "preferences: float64_large_primes = $(FFTL.FLOAT64_LARGE_PRIMES), cpu_features = $(FFTL.CPU_FEATURES) (REG_BYTES = $(FFTL.REG_BYTES), AVX2 $(FFTL.HAS_AVX2), AVX-512 $(FFTL.HAS_AVX512), FCMA $(FFTL.HAS_FCMA); CPU $(Sys.CPU_NAME)$(Sys.ARCH === :x86_64 && Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx512f) ? " with AVX-512" : ""), -C $(unsafe_string(Base.JLOptions().cpu_target)))"
 pick(full, quick) = FULL ? full : quick
 # quick run: Float32 takes every other case (its kernels compile separately from Float64's)
 thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
@@ -76,6 +76,14 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
       @test !FFTL.HAS_AVX2 && !FFTL.HAS_AVX512
       Sys.ARCH === :x86_64 && @test FFTL.REG_BYTES == 16
       @test FFTL.HAS_FCMA == (Sys.ARCH === :aarch64 && Sys.isapple())
+    end
+    # the x86 kernels follow the code generation target, which can lack features of the CPU
+    if Sys.ARCH === :x86_64
+      @test FFTL.HAS_AVX2 <= FFTL.jit_code_matches(Vec{8,Int32}, FFTL.AVX2_INT_ADD)
+      @test FFTL.HAS_AVX512 <= FFTL.jit_code_matches(Vec{16,Float32}, "zmm")
+      if unsafe_string(Base.JLOptions().cpu_target) == "x86-64"
+        @test !FFTL.HAS_AVX2 && !FFTL.HAS_AVX512 && FFTL.REG_BYTES == 16
+      end
     end
   end
   @testset "complex vector operations" begin

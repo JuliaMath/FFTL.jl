@@ -9,13 +9,15 @@
 # odd lanes from the other), which x86 compiles to vaddsubpd / vfmaddsubpd.
 
 using Preferences: @load_preference
+using InteractiveUtils: code_native
 
 """
     FFTL.CPU_FEATURES
 
 Which CPU instructions the kernels use, set by the preference `cpu_features`:
 
-- `"host"` (default): those of the CPU FFTL is compiled on (AVX2, AVX-512, FCMA).
+- `"host"` (default): those of the CPU FFTL is compiled on (AVX2, AVX-512, FCMA), as far as
+  Julia's code generation target has them (checked on x86-64).
 - `"baseline"`: those every CPU of the platform has: none of these on x86-64, FCMA on Apple
   silicon, none on other aarch64 CPUs.
 
@@ -60,21 +62,46 @@ const HAS_FCMA = let
 end
 
 """
+    jit_code_matches(V, pattern)
+
+Whether the machine code that Julia's code generation target makes for `v + v` with `v::V`
+matches `pattern`, an x86 instruction or register class: whether the target has the
+instructions for vectors of type `V`.
+
+The x86 kernels must check the target, not the CPU: Julia compiles for fewer features than the
+CPU has when started with `-C`, and when the system image's closest target has narrower vector
+registers (it then removes AVX-512, or AVX, from the target, while CPUID still reports them).
+LLVM aborts on an intrinsic the target lacks ("LLVM ERROR: Do not know how to split the result
+of this operator!").
+"""
+function jit_code_matches(::Type{V}, pattern) where {V<:Vec}
+  probe(p::Ptr) = (v = vload(V, p); vstore(v + v, p); nothing)
+  io = IOBuffer()
+  code_native(io, probe, (Ptr{eltype(V)},); syntax = :intel, debuginfo = :none)
+  occursin(pattern, String(take!(io)))
+end
+
+# 256-bit integer addition (AVX2; AVX alone splits it into two 128-bit ones)
+const AVX2_INT_ADD = r"\bvp(add|sll)d\s+ymm"
+
+"""
     HAS_AVX2
 
-Whether the host is an x86-64 CPU with AVX2 and FMA (256-bit kernels).
+Whether the code generation target is x86-64 with AVX2 and FMA (256-bit kernels).
 """
 const HAS_AVX2 = HOST_FEATURES && Sys.ARCH === :x86_64 &&
   Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx2) &&
-  Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_fma)
+  Core.Intrinsics.have_fma(Float64) &&
+  jit_code_matches(Vec{8,Int32}, AVX2_INT_ADD)
 
 """
     HAS_AVX512
 
-Whether the host is an x86-64 CPU with AVX-512F (and AVX2/FMA): 512-bit kernels.
+Whether the code generation target is x86-64 with AVX-512F (and AVX2/FMA): 512-bit kernels.
 """
 const HAS_AVX512 = HAS_AVX2 &&
-  Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx512f)
+  Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx512f) &&
+  jit_code_matches(Vec{16,Float32}, "zmm")
 
 """
     FFTL.REG_BYTES
