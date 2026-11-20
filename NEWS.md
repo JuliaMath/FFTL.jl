@@ -8,6 +8,10 @@
   with `simd_bytes = 32` (new constant `FFTL.HAS_ZMM`), and the ±i step of the 512-bit kernels
   uses the generic `fma` instead of the target intrinsic `llvm.x86.avx512.vfmaddsub.*.512`, which
   LLVM cannot split (#59).
+- The x86 kernels take AVX2, AVX-512 and the 512-bit registers from Julia's code generation target,
+  checked on compiled code, instead of the CPU and a list of CPU names. Julia started with `-C` for
+  a target below the CPU no longer aborts precompilation (`-C x86-64` on an AVX2 CPU did). CI tests
+  on Windows and with `-C x86-64` and `-C haswell` (#60).
 
 ## 0.3.1
 

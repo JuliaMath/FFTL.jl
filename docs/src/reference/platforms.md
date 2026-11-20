@@ -62,9 +62,10 @@ check these bounds for both settings.
 
 FFTL compiles its kernels for the CPU it is loaded on: AVX2 or AVX-512 on x86-64, the
 `FCADD`/`FCMLA` complex instructions on aarch64. On x86-64 it takes AVX2 and AVX-512 from Julia's
-code generation target, not from the CPU: Julia compiles for fewer features than the CPU has when
-started with `-C`, and when the closest target in its system image has narrower vector registers
-(an AVX-512 CPU then gets 256-bit code). CI runs the tests with `-C x86-64` and `-C haswell`. Code compiled ahead of time for other CPUs, such
+code generation target, not only from the CPU: Julia compiles for fewer features than the CPU has
+when started with `-C`, and an AVX-512 CPU that Julia compiles for an older CPU name gets no
+512-bit registers (FFTL then uses 32-byte kernels). CI runs the tests with `-C x86-64` and
+`-C haswell`. Code compiled ahead of time for other CPUs, such
 as a PackageCompiler app or sysimage with `cpu_target = "generic"`, needs the preference
 `cpu_features = "baseline"`, which limits the kernels to the instructions every CPU of the
 platform has:
