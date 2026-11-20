@@ -1,6 +1,6 @@
 # News
 
-## Unreleased
+## 0.3.2
 
 - AVX-512 CPUs that Julia compiles for an older CPU name without 512-bit registers (Julia 1.13
   compiles for `znver3` on a Zen 4 Ryzen 5 PRO 215): FFTL failed to precompile with "LLVM ERROR:
