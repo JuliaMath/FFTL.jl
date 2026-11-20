@@ -9,13 +9,15 @@
 # odd lanes from the other), which x86 compiles to vaddsubpd / vfmaddsubpd.
 
 using Preferences: @load_preference
+using InteractiveUtils: code_native
 
 """
     FFTL.CPU_FEATURES
 
 Which CPU instructions the kernels use, set by the preference `cpu_features`:
 
-- `"host"` (default): those of the CPU FFTL is compiled on (AVX2, AVX-512, FCMA).
+- `"host"` (default): those of the CPU FFTL is compiled on (AVX2, AVX-512, FCMA), as far as
+  Julia's code generation target has them (checked on x86-64).
 - `"baseline"`: those every CPU of the platform has: none of these on x86-64, FCMA on Apple
   silicon, none on other aarch64 CPUs.
 
@@ -60,41 +62,63 @@ const HAS_FCMA = let
 end
 
 """
+    jit_code_matches(f, V, pattern)
+
+Whether the machine code that Julia's code generation target makes for `f(v)` with `v::V`
+loaded from memory matches `pattern` (an x86 instruction or register class).
+
+The x86 kernels check the target, not only the CPU: Julia can compile for fewer features than
+CPUID reports. `-C` selects an older target; and since LLVM 18, 512-bit registers need the
+feature `evex512`, which LLVM derives from the CPU name, so an AVX-512 CPU that Julia does not
+know and compiles for an older name (Julia 1.13 on a Zen 4 Ryzen 5 PRO 215: `znver3`) gets the
+AVX-512 instructions without 512-bit registers. LLVM aborts on a target intrinsic the target
+cannot lower ("LLVM ERROR: Do not know how to split the result of this operator!", or "Cannot
+select").
+"""
+function jit_code_matches(f, ::Type{V}, pattern) where {V<:Vec}
+  probe(p::Ptr) = (vstore(f(vload(V, p)), p); nothing)
+  io = IOBuffer()
+  code_native(io, probe, (Ptr{eltype(V)},); syntax = :intel, debuginfo = :none)
+  occursin(pattern, String(take!(io)))
+end
+
+# 256-bit integer addition: one instruction with AVX2 (AVX alone splits it into two 128-bit ones)
+const AVX2_PROBE = (v -> v + v, Vec{8,Int32}, r"\bvp(add|sll)d\s+ymm")
+# 512-bit addition: one instruction on a zmm register when the target has them
+const ZMM_PROBE = (v -> v + v, Vec{16,Float32}, r"\bzmm\d")
+# unsigned 32-bit integers to Float32: one AVX-512F instruction (with AVX-512VL also on ymm)
+const AVX512_PROBE = (v -> reinterpret(Vec{8,UInt32}, convert(Vec{8,Float32}, v)), Vec{8,UInt32}, r"\bvcvtudq2ps\b")
+
+"""
     HAS_AVX2
 
-Whether the host is an x86-64 CPU with AVX2 and FMA (256-bit kernels).
+Whether the code generation target is x86-64 with AVX2 and FMA (256-bit kernels).
 """
 const HAS_AVX2 = HOST_FEATURES && Sys.ARCH === :x86_64 &&
   Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx2) &&
-  Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_fma)
-
-"""
-    HAS_AVX512
-
-Whether the host is an x86-64 CPU with AVX-512F (and AVX2/FMA): 512-bit kernels.
-"""
-const HAS_AVX512 = HAS_AVX2 &&
-  Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx512f)
-
-# LLVM CPU names with AVX2 but without 512-bit registers. Since LLVM 18, 512-bit vectors need the
-# feature `evex512`, which LLVM derives from the CPU name. When Julia does not know a newer CPU it
-# compiles for an older name: Julia 1.13 compiles for "znver3" on a Zen 4 Ryzen 5 PRO 215 although
-# CPUID reports AVX-512F. The code then has the AVX-512 instructions but only 256-bit registers:
-# 512-bit operations are split in two, and target intrinsics of that width make LLVM abort
-# (JuliaMath/FFTL.jl#59).
-const NO_ZMM_CPUS = ("haswell", "broadwell", "skylake", "alderlake", "raptorlake", "meteorlake",
-                     "arrowlake", "arrowlake-s", "lunarlake", "pantherlake", "gracemont",
-                     "sierraforest", "grandridge", "clearwaterforest", "znver1", "znver2", "znver3",
-                     "bdver4", "x86-64-v3")
+  Core.Intrinsics.have_fma(Float64) &&
+  jit_code_matches(AVX2_PROBE...)
 
 """
     FFTL.HAS_ZMM
 
-Whether the code is compiled with 512-bit vector registers: AVX-512 on the host and a CPU name
-for which LLVM enables them. False on an AVX-512 CPU that Julia compiles for an older CPU name
-(`Sys.CPU_NAME`); FFTL then uses 32-byte kernels, as with `simd_bytes = 32`.
+Whether the code generation target has AVX-512 with 512-bit vector registers (64-byte kernels).
+False on an AVX-512 CPU that Julia compiles for a target without them (see
+`FFTL.jit_code_matches`); FFTL then uses 32-byte kernels, as with `simd_bytes = 32`.
 """
-const HAS_ZMM = HAS_AVX512 && Sys.CPU_NAME ∉ NO_ZMM_CPUS
+const HAS_ZMM = HAS_AVX2 &&
+  Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx512f) &&
+  jit_code_matches(ZMM_PROBE...)
+
+"""
+    HAS_AVX512
+
+Whether the code generation target is x86-64 with the AVX-512F instructions (and AVX2/FMA), with
+or without 512-bit registers ([`FFTL.HAS_ZMM`](@ref)): 32 vector registers.
+"""
+const HAS_AVX512 = HAS_ZMM || (HAS_AVX2 &&
+  Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx512f) &&
+  jit_code_matches(AVX512_PROBE...))
 
 """
     FFTL.REG_BYTES

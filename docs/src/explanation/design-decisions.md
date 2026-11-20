@@ -476,6 +476,34 @@ Float32/Float64, complex and real, applied with `mul!` and called from C) is bui
 workflow with `--trim=safe` and keeps these paths trimmable. A new kernel type in `RPassKern` needs a
 branch in both functions.
 
+## x86 instruction sets come from the code generation target
+
+**Decision (2026-11-20).** `HAS_AVX2`, `HAS_AVX512` and `HAS_ZMM` (512-bit registers, 64-byte
+kernels) require the feature both in CPUID and in Julia's code generation target. The target is
+checked with `Core.Intrinsics.have_fma` and by compiling three small functions and searching the
+machine code: a 256-bit integer addition (`vpaddd ymm`, AVX2), a 512-bit addition (a `zmm`
+register) and an unsigned integer to `Float32` conversion (`vcvtudq2ps`, AVX-512F). The 512-bit
+`addsub` is the generic `fma(c, (-1, 1, …), a)` instead of the `vfmaddsub` intrinsic: the same
+exact result in one instruction, and LLVM can split it.
+
+**Why.** Julia can compile for fewer features than the CPU reports. Since LLVM 18, 512-bit
+registers need the feature `evex512`, which LLVM derives from the CPU name; Julia 1.13 compiles
+for `znver3` on a Zen 4 Ryzen 5 PRO 215, so the target has the AVX-512 instructions but no
+512-bit registers, and FFTL 0.3.1, which read CPUID only, aborted while precompiling (issue #59:
+"LLVM ERROR: Do not know how to split the result of this operator!"). `-C` gives the same kind of
+mismatch: with `-C x86-64` on an AVX2 machine the SSE3 `addsub` intrinsic failed ("Cannot select:
+X86ISD::ADDSUB"). A list of CPU names without 512-bit registers (#61) fixed the reported machine;
+the compiled probes replace it because they need no update for new CPU names and also cover `-C`.
+Julia exports no query for the target's features besides FMA. `llc` 20 gives the expected probe
+results for x86-64, sandybridge, haswell, znver3, znver3 with the AVX-512 features (instructions
+but no `zmm`), znver4, skylake-avx512 and x86-64-v4. CI runs the tests with `-C x86-64` and
+`-C haswell`; the second covers an AVX-512 target only when the runner's AVX-512 is usable, which
+the test log reports.
+
+**Costs.** Three small compilations at precompile time. aarch64 is unchanged: `FCMA` still comes
+from the platform (Apple) or `/proc/cpuinfo`, so a target without it needs
+`cpu_features = "baseline"`.
+
 ## The interface: FFTW.jl's names, FFTL's own functions, AbstractFFTs as a backend
 
 **Decision (2026-11-06).** FFTL exports FFTW.jl's names (`fft`, `bfft`, `ifft`, `rfft`, `brfft`,
