@@ -76,19 +76,40 @@ Whether the host is an x86-64 CPU with AVX-512F (and AVX2/FMA): 512-bit kernels.
 const HAS_AVX512 = HAS_AVX2 &&
   Base.BinaryPlatforms.CPUID.test_cpu_feature(Base.BinaryPlatforms.CPUID.JL_X86_avx512f)
 
+# LLVM CPU names with AVX2 but without 512-bit registers. Since LLVM 18, 512-bit vectors need the
+# feature `evex512`, which LLVM derives from the CPU name. When Julia does not know a newer CPU it
+# compiles for an older name: Julia 1.13 compiles for "znver3" on a Zen 4 Ryzen 5 PRO 215 although
+# CPUID reports AVX-512F. The code then has the AVX-512 instructions but only 256-bit registers:
+# 512-bit operations are split in two, and target intrinsics of that width make LLVM abort
+# (JuliaMath/FFTL.jl#59).
+const NO_ZMM_CPUS = ("haswell", "broadwell", "skylake", "alderlake", "raptorlake", "meteorlake",
+                     "arrowlake", "arrowlake-s", "lunarlake", "pantherlake", "gracemont",
+                     "sierraforest", "grandridge", "clearwaterforest", "znver1", "znver2", "znver3",
+                     "bdver4", "x86-64-v3")
+
+"""
+    FFTL.HAS_ZMM
+
+Whether the code is compiled with 512-bit vector registers: AVX-512 on the host and a CPU name
+for which LLVM enables them. False on an AVX-512 CPU that Julia compiles for an older CPU name
+(`Sys.CPU_NAME`); FFTL then uses 32-byte kernels, as with `simd_bytes = 32`.
+"""
+const HAS_ZMM = HAS_AVX512 && Sys.CPU_NAME ∉ NO_ZMM_CPUS
+
 """
     FFTL.REG_BYTES
 
-Width in bytes of the widest vector the CPU kernels use: 64 with AVX-512, 32 with AVX2, 16
-otherwise. The `simd_bytes` preference lowers it (for comparisons, or CPUs that reduce the clock
-for 512-bit instructions); the next load recompiles FFTL:
+Width in bytes of the widest vector the CPU kernels use: 64 with AVX-512 (and 512-bit registers
+in the compile target, see [`FFTL.HAS_ZMM`](@ref)), 32 with AVX2, 16 otherwise. The `simd_bytes`
+preference lowers it (for comparisons, or CPUs that reduce the clock for 512-bit instructions);
+the next load recompiles FFTL:
 
 ```julia
 using Preferences, FFTL
 Preferences.set_preferences!(FFTL, "simd_bytes" => 32; force = true)
 ```
 """
-const REG_BYTES = min(HAS_AVX512 ? 64 : HAS_AVX2 ? 32 : 16,
+const REG_BYTES = min(HAS_ZMM ? 64 : HAS_AVX2 ? 32 : 16,
                       @load_preference("simd_bytes", 64)::Int)
 
 """

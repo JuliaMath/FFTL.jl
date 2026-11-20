@@ -2,10 +2,12 @@
 
 ## Unreleased
 
-- AVX-512: the ±i step of the kernels uses the generic `fma` instead of the target intrinsic
-  `llvm.x86.avx512.vfmaddsub.*.512`. With the intrinsic, LLVM aborted with "Do not know how to
-  split the result of this operator!" when FFTL was compiled for a target without 512-bit vectors
-  on an AVX-512 host (precompilation on Windows with a Zen 4 CPU, #59).
+- AVX-512 CPUs that Julia compiles for an older CPU name without 512-bit registers (Julia 1.13
+  compiles for `znver3` on a Zen 4 Ryzen 5 PRO 215): FFTL failed to precompile with "LLVM ERROR:
+  Do not know how to split the result of this operator!". FFTL now uses 32-byte kernels there, as
+  with `simd_bytes = 32` (new constant `FFTL.HAS_ZMM`), and the ±i step of the 512-bit kernels
+  uses the generic `fma` instead of the target intrinsic `llvm.x86.avx512.vfmaddsub.*.512`, which
+  LLVM cannot split (#59).
 
 ## 0.3.1
 
