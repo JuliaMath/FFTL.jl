@@ -150,12 +150,16 @@ else
     end
   end
   if HAS_AVX512
-    # no 512-bit addsub: fmaddsub(a, 1, c) = (a0 - c0, a1 + c1, …), exact (instead of sub, add, blend)
-    for (T, N, name) in ((Float64, 8, "llvm.x86.avx512.vfmaddsub.pd.512"), (Float32, 16, "llvm.x86.avx512.vfmaddsub.ps.512"))
-      VT = NTuple{N,VecElement{T}}
+    # No 512-bit addsub: fma(c, (-1, 1, …), a) = (a0 - c0, a1 + c1, …), exact (one rounding, like
+    # addsub) and one vfmadd instead of sub, add, blend. Written with the generic llvm.fma rather
+    # than the target intrinsic llvm.x86.avx512.vfmaddsub.*.512: LLVM can split the generic
+    # operation when the function is compiled for a target without 512-bit vectors (a pkgimage or
+    # multiversioning target that differs from the host the features were tested on), while the
+    # target intrinsic aborts there with "LLVM ERROR: Do not know how to split the result of this
+    # operator!" (JuliaMath/FFTL.jl#59).
+    for (T, N) in ((Float64, 8), (Float32, 16))
       @eval begin
-        @inline addsub(a::Vec{$N,$T}, c::Vec{$N,$T}) =
-          Vec(ccall($name, llvmcall, $VT, ($VT, $VT, $VT, Int32), a.data, one(Vec{$N,$T}).data, c.data, Int32(4)))
+        @inline addsub(a::Vec{$N,$T}, c::Vec{$N,$T}) = fma(c, sign_re(Vec{$N,$T}), a)
         @inline fcadd90(a::Vec{$N,$T}, b::Vec{$N,$T}) = addsub(a, swap_reim(b))
         @inline fcadd270(a::Vec{$N,$T}, b::Vec{$N,$T}) = addsub(a, -swap_reim(b))
       end

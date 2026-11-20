@@ -1,5 +1,12 @@
 # News
 
+## Unreleased
+
+- AVX-512: the ±i step of the kernels uses the generic `fma` instead of the target intrinsic
+  `llvm.x86.avx512.vfmaddsub.*.512`. With the intrinsic, LLVM aborted with "Do not know how to
+  split the result of this operator!" when FFTL was compiled for a target without 512-bit vectors
+  on an AVX-512 host (precompilation on Windows with a Zen 4 CPU, #59).
+
 ## 0.3.1
 
 - The run-time pass plans (`plan_pass_runtime`, `plan_r2c_pass_runtime`, `plan_c2r_pass_runtime`)
