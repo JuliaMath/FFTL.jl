@@ -1,5 +1,14 @@
 # News
 
+## Unreleased
+
+- AVX-512 CPUs that Julia compiles for an older CPU name without 512-bit registers (Julia 1.13
+  compiles for `znver3` on a Zen 4 Ryzen 5 PRO 215): FFTL failed to precompile with "LLVM ERROR:
+  Do not know how to split the result of this operator!". FFTL now uses 32-byte kernels there, as
+  with `simd_bytes = 32` (new constant `FFTL.HAS_ZMM`), and the ±i step of the 512-bit kernels
+  uses the generic `fma` instead of the target intrinsic `llvm.x86.avx512.vfmaddsub.*.512`, which
+  LLVM cannot split (#59).
+
 ## 0.3.1
 
 - The run-time pass plans (`plan_pass_runtime`, `plan_r2c_pass_runtime`, `plan_c2r_pass_runtime`)
