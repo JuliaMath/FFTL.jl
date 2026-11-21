@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: "FFTL.jl: Fastest Fourier Transform in Lübeck"
+authors:
+  - given-names: Tobias
+    family-names: Knopp
+    affiliation: University of Lübeck
+  - name: "FFTL.jl contributors"
+license: MIT
+repository-code: "https://github.com/JuliaMath/FFTL.jl"
+doi: 10.5281/zenodo.24430374
