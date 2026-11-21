@@ -15,6 +15,8 @@ have FFTW's names and FFTW's unnormalised definitions.
 | `fft!`, `plan_fft!`, … | the same | the plans overwrite their argument |
 | `dct`, `idct`, `plan_dct`, `dct!`, … | the same | orthonormal DCT-II and its inverse |
 | `FFTW.r2r(x, FFTW.REDFT10)` | `FFTL.r2r(x, FFTL.REDFT10)` | all eleven kinds, same definitions |
+| `FFTW.r2r!`, `FFTW.plan_r2r!` | `FFTL.r2r!`, `FFTL.plan_r2r!` | the plans overwrite their argument |
+| `dct`, `r2r`, … of a complex array | the same | real and imaginary parts transformed separately |
 | `plan_fft(x; flags = FFTW.MEASURE, timelimit = 10)` | `plan_fft(x; flags = FFTL.MEASURE, timelimit = 10)` | accepted, without effect (see below) |
 | `plan_fft(x; num_threads = 4)` | the same, or `threads = 4` | |
 | `FFTW.set_num_threads(n)` | `FFTL.set_num_threads(n)` | default for the plans made afterwards |
@@ -32,7 +34,7 @@ FFTL.r2r(x, FFTL.RODFT11, 1) ≈ FFTW.r2r(x, FFTW.RODFT11, 1)   # true, likewise
 ```
 
 The test suite runs such comparisons for every transform, plan form and kind in both
-precisions.
+precisions, for real and complex data, and for views and reinterpreted arrays.
 
 ## Planning without flags
 

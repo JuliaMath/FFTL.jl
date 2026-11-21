@@ -57,7 +57,7 @@ export fft, bfft, ifft, rfft, brfft, irfft,
        dct, idct, dct!, idct!, plan_dct, plan_idct, plan_dct!, plan_idct!,
        AbstractFFTs, fftdims, fftshift, ifftshift, fftshift!, ifftshift!, Frequencies, fftfreq, rfftfreq
 @static if VERSION >= v"1.11"
-  eval(Expr(:public, :r2r, :plan_r2r, :set_num_threads, :ESTIMATE, :MEASURE, :PATIENT, :EXHAUSTIVE,
+  eval(Expr(:public, :r2r, :plan_r2r, :r2r!, :plan_r2r!, :set_num_threads, :ESTIMATE, :MEASURE, :PATIENT, :EXHAUSTIVE,
             :R2RKind, :REDFT00, :REDFT10, :REDFT01, :REDFT11, :RODFT00, :RODFT10, :RODFT01, :RODFT11,
             :DHT, :R2HC, :HC2R,
             :plan_pass, :plan_r2r_pass, :plan_r2c_pass, :plan_c2r_pass, :apply!,

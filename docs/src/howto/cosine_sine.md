@@ -87,5 +87,15 @@ size(Y)
 ```
 
 Plans work as for the complex transforms: `plan_r2r` returns a plan, `inv` of a plan gives its
-normalised inverse for the pairs above, and `plan_r2r_pass` transforms one dimension of a
-strided array.
+normalised inverse for the pairs above, `plan_r2r!` and `r2r!` overwrite their argument, and
+`plan_r2r_pass` transforms one dimension of a strided array.
+
+Complex arrays are accepted as in FFTW.jl: every kind, and `dct` and `idct`, transform the real
+and imaginary parts separately. A `Complex{T}` array of size `sz` has the memory layout of a `T`
+array of size `(2, sz...)`, so one real plan over the shifted dimensions transforms both parts in
+one pass, without copies.
+
+```@example rr
+z = randn(ComplexF64, 8, 6)
+dct(z) ≈ complex.(dct(real(z)), dct(imag(z)))
+```

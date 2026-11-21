@@ -24,7 +24,9 @@ function FFTL.plan_irfft(X::AbstractGPUArray, d::Integer, region = 1:ndims(X); t
   p = FFTL.plan_brfft(X, d, region)
   AbstractFFTs.ScaledPlan(p, AbstractFFTs.normalization(FFTL.realtype(X), AbstractFFTs.output_size(p), region))
 end
-FFTL.plan_r2r(x::AbstractGPUArray, kinds, region = 1:ndims(x); threads = nothing) =
-  FFTL.plan_ka_r2r(get_backend(x), FFTL.realtype(x), size(x), kinds; region)
+function FFTL.plan_r2r(x::AbstractGPUArray, kinds, region = 1:ndims(x); threads = nothing)
+  p = FFTL.plan_ka_r2r(get_backend(x), FFTL.realtype(x), size(x), kinds; region)
+  eltype(x) <: Complex ? FFTL.ComplexR2RPlan(p, size(x), region, false) : p
+end
 
 end
