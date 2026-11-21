@@ -445,6 +445,42 @@ everywhere: on the M1 the transpose took `Float32` to 0.86–0.92 of the loop ov
 transpose and the row widths apply), one socket pinned, same protocol: one thread 0.96–1.03 (A/A
 0.94–1.08); 4 and 16 threads `Float64` 0.86–1.03, `Float32` 0.70–0.87 (A/A 0.85–1.10).
 
+## When one line takes the four-step on several threads
+
+**Decision (2026-11-21).** A single smooth line takes the four-step on several threads only where it
+beats the chain on one thread (`use_fourstep`, fields `fourstep_min`, `fourstep_min_bytes` and
+`fourstep_min_threads` of `TUNING`): on aarch64 from 128 KiB with two threads or more, on x86 from
+2¹⁵ values with six threads or more. Before, every smooth line from 2¹³ values took it with two
+threads or more.
+
+**Why.** Four-step time on nt threads over chain time on one thread, single lines of 3·10³–3·10⁵
+values (2^k, 3·2^k, 5·2^k, 7·2^k, 9·2^k, 15·2^k, 25·2^k), interleaved medians in one process per
+thread count; range and median below the new threshold | from it:
+
+| machine | precision | nt = 2 | nt = 4 | nt = 8 |
+|:--|:--|:--|:--|:--|
+| Apple M1 Max | `Float32` | 0.82–3.6 (1.50) \| 0.27–0.91 (0.59) | 1.03–4.8 (2.05) \| 0.18–0.98 (0.40) | 1.27–11 (3.0) \| 0.12–1.03 (0.42) |
+| Apple M1 Max | `Float64` | 0.89–2.2 (1.40) \| 0.22–1.14 (0.65) | 1.17–2.9 (1.66) \| 0.13–1.30 (0.44) | 1.16–4.2 (1.92) \| 0.11–1.39 (0.38) |
+
+| machine | precision | nt = 2 | nt = 4 | nt = 6 | nt = 8 | nt = 16 |
+|:--|:--|:--|:--|:--|:--|:--|
+| AMD EPYC 7702 | `Float32` | 1.9–4.5 (2.56) \| 1.42–2.4 (1.68) | 1.47–4.3 (2.08) \| 1.00–1.44 (1.15) | 0.91–3.6 (1.81) \| 0.72–1.05 (0.86) | 0.87–3.9 (1.72) \| 0.56–0.89 (0.69) | 0.91–3.5 (1.90) \| 0.43–0.95 (0.60) |
+| AMD EPYC 7702 | `Float64` | 1.8–3.3 (2.56) \| 1.11–2.1 (1.69) | 1.27–2.9 (1.83) \| 0.84–1.33 (1.11) | 0.97–2.8 (1.43) \| 0.63–1.04 (0.84) | 0.86–2.7 (1.41) \| 0.57–0.84 (0.71) | 0.76–2.7 (1.48) \| 0.41–0.82 (0.52) |
+
+The EPYC columns split at 2¹⁵ values for every thread count; with two and four threads the
+four-step is slower on both sides in the median, so these lines stay on one thread. On the M1 the crossover sits
+at about the same number of bytes in both precisions, on the EPYC at the same number of values. The
+thresholds were set on 2^k and 3·2^k and checked on the other lengths: the mean loss against the
+better of the two kernels is at most 1.7 % for every machine, thread count and precision (worst
+single length 1.39, `Float64` 2¹³ with 8 threads on the M1, which the old rule took as well); with
+the old rule it was up to 85 % (EPYC, two threads: 1.7–1.8 times on average).
+
+**Not checked.** Machines with 64-byte vectors (AVX-512) were not measured; x86 uses the EPYC 7702
+values. Lengths with a large prime factor keep their own threshold (`resample_mt_min`). Real lines
+and `plan_pass` follow the new rule (for real lines on their half-length line, together with
+`real_fourstep_bytes`), but were not measured separately. The tests take the four-step from 2¹³ values and two threads, so the path
+is covered with test-sized lines on every machine.
+
 ## Run-time pass plans for trimmed programs
 
 **Decision (2026-11-10).** A pass plan (`plan_pass`, `plan_r2c_pass`, `plan_c2r_pass`) built with

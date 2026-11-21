@@ -277,10 +277,23 @@ function run!(py::Ptr{T}, px::Ptr{T}, ::Ptr{T}, ::Ptr{T}, P::FourStep{T}, S::Int
   run_fourstep!(py, px, P, 1)
 end
 
-# A single smooth line takes the four-step algorithm on several threads from TUNING[].fourstep_min
-# values, and on one thread where `serial_fourstep` says so.
+# A single smooth line takes the four-step algorithm on several threads where the length, its bytes
+# and the thread count reach the `fourstep_min*` fields of TUNING, and on one thread where
+# `serial_fourstep` says so. Ratio four-step (nt threads) / chain (one thread), range and median,
+# below and from the threshold (M1: 128 KiB; EPYC: 2^15 values):
+#   Apple M1 Max   Float32  nt = 2: 0.82–3.6 (1.50) | 0.27–0.91 (0.59)   nt = 8: 1.27–11 (3.0) | 0.12–1.03 (0.42)
+#                  Float64  nt = 2: 0.89–2.2 (1.40) | 0.22–1.14 (0.65)   nt = 8: 1.16–4.2 (1.9) | 0.11–1.39 (0.38)
+#   AMD EPYC 7702  Float32 and Float64 (medians of the two):
+#   (Zen 2, AVX2)  nt = 2:  1.8–4.5 (2.6)      | 1.1–2.4 (1.7)         nt = 4:  1.3–4.3 (1.8–2.1) | 0.84–1.44 (1.1)
+#                  nt = 6:  0.91–3.6 (1.4–1.8) | 0.63–1.05 (0.84–0.86) nt = 16: 0.76–3.5 (1.5–1.9) | 0.41–0.95 (0.52–0.60)
+# Interleaved medians, lengths 2^k, 3·2^k, 5·2^k, 7·2^k, 9·2^k, 15·2^k and 25·2^k between 3·10^3 and
+# 3·10^5; the thresholds were set on 2^k and 3·2^k and checked on the others (mean loss against the
+# better kernel at most 1.7 % per machine, thread count and precision; with one threshold of 2^13
+# values for all, up to 85 %). Machines with 64-byte vectors were not measured.
 use_fourstep(::Type{T}, n, nt) where {T} =
-  (nt > 1 ? n >= TUNING[].fourstep_min : serial_fourstep(T, n)) && smooth(n) && fourstep_split(n) > 0
+  (nt > 1 ? fourstep_threads(T, n, nt) : serial_fourstep(T, n)) && smooth(n) && fourstep_split(n) > 0
+fourstep_threads(::Type{T}, n, nt) where {T} = (t = TUNING[];
+  nt >= t.fourstep_min_threads && n >= t.fourstep_min && n * sizeof(Complex{T}) >= t.fourstep_min_bytes)
 
 # One line of length n on one thread (also the grid of a large Bluestein kernel): the four-step
 # from SERIAL_FOURSTEP_LLC times the last-level cache of a core (`CACHES[].llc`), in Float64 for any
