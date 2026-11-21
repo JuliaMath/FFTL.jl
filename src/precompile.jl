@@ -10,7 +10,7 @@
 #                      codelets (radices 4, 5, 8, 9, 10 and 16, plus resampling) and the
 #                      plan types of both the default and the run-time plans.
 #   "broad"            the measured shapes 10^5, 2^20, 256×256, 64×64×64 plus the radix
-#                      12/6/3 lengths (360, 243), 128, and a four-step (threads = 4) case.
+#                      12/6/3 lengths (360, 243), 128, and a four-step (threads = 8) case.
 #   "none"             no workload at all (for CI or when the image size is more important
 #                      than the first plan and first transform).
 #
@@ -65,8 +65,8 @@ function precompile_workload(::Type{T}, shapes, rshapes, rplans, zp; fourstep = 
     apply!(plan_pass(v, d), v)
   end
   if fourstep   # one long line on several threads
-    x = ones(Complex{T}, 2^14)
-    mul!(similar(x), plan_fft(x; threads = 4), x)
+    x = ones(Complex{T}, 2^15)
+    mul!(similar(x), plan_fft(x; threads = 8), x)
   end
   nothing
 end

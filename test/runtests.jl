@@ -70,6 +70,23 @@ pick(full, quick) = FULL ? full : quick
 # quick run: Float32 takes every other case (its kernels compile separately from Float64's)
 thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
 
+# FFTL.TUNING with some fields replaced.
+tuning(; kw...) = (t = FFTL.TUNING[];
+  FFTL.Tuning(ntuple(i -> get(kw, fieldname(FFTL.Tuning, i), getfield(t, i)), fieldcount(FFTL.Tuning))...))
+
+@testset "four-step threshold of the defaults" begin
+  # a single smooth line on several threads: from 128 KiB on aarch64, from 2^15 values and 6 threads
+  # elsewhere
+  for T in (Float32, Float64), n in (2^13, 3 * 2^12, 2^14, 2^15, 3 * 2^15, 2^17), nt in (2, 4, 6, 8)
+    want = Sys.ARCH === :aarch64 ? n * sizeof(Complex{T}) >= 128 << 10 : n >= 2^15 && nt >= 6
+    @test FFTL.fourstep_threads(T, n, nt) == want
+  end
+end
+
+# The tests take the four-step on several threads from 2^13 values and 2 threads on every machine, so
+# that the threaded four-step paths are covered with test-sized lines everywhere.
+FFTL.TUNING[] = tuning(fourstep_min = 2^13, fourstep_min_bytes = 0, fourstep_min_threads = 2)
+
 @testset "FFTL" verbose = get(ENV, "FFTL_TEST_VERBOSE", "false") == "true" begin
   @testset "preference cpu_features" begin
     if FFTL.CPU_FEATURES == "baseline"
@@ -188,8 +205,7 @@ thin(T, v) = FULL || T == Float64 ? v : v[1:2:end]
     # the factor tables of a four-step (forced with a threshold of 0 bytes) hold the table's roots
     old = FFTL.TUNING[]
     try
-      FFTL.TUNING[] = FFTL.Tuning(ntuple(i -> fieldname(FFTL.Tuning, i) === :factor_twiddles ? 0 : getfield(old, i),
-                                         fieldcount(FFTL.Tuning))...)
+      FFTL.TUNING[] = tuning(factor_twiddles = 0)
       for T in (Float64, Float32), σ in (-1, 1), n in (2^14, 3 * 2^12)
         n1 = FFTL.fourstep_split(n); n2 = n ÷ n1; W = FFTL.unit_roots(σ, n)
         @test FFTL.fourstep_twiddles(T, n, σ, n1) == Complex{T}[W[(0:n1-1) .* n2 .+ 1]; W[1:n2]]

@@ -27,9 +27,12 @@ number of values the transform touches:
   says. Splitting it would cost more than it saves.
 - A batch of lines along a dimension is split over the threads as blocks of lines, each block
   sized to fit the cache of one core.
-- A single long one-dimensional transform (a smooth length of at least ``2^{13}``) uses the
-  four-step algorithm when it has more than one thread: the line is written as an ``n_1 × n_2``
-  matrix, transformed in both directions with threads, and the twiddle factors in between.
+- A single long one-dimensional transform of smooth length uses the four-step algorithm when it is
+  large enough for the threads it has: the line is written as an ``n_1 × n_2`` matrix, transformed
+  in both directions with threads, and the twiddle factors in between. On aarch64 this holds from
+  128 KiB of data (``2^{14}`` values in `Float32`, ``2^{13}`` in `Float64`) with two threads or more;
+  on x86 from ``2^{15}`` values with six threads or more. Below that the line runs on one thread,
+  which is faster there (see [Design decisions](@ref "When one line takes the four-step on several threads")).
 - A long line whose length has a large prime factor (at least ``2^{14}``) runs on threads as
   well. When the smooth part of the length is split off (``n = s\,q``, see
   [Algorithms](@ref "Lengths with a smooth part")) and ``s`` is at least the number of threads,
