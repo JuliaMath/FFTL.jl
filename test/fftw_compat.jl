@@ -63,6 +63,72 @@ import AbstractFFTs
   end
 end
 
+@testset "Real-to-real transforms of complex data, in place and on strided arrays (as FFTW.jl)" begin
+  kinds = (:REDFT00, :REDFT10, :REDFT01, :REDFT11, :RODFT00, :RODFT10, :RODFT01, :RODFT11, :DHT, :R2HC, :HC2R)
+  for T in (Float32, Float64), nt in (1, 3)
+    x = randn(Complex{T}, 12, 10, 3)
+    r = real(x)
+    for k in kinds, region in (1:3, 2, (3, 1))
+      kl, kw = getfield(FFTL, k), getfield(FFTW, k)
+      ref = FFTW.r2r(x, kw, region)
+      @test FFTL.r2r(x, kl, region) ≈ ref
+      p = FFTL.plan_r2r(x, kl, region; threads = nt)
+      @test eltype(p) == Complex{T}
+      y = similar(x); @test mul!(y, p, x) === y; @test y ≈ ref
+      @test p \ ref ≈ x
+      z = copy(x); @test FFTL.r2r!(z, kl, region) === z; @test z ≈ ref
+      z = copy(x); q = FFTL.plan_r2r!(z, kl, region; threads = nt); @test q * z === z; @test z ≈ ref
+      z = copy(r); @test FFTL.r2r!(z, kl, region) === z; @test z ≈ FFTW.r2r(r, kw, region)
+    end
+    @test FFTL.r2r(x, (FFTL.REDFT11, FFTL.DHT), (3, 1)) ≈ FFTW.r2r(x, (FFTW.REDFT11, FFTW.DHT), (3, 1))
+    for region in (1:3, 1, (2, 3))
+      @test FFTL.dct(x, region) ≈ FFTW.dct(x, region)
+      @test FFTL.idct(x, region) ≈ FFTW.idct(x, region)
+      @test FFTL.plan_dct(x, region) * x ≈ FFTW.dct(x, region)
+      @test FFTL.plan_idct(x, region) * x ≈ FFTW.idct(x, region)
+      @test FFTL.plan_dct(x, region) \ FFTW.dct(x, region) ≈ x
+      y = similar(x); mul!(y, FFTL.plan_dct(x, region), x); @test y ≈ FFTW.dct(x, region)
+      z = copy(x); @test FFTL.dct!(z, region) === z; @test z ≈ FFTW.dct(x, region)
+      z = copy(x); q = FFTL.plan_idct!(z, region); @test q * z === z; @test z ≈ FFTW.idct(x, region)
+    end
+  end
+  # mul! with views and reinterpreted arrays: dense ones directly, the others through a copy
+  xc = randn(ComplexF32, 8, 6)
+  xi = reinterpret(reshape, Float32, xc)
+  out = zeros(Float32, 2, 8, 6)
+  @test mul!(out, FFTL.plan_r2r(out, FFTL.REDFT10, 2:3), xi) === out
+  @test out ≈ FFTW.r2r(copy(xi), FFTW.REDFT10, 2:3)
+  A = randn(20, 30)
+  for k in kinds, (vx, vy) in ((view(A, 3:12, 5:9), zeros(10, 5)),
+                               (view(A, :, 2:6), view(zeros(20, 30), :, 1:5)),
+                               (view(A, 3:12, 5:9), view(zeros(20, 30), 2:2:20, 1:5)),
+                               (view(A, 2:2:20, 1:5), view(zeros(20, 30), 1:10, 21:25)))
+    ref = FFTW.r2r(copy(vx), getfield(FFTW, k))
+    p = FFTL.plan_r2r(copy(vx), getfield(FFTL, k))
+    @test mul!(vy, p, vx) === vy
+    @test vy ≈ ref
+    @test p * vx ≈ ref
+  end
+  v = view(copy(A), 2:2:20, 1:5); w = copy(v)
+  @test FFTL.r2r!(v, FFTL.RODFT10) === v; @test v ≈ FFTW.r2r(w, FFTW.RODFT10)
+  vc = view(randn(ComplexF64, 10, 12), 1:2:10, 2:7)    # its real view is not strided
+  @test FFTL.dct(vc) ≈ FFTW.dct(copy(vc))
+  @test FFTL.r2r(vc, FFTL.RODFT00, 2) ≈ FFTW.r2r(copy(vc), FFTW.RODFT00, 2)
+  # plan and data of different precision, real data into a complex plan
+  x64 = randn(ComplexF64, 8, 6)
+  p = FFTL.plan_r2r(ComplexF32.(x64), FFTL.REDFT10)
+  @test p * x64 ≈ FFTW.r2r(x64, FFTW.REDFT10) rtol = 1e-5
+  @test p * real(x64) ≈ FFTW.r2r(real(x64), FFTW.REDFT10) rtol = 1e-5
+  # generic number types transform the two parts one after the other
+  b = Complex{BigFloat}.(randn(ComplexF64, 9, 4))
+  @test ComplexF64.(FFTL.dct(b)) ≈ FFTW.dct(ComplexF64.(b))
+  @test ComplexF64.(FFTL.r2r(b, FFTL.RODFT11, 2)) ≈ FFTW.r2r(ComplexF64.(b), FFTW.RODFT11, 2)
+  @test FFTL.idct(FFTL.dct(b)) ≈ b rtol = 1e-60
+  # the region is checked against the complex array, not its real view
+  @test_throws ArgumentError FFTL.plan_r2r(xc, FFTL.REDFT10, 0)
+  @test_throws ArgumentError FFTL.plan_r2r(xc, FFTL.REDFT10, 3)
+end
+
 module UsesFFTW
   using FFTW
   plan(x) = plan_fft(x)

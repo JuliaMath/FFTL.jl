@@ -544,10 +544,10 @@ Base.@propagate_inbounds Base.getindex(l::StridedLine, i::Int) = unsafe_load(l.p
 Base.@propagate_inbounds Base.setindex!(l::StridedLine{T}, v, i::Int) where {T} = unsafe_store!(l.ptr, T(v), 1 + (i - 1) * l.stride)
 Base.IndexStyle(::Type{<:StridedLine}) = IndexLinear()
 
-# one dimension of an Array, each line read and written in place through a StridedLine
-r2r_dim!(y::Array{T}, x::Array{T}, d::Int, K::R2RLine{T}, p::R2RPlan{T}) where {T} =
+# one dimension of a dense array, each line read and written in place through a StridedLine
+r2r_dim!(y::StridedArray{T}, x::StridedArray{T}, d::Int, K::R2RLine{T}, p::R2RPlan{T}) where {T} =
   (GC.@preserve x y r2r_dim!(pointer(y), pointer(x), d, (K,), p); y)
-r2r_dim!(y::Array{T}, x::Array{T}, d::Int, Ks::Vector{<:R2RLine{T}}, p::R2RPlan{T}) where {T} =
+r2r_dim!(y::StridedArray{T}, x::StridedArray{T}, d::Int, Ks::Vector{<:R2RLine{T}}, p::R2RPlan{T}) where {T} =
   (GC.@preserve x y r2r_dim!(pointer(y), pointer(x), d, Ks, p); y)
 
 # p: a plan with sz, nthreads and bufs (R2RPlan, RR2RPlan)
@@ -905,7 +905,9 @@ function half_dft!(py::Ptr{T}, px::Ptr{T}, H::HalfDFT{T}, nt::Int) where {T}
   nothing
 end
 
-function apply_r2r!(y::Array{T}, x::Array{T}, p::R2RPlan{T}, ls::Tuple, ds::Tuple, hs::Tuple) where {T}
+# y and x have dense layout (dense_layout) and may be the same array: every pass reads its input
+# before it writes.
+function apply_r2r!(y::StridedArray{T}, x::StridedArray{T}, p::R2RPlan{T}, ls::Tuple, ds::Tuple, hs::Tuple) where {T}
   isempty(ls) && return y
   H = first(hs)
   if H === nothing
@@ -916,14 +918,27 @@ function apply_r2r!(y::Array{T}, x::Array{T}, p::R2RPlan{T}, ls::Tuple, ds::Tupl
   apply_r2r!(y, y, p, Base.tail(ls), Base.tail(ds), Base.tail(hs))
 end
 
-function LinearAlgebra.mul!(y::Array{T,N}, p::R2RPlan{T,N}, x::Array{T,N}) where {T,N}
+# The passes address dense arrays (contiguous views and reinterpreted arrays included); other
+# strided layouts go through a dense copy.
+function LinearAlgebra.mul!(y::StridedArray{T,N}, p::R2RPlan{T,N}, x::StridedArray{T,N}) where {T,N}
   size(x) == p.sz && size(y) == p.sz || throw(DimensionMismatch("r2r plan for size $(p.sz)"))
   isempty(p.region) && return copyto!(y, x)
-  apply_r2r!(y, x, p, p.lines, p.region, p.halves)
+  if dense_layout(x) && dense_layout(y)
+    apply_r2r!(y, x, p, p.lines, p.region, p.halves)
+  elseif dense_layout(y)
+    apply_r2r!(y, copyto!(Array{T,N}(undef, p.sz), x), p, p.lines, p.region, p.halves)
+  else
+    t = copyto!(Array{T,N}(undef, p.sz), x)
+    copyto!(y, apply_r2r!(t, t, p, p.lines, p.region, p.halves))
+  end
+  y
 end
 
+Base.:*(p::R2RPlan{T,N}, x::StridedArray{T,N}) where {T,N} = mul!(Array{T,N}(undef, p.sz), p, x)
 Base.:*(p::R2RPlan{T,N}, x::AbstractArray{<:Real,N}) where {T,N} =
   mul!(Array{T,N}(undef, p.sz), p, convert(Array{T,N}, x))
+
+inplace!(p::Union{R2RPlan{T},AbstractFFTs.ScaledPlan{<:Any,<:R2RPlan{T}}}, x::StridedArray{T}) where {T} = mul!(x, p, x)
 
 # inverse kinds and the scaling of the unnormalised pair
 inverse_kind(k::R2RKind) = k == REDFT10 ? REDFT01 : k == REDFT01 ? REDFT10 :
@@ -937,43 +952,88 @@ function AbstractFFTs.plan_inv(p::R2RPlan{T}) where {T}
 end
 
 """
-    plan_r2r(x::AbstractArray{<:Real}, kinds, region = 1:ndims(x); threads, num_threads, flags, timelimit)
+    plan_r2r(x, kinds, region = 1:ndims(x); threads, num_threads, flags, timelimit)
     r2r(x, kinds, region = 1:ndims(x))
+    plan_r2r!(x, kinds, region = 1:ndims(x); …), r2r!(x, kinds, region = 1:ndims(x))
 
 Unnormalised real-to-real transforms; `kinds` is one `R2RKind` (REDFT00 … RODFT11, DHT, R2HC, HC2R) for all
-dimensions of `region` or one per dimension. Keywords as for [`plan_fft`](@ref).
+dimensions of `region` or one per dimension. For complex `x` the real and imaginary parts are
+transformed separately, as in FFTW.jl. The `!` forms overwrite `x`. Keywords as for [`plan_fft`](@ref).
 """
 function plan_r2r(x::AbstractArray, kinds, region = 1:ndims(x); threads = nothing, num_threads = nothing,
                   flags = nothing, timelimit = nothing, kw...)
+  eltype(x) <: Complex && return complex_r2r_plan(x, kinds, region; threads = planthreads(threads, num_threads), kw...)
   generic_float(elreal(x)) && return GR2RPlan{elreal(x)}(size(x), kinds, region)
   R2RPlan{realtype(x)}(size(x), kinds, region; threads = planthreads(threads, num_threads), kw...)
 end
 r2r(x::AbstractArray, kinds, region = 1:ndims(x)) = plan_r2r(x, kinds, region) * x
+plan_r2r!(x::AbstractArray, kinds, region = 1:ndims(x); kw...) = InplacePlan(plan_r2r(x, kinds, region; kw...))
+r2r!(x::AbstractArray, kinds, region = 1:ndims(x)) = plan_r2r!(x, kinds, region) * x
+
+"""
+    ComplexR2RPlan
+
+Real-to-real transform of complex data: the real and imaginary parts are transformed
+independently. With `interleaved`, `p` is a real plan of size `(2, sz...)` over `region .+ 1`
+that reads the complex array as its real view and transforms both parts in one pass (the dense
+layout of a `Complex{T}` array is that of a `T` array with a leading dimension of 2). Otherwise
+`p` is a real plan of size `sz` applied to the two parts one after the other (generic number
+types, GPU arrays).
+"""
+mutable struct ComplexR2RPlan{T,N,P<:AbstractFFTs.Plan{T}} <: AbstractFFTs.Plan{Complex{T}}
+  p::P
+  sz::NTuple{N,Int}
+  region::Vector{Int}
+  interleaved::Bool
+  pinv::AbstractFFTs.Plan{Complex{T}}
+  ComplexR2RPlan(p::AbstractFFTs.Plan{T}, sz::NTuple{N,Int}, region, interleaved::Bool) where {T,N} =
+    new{T,N,typeof(p)}(p, sz, collect(Int, region isa Integer ? (region,) : region), interleaved)
+end
+
+function complex_r2r_plan(x::AbstractArray, kinds, region; kw...)
+  generic_float(elreal(x)) && return ComplexR2RPlan(GR2RPlan{elreal(x)}(size(x), kinds, region), size(x), region, false)
+  reg = collect(Int, region isa Integer ? (region,) : region)
+  check_r2r_region(reg, ndims(x))
+  ComplexR2RPlan(R2RPlan{realtype(x)}((2, size(x)...), kinds, reg .+ 1; kw...), size(x), reg, true)
+end
+
+Base.size(q::ComplexR2RPlan) = q.sz
+Base.ndims(::ComplexR2RPlan{T,N}) where {T,N} = N
+AbstractFFTs.fftdims(q::ComplexR2RPlan) = q.region
+AbstractFFTs.plan_inv(q::ComplexR2RPlan) = ComplexR2RPlan(inv(q.p), q.sz, q.region, q.interleaved)
+Base.show(io::IO, q::ComplexR2RPlan{T}) where {T} =
+  print(io, "FFTL r2r plan for ", join(q.sz, "×"), " ", Complex{T}, " (real and imaginary parts), dims ", join(q.region, ", "))
+
+function LinearAlgebra.mul!(y::AbstractArray{<:Complex,N}, q::ComplexR2RPlan{T,N}, x::AbstractArray{<:Number,N}) where {T,N}
+  size(x) == q.sz && size(y) == q.sz || throw(DimensionMismatch("r2r plan for size $(q.sz)"))
+  if !q.interleaved
+    y .= complex.(q.p * real.(x), q.p * imag.(x))
+  else
+    yr = real_view(y, T)
+    xr = real_view(x, T)
+    xr === nothing && (xr = real_view(convert(Array{Complex{T},N}, x), T))
+    yr === nothing ? copyto!(y, mul!(Array{Complex{T},N}(undef, q.sz), q, x)) : mul!(yr, q.p, xr)
+  end
+  y
+end
+
+# the strided real view of a Complex{T} array of size sz, of size (2, sz...); nothing if there is none
+function real_view(x::AbstractArray{Complex{T}}, ::Type{T}) where {T}
+  x isa StridedArray || return nothing
+  r = reinterpret(reshape, T, x)
+  r isa StridedArray ? r : nothing
+end
+real_view(::AbstractArray, ::Type) = nothing
+Base.:*(q::ComplexR2RPlan{T}, x::AbstractArray{<:Number}) where {T} = mul!(similar(x, Complex{T}, q.sz), q, x)
+inplace!(q::ComplexR2RPlan{T}, x::StridedArray{Complex{T}}) where {T} = mul!(x, q, x)
 
 """
     dct(x, region = 1:ndims(x)), idct(x, region = 1:ndims(x))
 
 Orthonormal DCT-II and its inverse (DCT-III) along `region`.
 """
-function dct(x::AbstractArray, region = 1:ndims(x))
-  y = r2r(x, REDFT10, region)
-  for d in (region isa Integer ? (region,) : region)
-    n = size(y, d)
-    y .*= inv(sqrt(eltype(y)(2n)))
-    selectdim(y, d, 1) ./= sqrt(eltype(y)(2))
-  end
-  y
-end
-
-function idct(x::AbstractArray, region = 1:ndims(x))
-  y = copyto!(similar(x, generic_float(elreal(x)) ? elreal(x) : realtype(x)), x)   # stays on its device
-  for d in (region isa Integer ? (region,) : region)
-    n = size(y, d)
-    selectdim(y, d, 1) .*= sqrt(eltype(y)(2))
-    y .*= inv(sqrt(eltype(y)(2n)))
-  end
-  r2r(y, REDFT01, region)
-end
+dct(x::AbstractArray, region = 1:ndims(x)) = plan_dct(x, region) * x
+idct(x::AbstractArray, region = 1:ndims(x)) = plan_idct(x, region) * x
 
 """
     OrthoDCTPlan
@@ -1016,18 +1076,19 @@ Base.show(io::IO, q::OrthoDCTPlan) = print(io, q.inverse ? "orthonormal inverse 
                                            "orthonormal DCT-II plan, ", join(size(q), "×"), ", dims ", q.region)
 
 function Base.:*(q::OrthoDCTPlan{T}, x::AbstractArray) where {T}
+  R = real(T)
   if q.inverse
-    y = copyto!(similar(x, T), x)
+    y = copyto!(similar(x, T), x)   # stays on its device
     for d in q.region
-      selectdim(y, d, 1) .*= sqrt(T(2))
-      y .*= inv(sqrt(T(2size(y, d))))
+      selectdim(y, d, 1) .*= sqrt(R(2))
+      y .*= inv(sqrt(R(2size(y, d))))
     end
     q.p * y
   else
     y = q.p * x
     for d in q.region
-      y .*= inv(sqrt(T(2size(y, d))))
-      selectdim(y, d, 1) ./= sqrt(T(2))
+      y .*= inv(sqrt(R(2size(y, d))))
+      selectdim(y, d, 1) ./= sqrt(R(2))
     end
     y
   end

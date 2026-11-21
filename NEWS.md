@@ -1,5 +1,15 @@
 # News
 
+## Unreleased
+
+- Real-to-real transforms of complex arrays, as in FFTW.jl: `FFTL.r2r`, `dct`, `idct` and their
+  plans transform the real and imaginary parts separately. On the CPU both parts go through one
+  real plan over the interleaved layout. Before, the plan was built and failed with an
+  `InexactError` when applied (#63).
+- `FFTL.r2r!` and `FFTL.plan_r2r!`, the in-place forms of FFTW.jl (#63).
+- `mul!` with r2r plans accepts views and reinterpreted arrays; dense ones are transformed without
+  a copy (#63).
+
 ## 0.3.2
 
 - AVX-512 CPUs that Julia compiles for an older CPU name without 512-bit registers (Julia 1.13

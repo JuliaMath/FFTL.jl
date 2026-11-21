@@ -45,7 +45,7 @@ R2RKind
 ```
 
 `idct` is documented with `dct`; `plan_idct`, `plan_dct!`, `plan_idct!`, `dct!` and `idct!` with
-`plan_dct`; `r2r` with `plan_r2r`.
+`plan_dct`; `r2r`, `plan_r2r!` and `r2r!` with `plan_r2r`.
 
 The kinds, as constants: `REDFT00` (DCT-I), `REDFT10` (DCT-II), `REDFT01` (DCT-III), `REDFT11`
 (DCT-IV), `RODFT00` (DST-I), `RODFT10` (DST-II), `RODFT01` (DST-III), `RODFT11` (DST-IV), `DHT`
@@ -118,8 +118,9 @@ part of the interface.
 | `RFFTLPlan` | `plan_rfft` |
 | `BRFFTLPlan` | `plan_brfft`, `plan_irfft` (wrapped in `ScaledPlan`) |
 | `R2RPlan` | `plan_r2r` |
+| `ComplexR2RPlan` | `plan_r2r`, `plan_dct`, `plan_idct` for complex arrays |
 | `OrthoDCTPlan` | `plan_dct`, `plan_idct` |
-| `InplacePlan` | `plan_fft!`, `plan_bfft!`, `plan_ifft!`, `plan_dct!`, `plan_idct!` |
+| `InplacePlan` | `plan_fft!`, `plan_bfft!`, `plan_ifft!`, `plan_dct!`, `plan_idct!`, `plan_r2r!` |
 | `PassPlan` | `plan_pass` |
 | `R2RPassPlan` | `plan_r2r_pass` |
 | `GPlan`, `GRPlan`, `GR2RPlan` | the same functions for `BigFloat` and other number types |
