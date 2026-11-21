@@ -1,6 +1,6 @@
 # News
 
-## Unreleased
+## 0.3.3
 
 - Real-to-real transforms of complex arrays, as in FFTW.jl: `FFTL.r2r`, `dct`, `idct` and their
   plans transform the real and imaginary parts separately. On the CPU both parts go through one
@@ -9,6 +9,11 @@
 - `FFTL.r2r!` and `FFTL.plan_r2r!`, the in-place forms of FFTW.jl (#63).
 - `mul!` with r2r plans accepts views and reinterpreted arrays; dense ones are transformed without
   a copy (#63).
+- A single line takes the four-step algorithm on several threads only where it is faster than one
+  thread: on aarch64 from 128 KiB with at least 2 threads, on x86 from 2^15 values with at least
+  6 threads (new `TUNING` fields `fourstep_min_bytes`, `fourstep_min_threads`). Before, it started
+  at 2^13 values with 2 threads and was up to 11 times slower than one thread there (#65).
+- Documentation: page on the other pure-Julia FFT packages (#64).
 
 ## 0.3.2
 
