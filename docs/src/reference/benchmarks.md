@@ -91,6 +91,10 @@ Markdown.parse(join(["| data | checkout | package code | measured |", "|:--|:--|
 
 ## Scope of the benchmark campaign
 
+The campaign compares FFTL with the full-featured reference libraries that it would replace as a
+dependency. The other pure-Julia FFT packages have different goals and are not benchmarked here; see
+[Other pure-Julia FFTs](@ref "Other pure-Julia FFTs").
+
 - **Complex, real and real-to-real transforms** on the CPU, 1D to 3D, Float32 and Float64, against
   the competitors that support the same kind. Each kind has its own column; kinds without a
   competitor are shown separately.
