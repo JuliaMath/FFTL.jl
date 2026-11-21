@@ -12,9 +12,11 @@ rules there apply to everything written here as well. Everything in this folder 
   decoration. Light mode.
 - Tone: no claim to be the best. The message is that Julia and coding agents make a library of this scope
   possible, and that FFTL is meant to be developed further by the Julia community as the one FFT the
-  ecosystem shares, said as an invitation. Other packages are not named or judged. Speed is reported as
-  measurement, on the benchmarks page. The MIT licence is stated, not advertised. NFFT.jl appears as one
-  user of the pass interface, not as a goal. FFTW is credited prominently (Explanation → "FFTW and FFTL").
+  ecosystem shares, said as an invitation. Other packages are not judged; the other pure-Julia FFTs
+  are named on one page (`explanation/pure-julia.md`), each by what it does well, without numbers,
+  ranking or names of authors. Speed is reported as measurement, on the benchmarks page. The MIT
+  licence is stated, not advertised. NFFT.jl appears as one user of the pass interface, not as a
+  goal. FFTW is credited prominently (Explanation → "FFTW and FFTL").
 - Two separate selling points, never merged into "one library for everything": (1) all transforms, number
   types and platforms in Julia; (2) libfftl, the C library compiled from the Julia code by
   `juliac --trim`, with only the Julia runtime as dependency.

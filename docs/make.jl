@@ -71,6 +71,7 @@ makedocs(;
     "Explanation" => [
       "The discrete Fourier transform" => "explanation/dft.md",
       "FFTW and FFTL" => "explanation/fftw.md",
+      "Other pure-Julia FFTs" => "explanation/pure-julia.md",
       "Algorithms" => "explanation/algorithms.md",
       "Implementation" => "explanation/implementation.md",
       "Design decisions" => "explanation/design-decisions.md",
