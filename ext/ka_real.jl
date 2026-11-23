@@ -389,7 +389,7 @@ mutable struct KARealPlan{T,N,B} <: AbstractFFTs.Plan{T}
 end
 
 function KARealPlan(backend, ::Type{T}, sz::NTuple{N,Int}, σ::Int; region = 1:N) where {T,N}
-  reg = FFTL.normregion(region, N)
+  reg = FFTL.realregion(region, N)
   isempty(reg) && throw(ArgumentError("a real transform needs at least one dimension"))
   d1 = reg[1]; n = sz[d1]; h = n ÷ 2 + 1
   hsz = setdim(sz, d1, h)

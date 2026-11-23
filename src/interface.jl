@@ -42,6 +42,16 @@ function normregion(region, N::Int)
   reg
 end
 
+# The dimensions of a real transform: the halved dimension first (the first entry of `region`, as
+# in AbstractFFTs), then the others sorted.
+function realregion(region, N::Int)
+  reg = normregion(region, N)
+  isempty(reg) && return reg
+  d1 = Int(first(region))
+  deleteat!(reg, searchsortedfirst(reg, d1))
+  pushfirst!(reg, d1)
+end
+
 """
     FFTLPlan{T,N}
 

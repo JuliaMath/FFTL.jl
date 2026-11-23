@@ -1,5 +1,12 @@
 # News
 
+## Unreleased
+
+- `rfft`, `brfft`, `irfft` and their plans halve the first dimension of `region`, as AbstractFFTs
+  specifies, also when `region` is not sorted: `rfft(x, (2, 1, 3))` halves dimension 2. Before,
+  FFTL sorted the region and halved its smallest dimension. This holds for the CPU, generic
+  (`BigFloat`), run-time and KernelAbstractions/GPU plans (#70).
+
 ## 0.3.3
 
 - Real-to-real transforms of complex arrays, as in FFTW.jl: `FFTL.r2r`, `dct`, `idct` and their

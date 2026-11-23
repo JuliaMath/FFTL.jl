@@ -66,14 +66,14 @@ end
 
 @testset "KernelAbstractions real transforms (CPU backend), $T" for T in pick((Float64, Float32), (Float64,))
   be = KernelAbstractions.CPU()
-  for (sz, reg) in pick((((16,), 1:1), ((15,), 1:1), ((2,), 1:1), ((37,), 1:1), ((12, 10), 1:2), ((12, 10), 2:2), ((9, 8, 6), (1, 3))),
+  for (sz, reg) in pick((((16,), 1:1), ((15,), 1:1), ((2,), 1:1), ((37,), 1:1), ((12, 10), 1:2), ((12, 10), 2:2), ((9, 8, 6), (1, 3)), ((12, 10), (2, 1)), ((9, 8, 6), (3, 1))),
                         (((16,), 1:1), ((15,), 1:1), ((12, 10), 1:2), ((9, 8, 6), (1, 3))))
     x = randn(T, sz)
     X = FFTL.plan_ka_rfft(be, T, sz; region = reg) * x; KernelAbstractions.synchronize(be)
     @test relerr(X, FFTL.rfft(x, reg)) < tol(T)
     Xc = copy(X)
     z = FFTL.plan_ka_brfft(be, T, sz; region = reg) * X; KernelAbstractions.synchronize(be)
-    @test relerr(z, FFTL.brfft(Xc, sz[minimum(reg)], reg)) < tol(T)
+    @test relerr(z, FFTL.brfft(Xc, sz[first(reg)], reg)) < tol(T)
     @test X == Xc
   end
   for k in instances(FFTL.R2RKind), n in pick((2, 5, 8, 33), (8,))
