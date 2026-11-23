@@ -541,8 +541,7 @@ FFTL.TUNING[] = tuning(fourstep_min = 2^13, fourstep_min_bytes = 0, fourstep_min
     for (sz, region) in (((1,), (1,)), ((8,), (1,)), ((9, 4), (1,)), ((3, 79, 2), (2,)),
                          ((4, 6), (1, 2)), ((4, 5), (2, 1)), ((3, 8, 2), (2, 3)),
                          ((8, 3, 4), (1, 3)), ((3, 1, 2), (2,)))
-      # Preserve the existing sorted region and choice of the halved dimension.
-      dims = sort(collect(region)); d = first(dims); n = sz[d]
+      dims = collect(region); d = first(dims); n = sz[d]   # the first entry is halved
       osz = Base.setindex(sz, n ÷ 2 + 1, d)
       x = randn(T, sz)
       full = dftn(x, dims)
@@ -807,11 +806,12 @@ FFTL.TUNING[] = tuning(fourstep_min = 2^13, fourstep_min_bytes = 0, fourstep_min
     for (sz, region) in pick([((8,), 1), ((9,), 1), ((10,), 1), ((15,), 1), ((16,), 1), ((79,), 1), ((100,), 1),
                               ((101,), 1), ((1024,), 1), ((1023,), 1), ((3 * 2^11,), 1),
                               ((8, 6), (1, 2)), ((9, 6), (1, 2)), ((7, 10), (1, 2)), ((8, 6), (2,)), ((12, 7), (2,)),
-                              ((6, 8, 5), (1, 2, 3)), ((6, 8, 5), (2, 3)), ((6, 9, 5), (2, 3)), ((5, 4, 6), (3,)), ((16, 9), (1,))],
+                              ((6, 8, 5), (1, 2, 3)), ((6, 8, 5), (2, 3)), ((6, 9, 5), (2, 3)), ((5, 4, 6), (3,)), ((16, 9), (1,)),
+                              ((8, 6), (2, 1)), ((12, 9), (2, 1)), ((12, 10, 14), (2, 1, 3)), ((6, 9, 5), (3, 1)), ((6, 9, 5), (3, 2, 1))],
                              thin(T, [((9,), 1), ((16,), 1), ((79,), 1), ((1024,), 1), ((3 * 2^11,), 1),
-                                      ((9, 6), (1, 2)), ((12, 7), (2,)), ((6, 8, 5), (1, 2, 3)), ((6, 9, 5), (2, 3))]))
+                                      ((9, 6), (1, 2)), ((12, 7), (2,)), ((6, 8, 5), (1, 2, 3)), ((6, 9, 5), (2, 3)), ((12, 10, 14), (2, 1, 3))]))
       x = randn(T, sz)
-      reg = sort([region...]); d1 = reg[1]; n = sz[d1]; h = n ÷ 2 + 1
+      reg = [region...]; d1 = reg[1]; n = sz[d1]; h = n ÷ 2 + 1
       full = dftn(x, reg)
       sel = ntuple(i -> i == d1 ? (1:h) : (:), length(sz))
       p = FFTL.plan_rfft(x, region)
@@ -1037,7 +1037,8 @@ FFTL.TUNING[] = tuning(fourstep_min = 2^13, fourstep_min_bytes = 0, fourstep_min
 
   @testset "run-time real plans, $T" for T in pick((Float64, Float32), (Float64,))
     for (sz, reg, nt) in [((16,), [1], 1), ((101,), [1], 1), ((12, 10), [1, 2], 3), ((12, 10), [2], 1), ((9, 8, 7), [1, 3], 3),
-                          ((101,), [1], 4), ((7, 101), [1, 2], 4)]   # non-smooth lines on several tasks
+                          ((101,), [1], 4), ((7, 101), [1, 2], 4),   # non-smooth lines on several tasks
+                          ((12, 10), [2, 1], 1), ((9, 8, 7), [3, 1], 3)]
       x = randn(T, sz)
       p = FFTL.RRFFTPlan{T}(collect(sz), reg, -1; threads = nt)
       ref = FFTL.plan_rfft(x, Tuple(reg)) * x
@@ -1079,10 +1080,10 @@ FFTL.TUNING[] = tuning(fourstep_min = 2^13, fourstep_min_bytes = 0, fourstep_min
       x = Complex{B}.(randn(ComplexF64, 6, 5, 4))
       @test relerr(FFTL.fft(x, (1, 3)), FFTL.fft(FFTL.fft(x, 1), 3)) < btol
       @test relerr(FFTL.ifft(FFTL.fft(x)), x) < btol
-      for (sz, reg) in (((16,), 1:1), ((79,), 1:1), ((6, 5), 1:2), ((6, 5), 2:2), ((4, 5, 3), (1, 3)))
+      for (sz, reg) in (((16,), 1:1), ((79,), 1:1), ((6, 5), 1:2), ((6, 5), 2:2), ((4, 5, 3), (1, 3)), ((6, 5), (2, 1)), ((4, 5, 3), (3, 1)))
         xr = B.(randn(sz...))
         X = FFTL.rfft(xr, reg)
-        d1 = minimum(reg)
+        d1 = first(reg)
         @test relerr(X, FFTL.fft(Complex{B}.(xr), reg)[ntuple(i -> i == d1 ? (1:size(X, d1)) : (:), length(sz))...]) < btol
         @test relerr(FFTL.irfft(X, sz[d1], reg), xr) < btol
       end

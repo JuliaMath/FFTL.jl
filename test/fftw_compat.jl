@@ -20,6 +20,17 @@ import AbstractFFTs
       @test FFTL.brfft(R, size(r, first(region)), region) ≈ FFTW.brfft(R, size(r, first(region)), region)
       @test FFTL.irfft(R, size(r, first(region)), region) ≈ r
     end
+    # the halved dimension is the first entry of the region, not the smallest
+    r3 = randn(T, 12, 10, 14)
+    for region in ((2, 1), (2, 1, 3), (3, 1), (3, 2, 1))
+      R = FFTW.rfft(r3, region)
+      @test size(FFTL.rfft(r3, region)) == size(R)
+      @test FFTL.rfft(r3, region) ≈ R
+      @test FFTL.plan_rfft(r3, region) * r3 ≈ R
+      @test FFTL.brfft(R, size(r3, first(region)), region) ≈ FFTW.brfft(R, size(r3, first(region)), region)
+      @test FFTL.irfft(R, size(r3, first(region)), region) ≈ r3
+      @test inv(FFTL.plan_rfft(r3, region)) * R ≈ r3
+    end
     # plans: *, mul!, inv, \, keywords
     p = FFTL.plan_fft(x; flags = FFTL.MEASURE, timelimit = Inf, num_threads = 2)
     @test p * x ≈ FFTW.fft(x)

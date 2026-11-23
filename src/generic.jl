@@ -224,7 +224,7 @@ mutable struct GRPlan{T,N} <: AbstractFFTs.Plan{T}
 end
 
 function GRPlan{T}(sz::NTuple{N,Int}, d::Int, region, σ::Int) where {T,N}
-  reg = normregion(region, N)
+  reg = realregion(region, N)
   isempty(reg) && throw(ArgumentError("a real transform needs at least one dimension"))
   hsz = σ < 0 ? Base.setindex(sz, nhalf(sz[reg[1]]), reg[1]) : sz
   σ > 0 && nhalf(d) != sz[reg[1]] && throw(DimensionMismatch("half spectrum of length $(sz[reg[1]]) does not fit length $d"))

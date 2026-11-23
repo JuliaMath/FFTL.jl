@@ -34,7 +34,7 @@ function RRFFTPlan{T}(sz::AbstractVector{<:Integer}, region::AbstractVector{<:In
                       threads::Integer = Threads.nthreads()) where {T<:FFTLFloat}
   dims = collect(Int, sz)
   N = length(dims)
-  reg = normregion(region, N)
+  reg = realregion(region, N)
   isempty(reg) && throw(ArgumentError("a real transform needs at least one dimension"))
   all(>=(1), dims) || throw(ArgumentError("array size must be positive"))
   (σ == 1 || σ == -1) || throw(ArgumentError("sign must be 1 or -1"))
