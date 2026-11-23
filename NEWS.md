@@ -1,11 +1,12 @@
 # News
 
-## Unreleased
+## 0.3.4
 
 - `rfft`, `brfft`, `irfft` and their plans halve the first dimension of `region`, as AbstractFFTs
   specifies, also when `region` is not sorted: `rfft(x, (2, 1, 3))` halves dimension 2. Before,
   FFTL sorted the region and halved its smallest dimension. This holds for the CPU, generic
   (`BigFloat`), run-time and KernelAbstractions/GPU plans (#70).
+- Citation metadata (`CITATION.cff`) for GitHub and Zenodo (#68, #69).
 - The cache sizes are read on Windows too (`GetLogicalProcessorInformationEx`); before, Windows
   always used the defaults. The x86 default for the L2 per core, used where no query works, is
   256 KiB instead of 512 KiB (#71).
