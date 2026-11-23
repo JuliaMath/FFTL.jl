@@ -90,9 +90,8 @@ FFTL.TUNING[] = tuning(fourstep_min = 2^13, fourstep_min_bytes = 0, fourstep_min
 @testset "FFTL" verbose = get(ENV, "FFTL_TEST_VERBOSE", "false") == "true" begin
   @testset "preference cpu_features" begin
     if FFTL.CPU_FEATURES == "baseline"
-      @test !FFTL.HAS_AVX2 && !FFTL.HAS_AVX512
+      @test !FFTL.HAS_AVX2 && !FFTL.HAS_AVX512 && !FFTL.HAS_FCMA
       Sys.ARCH === :x86_64 && @test FFTL.REG_BYTES == 16
-      @test FFTL.HAS_FCMA == (Sys.ARCH === :aarch64 && Sys.isapple())
     end
     # the x86 kernels follow the code generation target, which can lack features of the CPU
     if Sys.ARCH === :x86_64
