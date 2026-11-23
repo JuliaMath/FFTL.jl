@@ -37,8 +37,12 @@ length and stride class share a kernel object.
 
 The work of a batched transform is split into blocks of lines so that the work buffers of one
 block stay in the cache of one core. The cache sizes are read when the package loads: `sysctl`
-on macOS for the performance cores, `sysfs` on Linux for CPU 0. Where the query fails, defaults
-for the two development machines stand in. `FFTL.cpu_caches()` reports the values, and
+on macOS for the performance cores, `sysfs` on Linux for CPU 0, `GetLogicalProcessorInformationEx`
+on Windows for logical processor 0. Only the L2 per core and the last-level cache are needed, so
+the operating system is asked directly, without a topology library such as hwloc. Where the query
+fails, defaults stand in: the M1 Max on aarch64; elsewhere a 256 KiB L2 per core, the smallest of
+current x86 cores (smaller blocks), and a 32 MiB last-level cache (the serial four-step starts
+late). `FFTL.cpu_caches()` reports the values, and
 `FFTL.set_cpu_caches!` overrides them for a session.
 
 The thresholds that decide between one thread and several, between the lane and the plane forms,

@@ -1191,6 +1191,27 @@ FFTL.TUNING[] = tuning(fourstep_min = 2^13, fourstep_min_bytes = 0, fourstep_min
     @test FFTL.cpu_caches().l1 > 0 && FFTL.cpu_caches().l2 > 0
     @test FFTL.parse_size("512K") == 512 << 10 && FFTL.parse_size("32768K") == 32 << 20
     @test FFTL.count_cpus("0-7,128-135\n") == 16 && FFTL.count_cpus("0,128") == 2
+    Sys.iswindows() && Sys.WORD_SIZE == 64 && @test FFTL.cpu_caches().source === :queried
+    # Windows records: 8 cores with 2-way SMT, L1D/L1I and L2 per core, one L3 for all
+    # (gc = 1: Windows 11 layout, gc = 0: one affinity, older Windows)
+    for gc in (0, 1)
+      b = UInt8[]
+      setb!(T, off, v) = (copyto!(b, off + 1, reinterpret(UInt8, [T(v)]), 1, sizeof(T)); nothing)
+      function rec(rel, sz, fill)
+        o = length(b); append!(b, zeros(UInt8, sz)); setb!(UInt32, o, rel); setb!(UInt32, o + 4, sz); fill(o)
+      end
+      core(mask) = rec(0, 48, o -> (setb!(UInt16, o + 30, gc); setb!(UInt64, o + 32, mask)))
+      cache(level, size, typ, mask) = rec(2, 56, o -> (setb!(UInt8, o + 8, level); setb!(UInt32, o + 12, size);
+        setb!(UInt32, o + 16, typ); setb!(UInt16, o + 38, gc); setb!(UInt64, o + 40, mask)))
+      for c in 0:7
+        m = UInt64(3) << 2c
+        core(m); cache(1, 48 << 10, 2, m); cache(1, 32 << 10, 1, m); cache(2, 1 << 20, 0, m)
+      end
+      cache(3, 32 << 20, 0, 0xffff)
+      c = FFTL.parse_processor_info(b)
+      @test (c.l1, c.l2, c.llc, c.source) == (48 << 10, 1 << 20, 32 << 20, :queried)
+    end
+    @test FFTL.parse_processor_info(UInt8[]) === nothing
     try
       FFTL.set_cpu_caches!(l1 = 128 << 10, l2 = 3 << 20, llc = 12 << 20)   # M1 Max
       @test (FFTL.block_budget(2048, 8), FFTL.block_budget(2048, 1)) == (1 << 16, 1 << 16)

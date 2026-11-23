@@ -1,6 +1,8 @@
-# Cache sizes of the CPU the package runs on. Lane blocks are sized from them (threads.jl). They are read when the package is loaded
-# (macOS: sysctl of the performance cores, Linux: sysfs of cpu0); where that fails, defaults of
-# the two measured machines stand in: Apple M1 Max on aarch64, AMD Zen 3 elsewhere.
+# Cache sizes of the CPU the package runs on. Lane blocks are sized from them (threads.jl). They are
+# read from the operating system when the package is loaded (macOS: sysctl of the performance cores,
+# Linux: sysfs of cpu0, Windows: GetLogicalProcessorInformationEx for logical processor 0). Only two
+# numbers are needed, so the queries are made directly instead of through a topology library.
+# Where a query fails, defaults stand in (DEFAULT_CACHES).
 
 struct CPUCaches
   l1::Int        # L1 data cache per core, bytes
@@ -9,9 +11,14 @@ struct CPUCaches
   source::Symbol # :queried, :default or :user
 end
 
+# Defaults where the query fails. The L2 sets the block size of threaded passes (threads.jl): a
+# smaller value gives smaller blocks, which fit more caches, so the x86 default is the smallest
+# per-core L2 of current x86 cores (256 KiB). The LLC sets where a single line takes the serial
+# four-step (only with 64-byte vectors, threads.jl); a larger value keeps the chain, the safer side,
+# so it stays at the 32 MiB of the measured Zen 3 / Zen 4 core clusters.
 const DEFAULT_CACHES = Sys.ARCH === :aarch64 ?
   CPUCaches(128 << 10, 3 << 20, 12 << 20, :default) :   # M1 Max: 12 MB L2 per 4 P-cores
-  CPUCaches(32 << 10, 512 << 10, 32 << 20, :default)    # Zen 3: 32 MB L3 per 8 cores
+  CPUCaches(32 << 10, 256 << 10, 32 << 20, :default)
 
 const CACHES = Ref(DEFAULT_CACHES)
 
@@ -62,9 +69,67 @@ function query_caches_linux()
   CPUCaches(l1, l2, llc, :queried)
 end
 
+# Windows: GetLogicalProcessorInformationEx(RelationAll) fills a list of variable-length records
+# SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX: relationship (UInt32) at byte 0, record size (UInt32) at 4.
+#   processor core (0): group count (UInt16) at 30, group affinities from 32
+#   cache (2): level (UInt8) at 8, size (UInt32) at 12, type (UInt32; 1 instruction, 3 trace) at 16,
+#              group count (UInt16) at 38, group affinities from 40
+# A group affinity is 16 bytes: processor mask (UInt64) at 0, group (UInt16) at 8. Windows before 11
+# leaves the group count 0 and has one affinity. Layout for 64-bit Windows only.
+winload(::Type{T}, b, off) where {T} = GC.@preserve b unsafe_load(Ptr{T}(pointer(b) + off))
+
+# Logical processors in the group affinities at off, and whether processor 0 of group 0 is one of them.
+function win_affinity(b, off, count)
+  n = 0; has0 = false
+  for k in 0:max(1, Int(count))-1
+    mask = winload(UInt64, b, off + 16k)
+    n += count_ones(mask)
+    has0 |= winload(UInt16, b, off + 16k + 8) == 0 && isodd(mask)
+  end
+  n, has0
+end
+
+function parse_processor_info(b::Vector{UInt8})
+  smt = 1; l1 = l2 = llc = 0; l2cpus = 1
+  off = 0
+  while off + 8 <= length(b)
+    rel = winload(UInt32, b, off); sz = Int(winload(UInt32, b, off + 4))
+    (sz >= 8 && off + sz <= length(b)) || break
+    if rel == 0 && sz >= 48
+      n, has0 = win_affinity(b, off + 32, winload(UInt16, b, off + 30))
+      has0 && (smt = max(1, n))
+    elseif rel == 2 && sz >= 56
+      n, has0 = win_affinity(b, off + 40, winload(UInt16, b, off + 38))
+      typ = winload(UInt32, b, off + 16)
+      if has0 && (typ == 0 || typ == 2)
+        level = winload(UInt8, b, off + 8); size = Int(winload(UInt32, b, off + 12))
+        level == 1 && (l1 = size)
+        level == 2 && (l2 = size; l2cpus = n)
+        level >= 2 && (llc = max(llc, size))
+      end
+    end
+    off += sz
+  end
+  l1 > 0 && l2 > 0 || return nothing
+  CPUCaches(l1, l2 ÷ max(1, l2cpus ÷ smt), llc, :queried)
+end
+
+function query_caches_windows()
+  Sys.WORD_SIZE == 64 || return nothing
+  len = Ref{UInt32}(0)
+  ccall((:GetLogicalProcessorInformationEx, "kernel32"), stdcall, Cint, (UInt32, Ptr{UInt8}, Ref{UInt32}),
+        0xffff, C_NULL, len)
+  len[] == 0 && return nothing
+  b = Vector{UInt8}(undef, len[])
+  ok = ccall((:GetLogicalProcessorInformationEx, "kernel32"), stdcall, Cint, (UInt32, Ptr{UInt8}, Ref{UInt32}),
+             0xffff, b, len) != 0
+  ok ? parse_processor_info(resize!(b, len[])) : nothing
+end
+
 function query_caches()
   c = try
-    Sys.isapple() ? query_caches_macos() : Sys.islinux() ? query_caches_linux() : nothing
+    Sys.isapple() ? query_caches_macos() : Sys.islinux() ? query_caches_linux() :
+      Sys.iswindows() ? query_caches_windows() : nothing
   catch
     nothing
   end
