@@ -19,7 +19,9 @@ contributors are on the [Contribute](@ref "Contribute") page and in `AGENTS.md`.
 ARMv8.3 complex-number extension it uses `FCADD` and `FCMLA`, elsewhere shuffles (x86: `vfmaddsub` for
 products, `addsub` for ±i). Whether the extension is present is decided when the package is compiled:
 Apple silicon always, Linux by the `fcma` flag in `/proc/cpuinfo` (LLVM's host feature query returns
-nothing on macOS).
+nothing on macOS). With the preference `cpu_features = "baseline"` the extension is not used on any
+CPU, Apple silicon included, so the kernels compile for targets without it (`generic`,
+WebAssembly); on an M1 Max that costs a factor of 1.2 to 2.4.
 
 **Why.** On the M1 this layout with `FCADD`/`FCMLA` was the first variant that beat FFTW; keeping
 split real and imaginary parts in registers spilled for `Float64`. The layout is a per-platform choice

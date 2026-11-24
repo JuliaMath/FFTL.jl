@@ -76,9 +76,12 @@ Preferences.set_preferences!(FFTL, "cpu_features" => "baseline"; force = true)
 ```
 
 On x86-64 the kernels then use 16-byte vectors (about 1.5 times the time of AVX-512 for a real 3D
-transform in `Float32`); on aarch64 `FCADD`/`FCMLA` are not used, Apple silicon included.
-[`FFTL.CPU_FEATURES`](@ref) reports the setting; CI runs the tests with it on
-Linux.
+transform in `Float32`); on aarch64 `FCADD`/`FCMLA` are not used, Apple silicon included. On an
+Apple M1 Max this takes 1.2 to 2.4 times as long (2.4 for short lengths, 1.6 for a real 3D
+transform in `Float32`). Every Apple silicon CPU has `FCADD`/`FCMLA`, so code compiled for
+`apple-m1` or later (Julia's default on macOS) keeps `cpu_features = "host"`; `"baseline"` is for
+targets without them, such as `generic` or WebAssembly. [`FFTL.CPU_FEATURES`](@ref) reports the
+setting; CI runs the tests with it on Linux and macOS.
 
 ## Julia versions
 
