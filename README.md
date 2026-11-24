@@ -6,6 +6,7 @@
 [![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://JuliaMath.github.io/FFTL.jl/dev/)
 [![codecov](https://codecov.io/gh/JuliaMath/FFTL.jl/graph/badge.svg?branch=main)](https://codecov.io/gh/JuliaMath/FFTL.jl)
 [![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24430374.svg)](https://doi.org/10.5281/zenodo.24430374)
 
 FFTL is a fast Fourier transform written in Julia. It computes complex, real-input and
 real-to-real transforms (DCT, DST, Hartley, halfcomplex) of any length and any number of

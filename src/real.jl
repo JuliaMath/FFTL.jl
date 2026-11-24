@@ -237,7 +237,7 @@ mutable struct BRFFTLPlan{T<:FFTLFloat,N,K,C,D,F} <: AbstractFFTs.Plan{Complex{T
     new{T,N,K,C,D,F}(sz, d, region, line, lines, four, cplan, S, offs_r, offs_c, similar(offs_r), similar(offs_c), nt, bufs, copy)
 end
 
-sortregion(region, N) = Tuple(normregion(region, N))
+sortregion(region, N) = Tuple(realregion(region, N))
 
 # One real line of length n on several tasks: the half-length DFT on several threads (four-step for
 # a smooth half length, composite or resampling for the others). The extra parallel pass for the
@@ -564,7 +564,7 @@ Keywords as for [`plan_fft`](@ref).
 """
 function plan_rfft(x::AbstractArray, region = 1:ndims(x); threads = nothing, num_threads = nothing,
                    flags = nothing, timelimit = nothing, kw...)
-  generic_float(elreal(x)) && return GRPlan{elreal(x)}(size(x), size(x, minimum(region)), region, -1)
+  generic_float(elreal(x)) && return GRPlan{elreal(x)}(size(x), size(x, first(region)), region, -1)
   RFFTLPlan{realtype(x)}(size(x), region; threads = planthreads(threads, num_threads), kw...)
 end
 function plan_brfft(X::AbstractArray, d::Integer, region = 1:ndims(X); threads = nothing, num_threads = nothing,

@@ -1,0 +1,11 @@
+{
+  "title": "FFTL.jl: Fastest Fourier Transform in Lübeck",
+  "upload_type": "software",
+  "description": "A pure-Julia fast Fourier transform library for CPUs and GPUs (complex, real and real-to-real transforms in any number of dimensions), with a C library (libfftl) built by JuliaC.",
+  "creators": [
+    {"name": "Knopp, Tobias", "affiliation": "University of Lübeck", "orcid": "0000-0002-1589-8517"},
+    {"name": "FFTL.jl contributors"}
+  ],
+  "license": "MIT",
+  "keywords": ["FFT", "fast Fourier transform", "Julia", "GPU", "signal processing"]
+}
