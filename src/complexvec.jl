@@ -25,7 +25,9 @@ Which CPU instructions the kernels use, set by the preference `cpu_features`:
 sysimage built with `cpu_target = "generic"`: LLVM cannot compile the host's intrinsics for such
 a target ("LLVM ERROR: Do not know how to split the result of this operator!"), and the code
 would need the build machine's CPU anyway. On x86-64 the kernels then use 16-byte vectors; on an
-AVX-512 CPU a real 3D transform in `Float32` takes about 1.5 times as long. Set with
+AVX-512 CPU a real 3D transform in `Float32` takes about 1.5 times as long. On Apple silicon
+without FCMA it takes 1.2 to 2.4 times as long; every Apple silicon CPU has FCMA, so code compiled
+for `apple-m1` or later keeps `"host"`. Set with
 
 ```julia
 using Preferences, FFTL

@@ -1,5 +1,11 @@
 # News
 
+## Unreleased
+
+- `cpu_features = "baseline"` leaves out `FCADD`/`FCMLA` on Apple silicon too, so the kernels
+  compile for any target, `generic` and WebAssembly included (#75). Code compiled for `apple-m1`
+  or later keeps `"host"`: without these instructions transforms take 1.2 to 2.4 times as long.
+
 ## 0.3.4
 
 - `rfft`, `brfft`, `irfft` and their plans halve the first dimension of `region`, as AbstractFFTs
