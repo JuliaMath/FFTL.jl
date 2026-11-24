@@ -18,15 +18,14 @@ Which CPU instructions the kernels use, set by the preference `cpu_features`:
 
 - `"host"` (default): those of the CPU FFTL is compiled on (AVX2, AVX-512, FCMA), as far as
   Julia's code generation target has them (checked on x86-64).
-- `"baseline"`: those every CPU of the platform has: none of these on x86-64, FCMA on Apple
-  silicon, none on other aarch64 CPUs.
+- `"baseline"`: none of these, on every platform (also no FCMA on Apple silicon): the kernels
+  then compile for any target, WebAssembly's included.
 
 `"baseline"` is for code compiled ahead of time for other CPUs, such as a PackageCompiler app or
 sysimage built with `cpu_target = "generic"`: LLVM cannot compile the host's intrinsics for such
 a target ("LLVM ERROR: Do not know how to split the result of this operator!"), and the code
 would need the build machine's CPU anyway. On x86-64 the kernels then use 16-byte vectors; on an
-AVX-512 CPU a real 3D transform in `Float32` takes about 1.5 times as long. On Apple silicon the
-target must include FCMA (`apple-m1`, Julia's default there, not `generic`). Set with
+AVX-512 CPU a real 3D transform in `Float32` takes about 1.5 times as long. Set with
 
 ```julia
 using Preferences, FFTL
@@ -43,17 +42,17 @@ const HOST_FEATURES = CPU_FEATURES == "host"
 """
     HAS_FCMA
 
-Whether the host CPU has the ARMv8.3 complex-number instructions (FCADD, FCMLA). Apple silicon
-always has them (also with `cpu_features = "baseline"`); on Linux the `fcma` flag in
-`/proc/cpuinfo` is checked.
+Whether the kernels use the ARMv8.3 complex-number instructions (FCADD, FCMLA): never with
+`cpu_features = "baseline"`; otherwise Apple silicon always has them, and on Linux the `fcma`
+flag in `/proc/cpuinfo` is checked.
 """
 const HAS_FCMA = let
   if Sys.ARCH !== :aarch64
     false
-  elseif Sys.isapple()
-    true
   elseif !HOST_FEATURES
     false
+  elseif Sys.isapple()
+    true
   elseif Sys.islinux() && isfile("/proc/cpuinfo")
     occursin(r"\bfcma\b", read("/proc/cpuinfo", String))
   else

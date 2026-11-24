@@ -67,8 +67,8 @@ when started with `-C`, and an AVX-512 CPU that Julia compiles for an older CPU 
 512-bit registers (FFTL then uses 32-byte kernels). CI runs the tests with `-C x86-64` and
 `-C haswell`. Code compiled ahead of time for other CPUs, such
 as a PackageCompiler app or sysimage with `cpu_target = "generic"`, needs the preference
-`cpu_features = "baseline"`, which limits the kernels to the instructions every CPU of the
-platform has:
+`cpu_features = "baseline"`, which limits the kernels to instructions every CPU has (also for
+WebAssembly):
 
 ```julia
 using Preferences, FFTL
@@ -76,8 +76,8 @@ Preferences.set_preferences!(FFTL, "cpu_features" => "baseline"; force = true)
 ```
 
 On x86-64 the kernels then use 16-byte vectors (about 1.5 times the time of AVX-512 for a real 3D
-transform in `Float32`). On Apple silicon `FCADD`/`FCMLA` stay in use, so the target must be
-`apple-m1` or later. [`FFTL.CPU_FEATURES`](@ref) reports the setting; CI runs the tests with it on
+transform in `Float32`); on aarch64 `FCADD`/`FCMLA` are not used, Apple silicon included.
+[`FFTL.CPU_FEATURES`](@ref) reports the setting; CI runs the tests with it on
 Linux.
 
 ## Julia versions
